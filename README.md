@@ -40,8 +40,8 @@ export is explicitly needed.
 The exporter resumes safely: messages are keyed by
 `(account_id, dialog_id, message_id)` and are not duplicated on later runs. Use
 `--limit` for a small test export or `--since 2026-01-01` to limit the time
-range. It includes private chats, groups, and channels returned by the
-authorized account.
+range. Only one-to-one dialogs with real, non-bot users are exported; groups,
+channels, bots, deleted users, and Saved Messages are skipped.
 
 The initial run only initializes the database and starts the Telegram update
 loop. Contact policies are `off`, `draft`, or `auto`; `auto` is reserved for a

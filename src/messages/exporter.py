@@ -58,6 +58,16 @@ def dialog_kind(entity: Any) -> str:
     return "unknown"
 
 
+def is_real_person_dialog(entity: Any) -> bool:
+    """Keep only one-to-one dialogs with non-bot Telegram users."""
+    return (
+        isinstance(entity, types.User)
+        and not entity.bot
+        and not entity.deleted
+        and not entity.is_self
+    )
+
+
 def message_record(message: Any) -> dict[str, Any]:
     media_type = type(message.media).__name__ if message.media else None
     return {
@@ -296,6 +306,8 @@ async def export_history(account_id: str, limit: int | None, since: datetime | N
         await client.start()
         async for dialog in client.iter_dialogs(ignore_migrated=True):
             entity = dialog.entity
+            if not is_real_person_dialog(entity):
+                continue
             kind = dialog_kind(entity)
             name = utils.get_display_name(entity) or str(dialog.id)
             username = getattr(entity, "username", None)
