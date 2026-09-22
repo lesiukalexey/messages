@@ -285,6 +285,8 @@ async def export_history(account_id: str, limit: int | None, since: datetime | N
         store = ExportStore(export_path / "telegram.sqlite3", account_id)
     else:
         raise ValueError("STORAGE_BACKEND must be mysql or sqlite")
+    settings.session_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.session_path.parent.chmod(0o700)
     client = TelegramClient(str(settings.session_path), settings.api_id, settings.api_hash)
     logger = logging.getLogger(__name__)
     dialogs = 0
