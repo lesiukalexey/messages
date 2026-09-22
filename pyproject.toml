@@ -9,6 +9,7 @@ description = "Draft-first personal Telegram assistant"
 requires-python = ">=3.11"
 dependencies = [
     "Telethon>=1.36,<2",
+    "PyMySQL>=1.1,<2",
 ]
 
 [project.scripts]

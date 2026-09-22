@@ -21,12 +21,17 @@ session outside Git. Start the worker with:
 messages
 ```
 
-To export available Telegram history into a protected SQLite database outside
-the repository, run:
+To export available Telegram history into a protected database outside the
+repository, run:
 
 ```bash
 messages-export
 ```
+
+On Raspberry, the default backend is a separate MariaDB database named
+`messages`. Connection settings are loaded from the protected
+`/home/admin/messages-runtime/messages.env`. Set `STORAGE_BACKEND=sqlite` only
+when a local SQLite export is explicitly needed.
 
 The exporter resumes safely: messages are keyed by `(dialog_id, message_id)`
 and are not duplicated on later runs. Use `--limit` for a small test export or

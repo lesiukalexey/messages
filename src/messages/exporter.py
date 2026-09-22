@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pymysql
 from telethon import TelegramClient, utils
 from telethon.tl import types
 
@@ -17,14 +18,16 @@ from .config import Settings
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    paths = [path, Path("/home/admin/messages-runtime/messages.env")]
+    for env_path in paths:
+        if not env_path.exists():
             continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip())
 
 
 def parse_date(value: str | None) -> datetime | None:
@@ -140,12 +143,106 @@ class ExportStore:
         self.connection.close()
 
 
+class MysqlExportStore:
+    def __init__(self) -> None:
+        self.connection = pymysql.connect(
+            host=os.getenv("MYSQL_HOST", "127.0.0.1"),
+            port=int(os.getenv("MYSQL_PORT", "3306")),
+            user=os.environ["MYSQL_USER"],
+            password=os.environ["MYSQL_PASSWORD"],
+            database=os.getenv("MYSQL_DATABASE", "messages"),
+            charset="utf8mb4",
+            autocommit=False,
+        )
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dialogs (
+                    dialog_id BIGINT PRIMARY KEY,
+                    kind VARCHAR(32) NOT NULL,
+                    name TEXT NOT NULL,
+                    username VARCHAR(255),
+                    exported_at DATETIME(6) NOT NULL
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS messages (
+                    dialog_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    date VARCHAR(40),
+                    sender_id BIGINT,
+                    text LONGTEXT NOT NULL,
+                    reply_to_msg_id BIGINT,
+                    media_type VARCHAR(128),
+                    outgoing BOOLEAN NOT NULL,
+                    post BOOLEAN NOT NULL,
+                    grouped_id BIGINT,
+                    raw_json LONGTEXT NOT NULL,
+                    PRIMARY KEY (dialog_id, message_id),
+                    INDEX messages_dialog_date (dialog_id, date)
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """
+            )
+        self.connection.commit()
+
+    def save_dialog(self, dialog_id: int, kind: str, name: str, username: str | None) -> None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO dialogs(dialog_id, kind, name, username, exported_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    kind = VALUES(kind), name = VALUES(name),
+                    username = VALUES(username), exported_at = VALUES(exported_at)
+                """,
+                (dialog_id, kind, name, username, datetime.now(UTC).replace(tzinfo=None)),
+            )
+
+    def save_message(self, dialog_id: int, record: dict[str, Any]) -> None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT IGNORE INTO messages(
+                    dialog_id, message_id, date, sender_id, text, reply_to_msg_id,
+                    media_type, outgoing, post, grouped_id, raw_json
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    dialog_id,
+                    record["message_id"],
+                    record["date"],
+                    record["sender_id"],
+                    record["text"],
+                    record["reply_to_msg_id"],
+                    record["media_type"],
+                    int(record["outgoing"]),
+                    int(record["post"]),
+                    record["grouped_id"],
+                    json.dumps(record, ensure_ascii=False),
+                ),
+            )
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def close(self) -> None:
+        self.connection.close()
+
+
 async def export_history(limit: int | None, since: datetime | None) -> None:
     settings = Settings.from_environment()
-    export_path = Path(os.getenv("TELEGRAM_EXPORT_PATH", "/home/admin/messages-data"))
-    export_path.mkdir(parents=True, exist_ok=True)
-    export_path.chmod(0o700)
-    store = ExportStore(export_path / "telegram.sqlite3")
+    backend = os.getenv("STORAGE_BACKEND", "mysql").lower()
+    if backend == "mysql":
+        store = MysqlExportStore()
+    elif backend == "sqlite":
+        export_path = Path(os.getenv("TELEGRAM_EXPORT_PATH", "/home/admin/messages-data"))
+        export_path.mkdir(parents=True, exist_ok=True)
+        export_path.chmod(0o700)
+        store = ExportStore(export_path / "telegram.sqlite3")
+    else:
+        raise ValueError("STORAGE_BACKEND must be mysql or sqlite")
     client = TelegramClient(str(settings.session_path), settings.api_id, settings.api_hash)
     logger = logging.getLogger(__name__)
     dialogs = 0
@@ -176,7 +273,7 @@ async def export_history(limit: int | None, since: datetime | None) -> None:
         store.close()
         await client.disconnect()
 
-    logger.info("Export complete: %s dialogs, %s messages, %s", dialogs, messages, export_path)
+    logger.info("Export complete: %s dialogs, %s messages, backend=%s", dialogs, messages, backend)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,4 +288,3 @@ def main() -> None:
     args = build_parser().parse_args()
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
     asyncio.run(export_history(args.limit, parse_date(args.since)))
-
