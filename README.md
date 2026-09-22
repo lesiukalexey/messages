@@ -41,7 +41,11 @@ The exporter resumes safely: messages are keyed by
 `(account_id, dialog_id, message_id)` and are not duplicated on later runs. Use
 `--limit` for a small test export or `--since 2026-01-01` to limit the time
 range. Only one-to-one dialogs with real, non-bot users are exported; groups,
-channels, bots, deleted users, and Saved Messages are skipped.
+channels, bots, deleted users, and Saved Messages are skipped. Dialog usernames
+and available phone numbers are stored; Telegram may leave either value empty
+when it is not visible to the account. Each dialog also stores the first and
+last message timestamps, total message count, and the timestamp of the last
+count recalculation.
 
 The initial run only initializes the database and starts the Telegram update
 loop. Contact policies are `off`, `draft`, or `auto`; `auto` is reserved for a

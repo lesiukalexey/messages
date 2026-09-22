@@ -99,6 +99,11 @@ class ExportStore:
                 kind TEXT NOT NULL,
                 name TEXT NOT NULL,
                 username TEXT,
+                phone TEXT,
+                first_message_at TEXT,
+                last_message_at TEXT,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                message_counted_at TEXT,
                 exported_at TEXT NOT NULL,
                 PRIMARY KEY (account_id, dialog_id)
             );
@@ -121,21 +126,35 @@ class ExportStore:
                 ON messages(account_id, dialog_id, date);
             """
         )
+        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(dialogs)")}
+        if "phone" not in columns:
+            self.connection.execute("ALTER TABLE dialogs ADD COLUMN phone TEXT")
+        for column, definition in (
+            ("first_message_at", "TEXT"),
+            ("last_message_at", "TEXT"),
+            ("message_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("message_counted_at", "TEXT"),
+        ):
+            if column not in columns:
+                self.connection.execute(f"ALTER TABLE dialogs ADD COLUMN {column} {definition}")
         self.connection.commit()
         path.chmod(0o600)
 
-    def save_dialog(self, dialog_id: int, kind: str, name: str, username: str | None) -> None:
+    def save_dialog(
+        self, dialog_id: int, kind: str, name: str, username: str | None, phone: str | None
+    ) -> None:
         self.connection.execute(
             """
-            INSERT INTO dialogs(account_id, dialog_id, kind, name, username, exported_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO dialogs(account_id, dialog_id, kind, name, username, phone, exported_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, dialog_id) DO UPDATE SET
                 kind = excluded.kind,
                 name = excluded.name,
                 username = excluded.username,
+                phone = excluded.phone,
                 exported_at = excluded.exported_at
             """,
-            (self.account_id, dialog_id, kind, name, username, datetime.now(UTC).isoformat()),
+            (self.account_id, dialog_id, kind, name, username, phone, datetime.now(UTC).isoformat()),
         )
 
     def save_message(self, dialog_id: int, record: dict[str, Any]) -> None:
@@ -159,6 +178,32 @@ class ExportStore:
                 int(record["post"]),
                 record["grouped_id"],
                 json.dumps(record, ensure_ascii=False),
+            ),
+        )
+
+    def refresh_dialog_stats(self, dialog_id: int) -> None:
+        first, last, count = self.connection.execute(
+            """
+            SELECT MIN(date), MAX(date), COUNT(*)
+            FROM messages
+            WHERE account_id = ? AND dialog_id = ?
+            """,
+            (self.account_id, dialog_id),
+        ).fetchone()
+        self.connection.execute(
+            """
+            UPDATE dialogs
+            SET first_message_at = ?, last_message_at = ?, message_count = ?,
+                message_counted_at = ?
+            WHERE account_id = ? AND dialog_id = ?
+            """,
+            (
+                first,
+                last,
+                count,
+                datetime.now(UTC).isoformat(),
+                self.account_id,
+                dialog_id,
             ),
         )
 
@@ -190,6 +235,11 @@ class MysqlExportStore:
                     kind VARCHAR(32) NOT NULL,
                     name TEXT NOT NULL,
                     username VARCHAR(255),
+                    phone VARCHAR(32),
+                    first_message_at VARCHAR(40),
+                    last_message_at VARCHAR(40),
+                    message_count BIGINT NOT NULL DEFAULT 0,
+                    message_counted_at DATETIME(6),
                     exported_at DATETIME(6) NOT NULL,
                     PRIMARY KEY (account_id, dialog_id)
                 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
@@ -228,23 +278,38 @@ class MysqlExportStore:
         if not cursor.fetchone():
             cursor.execute("ALTER TABLE messages ADD COLUMN account_id VARCHAR(128) NOT NULL DEFAULT 'default' FIRST")
             cursor.execute("ALTER TABLE messages DROP PRIMARY KEY, ADD PRIMARY KEY (account_id, dialog_id, message_id)")
+        cursor.execute("SHOW COLUMNS FROM dialogs LIKE 'phone'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE dialogs ADD COLUMN phone VARCHAR(32) NULL AFTER username")
+        for column, definition in (
+            ("first_message_at", "VARCHAR(40) NULL"),
+            ("last_message_at", "VARCHAR(40) NULL"),
+            ("message_count", "BIGINT NOT NULL DEFAULT 0"),
+            ("message_counted_at", "DATETIME(6) NULL"),
+        ):
+            cursor.execute(f"SHOW COLUMNS FROM dialogs LIKE '{column}'")
+            if not cursor.fetchone():
+                cursor.execute(f"ALTER TABLE dialogs ADD COLUMN {column} {definition}")
         cursor.execute("SHOW INDEX FROM messages WHERE Key_name = 'messages_account_dialog_date'")
         if not cursor.fetchone():
             cursor.execute(
                 "CREATE INDEX messages_account_dialog_date ON messages(account_id, dialog_id, date)"
             )
 
-    def save_dialog(self, dialog_id: int, kind: str, name: str, username: str | None) -> None:
+    def save_dialog(
+        self, dialog_id: int, kind: str, name: str, username: str | None, phone: str | None
+    ) -> None:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO dialogs(account_id, dialog_id, kind, name, username, exported_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO dialogs(account_id, dialog_id, kind, name, username, phone, exported_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     kind = VALUES(kind), name = VALUES(name),
-                    username = VALUES(username), exported_at = VALUES(exported_at)
+                    username = VALUES(username), phone = VALUES(phone),
+                    exported_at = VALUES(exported_at)
                 """,
-                (self.account_id, dialog_id, kind, name, username, datetime.now(UTC).replace(tzinfo=None)),
+                (self.account_id, dialog_id, kind, name, username, phone, datetime.now(UTC).replace(tzinfo=None)),
             )
 
     def save_message(self, dialog_id: int, record: dict[str, Any]) -> None:
@@ -269,6 +334,34 @@ class MysqlExportStore:
                     int(record["post"]),
                     record["grouped_id"],
                     json.dumps(record, ensure_ascii=False),
+                ),
+            )
+
+    def refresh_dialog_stats(self, dialog_id: int) -> None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT MIN(date), MAX(date), COUNT(*)
+                FROM messages
+                WHERE account_id = %s AND dialog_id = %s
+                """,
+                (self.account_id, dialog_id),
+            )
+            first, last, count = cursor.fetchone()
+            cursor.execute(
+                """
+                UPDATE dialogs
+                SET first_message_at = %s, last_message_at = %s,
+                    message_count = %s, message_counted_at = %s
+                WHERE account_id = %s AND dialog_id = %s
+                """,
+                (
+                    first,
+                    last,
+                    count,
+                    datetime.now(UTC).replace(tzinfo=None),
+                    self.account_id,
+                    dialog_id,
                 ),
             )
 
@@ -311,7 +404,8 @@ async def export_history(account_id: str, limit: int | None, since: datetime | N
             kind = dialog_kind(entity)
             name = utils.get_display_name(entity) or str(dialog.id)
             username = getattr(entity, "username", None)
-            store.save_dialog(dialog.id, kind, name, username)
+            phone = getattr(entity, "phone", None)
+            store.save_dialog(dialog.id, kind, name, username, phone)
             dialogs += 1
             dialog_messages = 0
 
@@ -323,6 +417,7 @@ async def export_history(account_id: str, limit: int | None, since: datetime | N
                 messages += 1
                 if dialog_messages % 100 == 0:
                     store.commit()
+            store.refresh_dialog_stats(dialog.id)
             store.commit()
             logger.info("Exported %s messages from %s (%s)", dialog_messages, name, kind)
     finally:
