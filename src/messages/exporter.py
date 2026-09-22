@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +18,9 @@ from telethon.tl import types
 from .config import Settings
 
 
-def load_dotenv(path: Path = Path(".env")) -> None:
+def load_dotenv(account: str, path: Path = Path(".env")) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", account):
+        raise ValueError("account must contain only letters, numbers, dots, hyphens, or underscores")
     paths = [path, Path("/home/admin/messages-runtime/messages.env")]
     for env_path in paths:
         if not env_path.exists():
@@ -28,6 +31,14 @@ def load_dotenv(path: Path = Path(".env")) -> None:
                 continue
             key, value = line.split("=", 1)
             os.environ.setdefault(key.strip(), value.strip())
+    account_path = Path("/home/admin/messages-runtime/accounts") / f"{account}.env"
+    if account_path.exists():
+        for line in account_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ[key.strip()] = value.strip()
 
 
 def parse_date(value: str | None) -> datetime | None:
@@ -63,7 +74,8 @@ def message_record(message: Any) -> dict[str, Any]:
 
 
 class ExportStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, account_id: str) -> None:
+        self.account_id = account_id
         path.parent.mkdir(parents=True, exist_ok=True)
         path.parent.chmod(0o700)
         self.connection = sqlite3.connect(path)
@@ -72,13 +84,16 @@ class ExportStore:
         self.connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS dialogs (
-                dialog_id INTEGER PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                dialog_id INTEGER NOT NULL,
                 kind TEXT NOT NULL,
                 name TEXT NOT NULL,
                 username TEXT,
-                exported_at TEXT NOT NULL
+                exported_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, dialog_id)
             );
             CREATE TABLE IF NOT EXISTS messages (
+                account_id TEXT NOT NULL,
                 dialog_id INTEGER NOT NULL,
                 message_id INTEGER NOT NULL,
                 date TEXT,
@@ -90,10 +105,10 @@ class ExportStore:
                 post INTEGER NOT NULL,
                 grouped_id INTEGER,
                 raw_json TEXT NOT NULL,
-                PRIMARY KEY (dialog_id, message_id)
+                PRIMARY KEY (account_id, dialog_id, message_id)
             );
-            CREATE INDEX IF NOT EXISTS messages_dialog_date
-                ON messages(dialog_id, date);
+            CREATE INDEX IF NOT EXISTS messages_account_dialog_date
+                ON messages(account_id, dialog_id, date);
             """
         )
         self.connection.commit()
@@ -102,26 +117,27 @@ class ExportStore:
     def save_dialog(self, dialog_id: int, kind: str, name: str, username: str | None) -> None:
         self.connection.execute(
             """
-            INSERT INTO dialogs(dialog_id, kind, name, username, exported_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(dialog_id) DO UPDATE SET
+            INSERT INTO dialogs(account_id, dialog_id, kind, name, username, exported_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, dialog_id) DO UPDATE SET
                 kind = excluded.kind,
                 name = excluded.name,
                 username = excluded.username,
                 exported_at = excluded.exported_at
             """,
-            (dialog_id, kind, name, username, datetime.now(UTC).isoformat()),
+            (self.account_id, dialog_id, kind, name, username, datetime.now(UTC).isoformat()),
         )
 
     def save_message(self, dialog_id: int, record: dict[str, Any]) -> None:
         self.connection.execute(
             """
             INSERT OR IGNORE INTO messages(
-                dialog_id, message_id, date, sender_id, text, reply_to_msg_id,
+                account_id, dialog_id, message_id, date, sender_id, text, reply_to_msg_id,
                 media_type, outgoing, post, grouped_id, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                self.account_id,
                 dialog_id,
                 record["message_id"],
                 record["date"],
@@ -144,7 +160,8 @@ class ExportStore:
 
 
 class MysqlExportStore:
-    def __init__(self) -> None:
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
         self.connection = pymysql.connect(
             host=os.getenv("MYSQL_HOST", "127.0.0.1"),
             port=int(os.getenv("MYSQL_PORT", "3306")),
@@ -158,17 +175,20 @@ class MysqlExportStore:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS dialogs (
-                    dialog_id BIGINT PRIMARY KEY,
+                    account_id VARCHAR(128) NOT NULL,
+                    dialog_id BIGINT NOT NULL,
                     kind VARCHAR(32) NOT NULL,
                     name TEXT NOT NULL,
                     username VARCHAR(255),
-                    exported_at DATETIME(6) NOT NULL
+                    exported_at DATETIME(6) NOT NULL,
+                    PRIMARY KEY (account_id, dialog_id)
                 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
                 """
             )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
+                    account_id VARCHAR(128) NOT NULL,
                     dialog_id BIGINT NOT NULL,
                     message_id BIGINT NOT NULL,
                     date VARCHAR(40),
@@ -180,24 +200,41 @@ class MysqlExportStore:
                     post BOOLEAN NOT NULL,
                     grouped_id BIGINT,
                     raw_json LONGTEXT NOT NULL,
-                    PRIMARY KEY (dialog_id, message_id),
-                    INDEX messages_dialog_date (dialog_id, date)
+                    PRIMARY KEY (account_id, dialog_id, message_id),
+                    INDEX messages_account_dialog_date (account_id, dialog_id, date)
                 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
                 """
             )
+            self._migrate_existing_schema(cursor)
         self.connection.commit()
+
+    @staticmethod
+    def _migrate_existing_schema(cursor: Any) -> None:
+        cursor.execute("SHOW COLUMNS FROM dialogs LIKE 'account_id'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE dialogs ADD COLUMN account_id VARCHAR(128) NOT NULL DEFAULT 'default' FIRST")
+            cursor.execute("ALTER TABLE dialogs DROP PRIMARY KEY, ADD PRIMARY KEY (account_id, dialog_id)")
+        cursor.execute("SHOW COLUMNS FROM messages LIKE 'account_id'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE messages ADD COLUMN account_id VARCHAR(128) NOT NULL DEFAULT 'default' FIRST")
+            cursor.execute("ALTER TABLE messages DROP PRIMARY KEY, ADD PRIMARY KEY (account_id, dialog_id, message_id)")
+        cursor.execute("SHOW INDEX FROM messages WHERE Key_name = 'messages_account_dialog_date'")
+        if not cursor.fetchone():
+            cursor.execute(
+                "CREATE INDEX messages_account_dialog_date ON messages(account_id, dialog_id, date)"
+            )
 
     def save_dialog(self, dialog_id: int, kind: str, name: str, username: str | None) -> None:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO dialogs(dialog_id, kind, name, username, exported_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO dialogs(account_id, dialog_id, kind, name, username, exported_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     kind = VALUES(kind), name = VALUES(name),
                     username = VALUES(username), exported_at = VALUES(exported_at)
                 """,
-                (dialog_id, kind, name, username, datetime.now(UTC).replace(tzinfo=None)),
+                (self.account_id, dialog_id, kind, name, username, datetime.now(UTC).replace(tzinfo=None)),
             )
 
     def save_message(self, dialog_id: int, record: dict[str, Any]) -> None:
@@ -205,11 +242,12 @@ class MysqlExportStore:
             cursor.execute(
                 """
                 INSERT IGNORE INTO messages(
-                    dialog_id, message_id, date, sender_id, text, reply_to_msg_id,
+                    account_id, dialog_id, message_id, date, sender_id, text, reply_to_msg_id,
                     media_type, outgoing, post, grouped_id, raw_json
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
+                    self.account_id,
                     dialog_id,
                     record["message_id"],
                     record["date"],
@@ -231,16 +269,20 @@ class MysqlExportStore:
         self.connection.close()
 
 
-async def export_history(limit: int | None, since: datetime | None) -> None:
+async def export_history(account_id: str, limit: int | None, since: datetime | None) -> None:
+    os.environ.setdefault(
+        "TELEGRAM_SESSION_PATH",
+        f"/home/admin/messages-runtime/accounts/{account_id}/telegram",
+    )
     settings = Settings.from_environment()
     backend = os.getenv("STORAGE_BACKEND", "mysql").lower()
     if backend == "mysql":
-        store = MysqlExportStore()
+        store = MysqlExportStore(account_id)
     elif backend == "sqlite":
         export_path = Path(os.getenv("TELEGRAM_EXPORT_PATH", "/home/admin/messages-data"))
         export_path.mkdir(parents=True, exist_ok=True)
         export_path.chmod(0o700)
-        store = ExportStore(export_path / "telegram.sqlite3")
+        store = ExportStore(export_path / "telegram.sqlite3", account_id)
     else:
         raise ValueError("STORAGE_BACKEND must be mysql or sqlite")
     client = TelegramClient(str(settings.session_path), settings.api_id, settings.api_hash)
@@ -273,18 +315,19 @@ async def export_history(limit: int | None, since: datetime | None) -> None:
         store.close()
         await client.disconnect()
 
-    logger.info("Export complete: %s dialogs, %s messages, backend=%s", dialogs, messages, backend)
+    logger.info("Export complete: account=%s, %s dialogs, %s messages, backend=%s", account_id, dialogs, messages, backend)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Export Telegram history to protected SQLite storage")
+    parser = argparse.ArgumentParser(description="Export Telegram history to protected account-separated storage")
+    parser.add_argument("--account", required=True, help="stable account name, e.g. personal or work")
     parser.add_argument("--limit", type=int, help="maximum messages per dialog; useful for a test run")
     parser.add_argument("--since", help="only export messages on or after ISO date, e.g. 2026-01-01")
     return parser
 
 
 def main() -> None:
-    load_dotenv()
     args = build_parser().parse_args()
+    load_dotenv(args.account)
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
-    asyncio.run(export_history(args.limit, parse_date(args.since)))
+    asyncio.run(export_history(args.account, args.limit, parse_date(args.since)))
