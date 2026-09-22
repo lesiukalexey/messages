@@ -13,7 +13,7 @@ dependencies = [
 
 [project.scripts]
 messages = "messages.app:main"
+messages-export = "messages.exporter:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
