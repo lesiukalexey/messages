@@ -532,6 +532,16 @@ async def run() -> None:
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
         peer_id = event.chat_id
+        if event.is_private:
+            try:
+                await client.send_read_acknowledge(
+                    await event.get_input_chat(), max_id=event.message.id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not mark incoming private message as read (%s)",
+                    type(exc).__name__,
+                )
         if not event.is_private or not event.raw_text.strip():
             return
         sender = await event.get_sender()
