@@ -680,7 +680,7 @@ async def run() -> None:
                     ),
                 )
                 letter_count = sum(character.isalpha() for character in reply)
-                delay_seconds = max(1.0, letter_count / 20.0)
+                delay_seconds = max(1.0, letter_count / 10.0)
                 if random.random() < 0.3:
                     delay_seconds += random.uniform(1.0, 10.0)
                 await asyncio.sleep(delay_seconds)
