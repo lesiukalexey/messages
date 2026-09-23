@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -658,6 +659,7 @@ async def run() -> None:
                         ensure_ascii=False,
                     ),
                 )
+                await asyncio.sleep(random.uniform(4.0, 8.0))
                 if not await gate.refresh(force=True):
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "assistant switched off before send")
