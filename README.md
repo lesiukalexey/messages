@@ -63,11 +63,14 @@ If Calendar is not authorized, a check fails, or the requested time is busy,
 the worker will not confirm that meeting time. Recent context is fetched
 directly from Telegram so dates such as “today” carry across turns.
 
-1. In Google Cloud Console, enable Calendar API and create an OAuth client of
-   type Desktop app.
-2. Copy its downloaded JSON to
+1. Reuse the existing Desktop OAuth client at
+   `/home/alex/.ai/home/.local/mail/oauth-client.json`, or create a Desktop app
+   client in Google Cloud Console with Calendar API enabled.
+2. Copy the client JSON to
    `/home/admin/messages-runtime/google-calendar/client_secret.json` and set
-   permissions to `600`.
+   permissions to `600`. The existing home-workspace tokens are read-only and
+   need fresh consent for the assistant's scopes; do not copy them as the bot's
+   Calendar token.
 3. Start an SSH port forward from your workstation:
    `ssh -L 8765:localhost:8765 admin@192.168.31.46`
 4. In another SSH session, run `messages-calendar-auth`. Open the printed link
