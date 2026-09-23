@@ -59,6 +59,9 @@ private event only when the conversation clearly confirms a meeting; event
 creation is idempotent per incoming Telegram message. It does not invite
 attendees or disclose other event details. Default duration is 60 minutes for
 friends and 30 minutes for recruiters when none was specified.
+If Calendar is not authorized, a check fails, or the requested time is busy,
+the worker will not confirm that meeting time. Recent context is fetched
+directly from Telegram so dates such as “today” carry across turns.
 
 1. In Google Cloud Console, enable Calendar API and create an OAuth client of
    type Desktop app.
@@ -72,8 +75,10 @@ friends and 30 minutes for recruiters when none was specified.
    with permissions `600`.
 
 The OAuth request uses the free/busy and owned-event scopes. The provider token
-is not required for Telegram replies; until connected, any time-dependent reply
-will say that availability could not be checked.
+is not required for ordinary Telegram replies; meeting times cannot be confirmed
+until Calendar is connected and a free/busy check succeeds.
+Read-only Calendar tokens used by other local tools do not provide these scopes;
+they cannot authorize free/busy checks or event creation for this assistant.
 
 ## Runtime configuration
 

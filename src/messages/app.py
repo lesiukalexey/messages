@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,16 @@ from .store import Store
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
 DEFAULT_STYLE = "Write like a concise, practical, informal Telegram conversation."
+MEETING_SIGNAL = re.compile(
+    r"(встреч|встрет|пересеч|увид|выйд|заед|прид|кофе|обед|ужин|созвон|звон|"
+    r"meet|catch up|coffee|lunch|dinner|interview)",
+    re.IGNORECASE,
+)
+EXPLICIT_CLOCK = re.compile(
+    r"(?:\b(?:[01]?\d|2[0-3])[:.][0-5]\d\b|"
+    r"\b(?:в|к|на|около)\s*(?:[01]?\d|2[0-3])(?:[-–][0-5]\d)?\b)",
+    re.IGNORECASE,
+)
 
 
 def style_profile() -> str:
@@ -139,6 +150,66 @@ class History:
 
     def close(self) -> None:
         self.connection.close()
+
+
+async def live_chat_history(
+    client: TelegramClient, event: events.NewMessage.Event, limit: int = 24
+) -> list[dict[str, str]]:
+    messages = await client.get_messages(await event.get_input_chat(), limit=limit)
+    ordered = list(reversed(messages))
+    result: list[dict[str, str]] = []
+    for message in ordered:
+        if message.id == event.message.id:
+            continue
+        text = (message.message or "").strip()
+        if not text:
+            continue
+        result.append(
+            {
+                "role": "assistant" if message.out else "contact",
+                "text": text[:4000],
+                "time": message.date.isoformat() if message.date else "",
+            }
+        )
+    return result[-23:]
+
+
+def meeting_context_present(history: list[dict[str, str]], current_message: str) -> bool:
+    text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
+    return bool(MEETING_SIGNAL.search(text))
+
+
+def explicit_time_present(history: list[dict[str, str]], current_message: str) -> bool:
+    text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
+    return bool(EXPLICIT_CLOCK.search(text))
+
+
+def safe_calendar_reply(
+    history: list[dict[str, str]], current_message: str, state: str
+) -> str:
+    text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
+    if re.search(r"[іїєґІЇЄҐ]", text):
+        messages = {
+            "busy": "У цей час я зайнятий. Давай оберемо інший час.",
+            "unknown": "Не вдалося перевірити календар, тому поки не можу підтвердити цей час.",
+            "unauthorized": "Поки не можу підтвердити цей час: Google Calendar не підключений.",
+            "unclear": "Уточни, будь ласка, точний день і час — я спочатку перевірю календар.",
+        }
+    elif re.search(r"[А-Яа-яЁё]", text):
+        messages = {
+            "busy": "В это время я занят. Давай выберем другое время.",
+            "unknown": "Не удалось проверить календарь, поэтому пока не могу подтвердить это время.",
+            "unauthorized": "Пока не могу подтвердить это время: Google Calendar не подключён.",
+            "unclear": "Уточни, пожалуйста, точный день и время — я сначала проверю календарь.",
+        }
+    else:
+        messages = {
+            "busy": "I'm busy then. Let's find another time.",
+            "unknown": "I couldn't check my calendar, so I can't confirm that time yet.",
+            "unauthorized": "I can't confirm that time yet because Google Calendar isn't connected.",
+            "unclear": "Could you clarify the exact date and time? I'll check my calendar first.",
+        }
+    return messages[state]
 
 
 def _format_contact(row: Any) -> str:
@@ -315,7 +386,14 @@ async def run() -> None:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
                     return
-                context = history.latest(settings.account_id, peer_id)
+                try:
+                    context = await live_chat_history(client, event)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not load recent Telegram context; using exported history (%s)",
+                        type(exc).__name__,
+                    )
+                    context = history.latest(settings.account_id, peer_id)
                 opening = history.opening(settings.account_id, peer_id)
                 now = datetime.now(ZoneInfo(settings.timezone))
                 model = store.setting("model", settings.default_model)
@@ -361,15 +439,38 @@ async def run() -> None:
                             auto_detect_category=False,
                         )
                 plan.pop("detected_category", None)
+                start = plan.get("start")
                 action = plan.get("calendar_action", "none")
+                meeting_in_progress = bool(plan.get("meeting_in_progress")) or meeting_context_present(
+                    context, event.raw_text
+                )
+                assistant_accepts = bool(plan.get("assistant_accepts_meeting"))
+                if start and (
+                    meeting_in_progress
+                    or action in ("check", "create")
+                    or plan.get("confirmed_agreement")
+                    or assistant_accepts
+                ):
+                    action = (
+                        "create"
+                        if plan.get("confirmed_agreement") or assistant_accepts
+                        else "check"
+                    )
                 calendar_result = "No calendar action is needed."
+                calendar_reply: str | None = None
+                if meeting_in_progress and explicit_time_present(context, event.raw_text) and not start:
+                    calendar_reply = safe_calendar_reply(context, event.raw_text, "unclear")
+                    calendar_result = "The proposed time could not be resolved; no availability was confirmed."
+                    store.audit(peer_id, "calendar_availability_unknown", "could not resolve requested time")
                 if action in ("check", "create"):
-                    start = plan.get("start")
                     duration = int(plan.get("duration_minutes") or 0)
                     if not start or duration <= 0:
-                        calendar_result = "The requested time is unclear; ask a follow-up."
+                        calendar_reply = safe_calendar_reply(context, event.raw_text, "unclear")
+                        calendar_result = "The requested time is unclear; availability is unknown."
                     elif not calendar.configured:
-                        calendar_result = "Calendar is not authorized; availability is unknown."
+                        calendar_reply = safe_calendar_reply(context, event.raw_text, "unauthorized")
+                        calendar_result = "Calendar authorization is missing; availability is unknown."
+                        store.audit(peer_id, "calendar_availability_failed", "authorization missing")
                     else:
                         try:
                             is_free, interval = await asyncio.to_thread(
@@ -380,6 +481,7 @@ async def run() -> None:
                                 "Calendar availability check failed: %s", type(exc).__name__
                             )
                             calendar_result = "Availability is unknown; do not claim the time is free."
+                            calendar_reply = safe_calendar_reply(context, event.raw_text, "unknown")
                             store.audit(
                                 peer_id,
                                 "calendar_availability_failed",
@@ -390,8 +492,9 @@ async def run() -> None:
                             pass
                         elif not is_free:
                             calendar_result = "BUSY; no event was created."
+                            calendar_reply = safe_calendar_reply(context, event.raw_text, "busy")
                             store.audit(peer_id, "calendar_availability_checked", "busy")
-                        elif action == "create" and plan.get("confirmed_agreement"):
+                        elif action == "create":
                             if not await gate.refresh(force=True):
                                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                                 store.audit(peer_id, "skipped", "assistant switched off before calendar write")
@@ -420,7 +523,9 @@ async def run() -> None:
                         else:
                             calendar_result = f"FREE at {interval}; no event created yet."
                             store.audit(peer_id, "calendar_availability_checked", "free")
-                if action in ("check", "create"):
+                if calendar_reply is not None:
+                    reply = calendar_reply
+                elif action in ("check", "create"):
                     reply = await responder.compose_with_calendar_result(
                         model=model,
                         category=category,
