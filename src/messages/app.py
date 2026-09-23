@@ -553,7 +553,7 @@ async def run() -> None:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
                     return
-                if not await manual_folder.refresh():
+                if not await manual_folder.refresh(force=True):
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "Telegram Manual folder state is unavailable")
                     return
@@ -814,6 +814,14 @@ async def run() -> None:
                 if not await gate.refresh(force=True):
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "assistant switched off before send")
+                    return
+                if not await manual_folder.refresh(force=True):
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(peer_id, "skipped", "Telegram Manual folder state unavailable before send")
+                    return
+                if manual_folder.contains(peer_id):
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(peer_id, "skipped", "contact moved to Telegram Manual folder before send")
                     return
                 sent = await event.respond(reply)
                 store.message_state(settings.account_id, peer_id, event.message.id, "sent")
