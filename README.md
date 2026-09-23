@@ -34,11 +34,12 @@ Send commands to **Saved Messages** from the same account running the assistant:
 ```
 
 The selected model is stored in the protected assistant database. The choices
-come from `OPENAI_MODELS`; add another API model ID there, restart the worker,
-and it appears in `/model`. The default is `gpt-5-mini`. OpenAI receives the
-incoming message and up to 23 recent messages from that same chat to produce the
-reply. Do not enable this integration until an API key is configured and this
-data flow is acceptable.
+come from `CODEX_MODELS`; add another model ID supported by the installed Codex
+CLI, restart the worker, and it appears in `/model`. The default is
+`gpt-5.6-luna`. The worker starts `codex exec` using the existing Codex CLI
+login for the `admin` account, as Job Apply does. Codex receives the incoming
+message and up to 23 recent messages from that same chat to produce the reply.
+No OpenAI API key is needed.
 
 Contacts start uncategorized and are not answered. Assign each chat explicitly
 to `friends` or `recruiters` with its Telegram username. The categories are
@@ -78,9 +79,10 @@ account settings selected by `TELEGRAM_ACCOUNT_ID` (default `personal`). Set
 these variables in protected runtime storage, never in Git:
 
 ```dotenv
-OPENAI_API_KEY=...
-OPENAI_MODELS=gpt-5-mini,gpt-5.1,gpt-4.1-mini
-OPENAI_MODEL=gpt-5-mini
+CODEX_BINARY=/home/admin/.codex/packages/standalone/current/bin/codex
+CODEX_HOME=/home/admin/.codex
+CODEX_MODELS=gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol
+CODEX_MODEL=gpt-5.6-luna
 ```
 
 Copy the derived style profile to

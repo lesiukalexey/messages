@@ -10,7 +10,8 @@ class Settings:
     account_id: str
     session_path: Path
     database_path: Path
-    openai_api_key: str
+    codex_binary: Path
+    codex_home: Path
     model_options: tuple[str, ...]
     default_model: str
     timezone: str
@@ -31,13 +32,13 @@ class Settings:
         options = tuple(
             model.strip()
             for model in os.getenv(
-                "OPENAI_MODELS", "gpt-5-mini,gpt-5.1,gpt-4.1-mini"
+                "CODEX_MODELS", "gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"
             ).split(",")
             if model.strip()
         )
         if not options:
-            raise ValueError("OPENAI_MODELS must contain at least one model")
-        default_model = os.getenv("OPENAI_MODEL", options[0]).strip()
+            raise ValueError("CODEX_MODELS must contain at least one model")
+        default_model = os.getenv("CODEX_MODEL", options[0]).strip()
         if default_model not in options:
             options = (default_model, *options)
 
@@ -56,7 +57,13 @@ class Settings:
                     "DATABASE_PATH", "/home/admin/messages-runtime/assistant.sqlite3"
                 )
             ),
-            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+            codex_binary=Path(
+                os.getenv(
+                    "CODEX_BINARY",
+                    "/home/admin/.codex/packages/standalone/current/bin/codex",
+                )
+            ),
+            codex_home=Path(os.getenv("CODEX_HOME", "/home/admin/.codex")),
             model_options=options,
             default_model=default_model,
             timezone=os.getenv("TIME_ZONE", "Europe/Kyiv").strip(),

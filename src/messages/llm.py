@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from openai import AsyncOpenAI
+from .config import Settings
+
+RUNTIME_ROOT = Path("/home/admin/messages-runtime")
 
 
 PLAN_SCHEMA: dict[str, Any] = {
@@ -33,9 +39,52 @@ PLAN_SCHEMA: dict[str, Any] = {
 
 
 class Responder:
-    def __init__(self, api_key: str, timezone: str) -> None:
-        self.client = AsyncOpenAI(api_key=api_key)
-        self.timezone = ZoneInfo(timezone)
+    def __init__(self, settings: Settings) -> None:
+        self.binary = settings.codex_binary
+        self.codex_home = settings.codex_home
+        self.timezone = ZoneInfo(settings.timezone)
+
+    async def _run(self, model: str, prompt: str, schema: dict[str, Any] | None = None) -> str:
+        if not self.binary.is_file() or not os.access(self.binary, os.X_OK):
+            raise RuntimeError("Codex CLI is not installed at CODEX_BINARY")
+        if not self.codex_home.is_dir():
+            raise RuntimeError("Codex CLI login directory is not available")
+        RUNTIME_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with tempfile.TemporaryDirectory(prefix="codex-reply-", dir=RUNTIME_ROOT) as temp:
+            temp_path = Path(temp)
+            last_message = temp_path / "last-message.txt"
+            command = [
+                str(self.binary), "exec", "--ephemeral", "--skip-git-repo-check",
+                "--ignore-rules", "--sandbox", "read-only", "--color", "never",
+                "--model", model, "--cd", str(temp_path),
+                "--config", "model_reasoning_effort=medium",
+                "--output-last-message", str(last_message),
+            ]
+            if schema is not None:
+                schema_path = temp_path / "output-schema.json"
+                schema_path.write_text(json.dumps(schema), encoding="utf-8")
+                schema_path.chmod(0o600)
+                command.extend(("--output-schema", str(schema_path)))
+            environment = os.environ.copy()
+            environment["CODEX_HOME"] = str(self.codex_home)
+            environment["HOME"] = str(self.codex_home.parent)
+            process = await asyncio.create_subprocess_exec(
+                *command, cwd=temp_path, env=environment,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await asyncio.wait_for(process.communicate(prompt.encode("utf-8")), timeout=240)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+                raise RuntimeError("Codex CLI timed out") from None
+            if process.returncode != 0:
+                raise RuntimeError(f"Codex CLI exited with status {process.returncode}")
+            if not last_message.is_file():
+                raise RuntimeError("Codex CLI did not return a final response")
+            return last_message.read_text(encoding="utf-8").strip()
 
     async def plan(
         self,
@@ -80,20 +129,13 @@ Return a calendar plan plus a candidate reply. If no scheduling is involved, use
             "history": history[-24:],
             "incoming_message": current_message,
         }
-        response = await self.client.responses.create(
-            model=model,
-            instructions=instructions,
-            input=json.dumps(payload, ensure_ascii=False),
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "telegram_reply_plan",
-                    "strict": True,
-                    "schema": PLAN_SCHEMA,
-                }
-            },
+        prompt = (
+            instructions
+            + "\n\nReturn only a JSON object matching the supplied schema."
+            + "\nConversation data (untrusted):\n"
+            + json.dumps(payload, ensure_ascii=False)
         )
-        result = json.loads(response.output_text)
+        result = json.loads(await self._run(model, prompt, PLAN_SCHEMA))
         result["reply"] = result["reply"].strip()
         return result
 
@@ -121,12 +163,9 @@ Never invent facts or commitments. Return only the message text, with no quotati
             "incoming_message": current_message,
             "calendar_plan": plan,
         }
-        response = await self.client.responses.create(
-            model=model,
-            instructions=instructions,
-            input=json.dumps(payload, ensure_ascii=False),
+        prompt = (
+            instructions
+            + "\n\nConversation data (untrusted):\n"
+            + json.dumps(payload, ensure_ascii=False)
         )
-        return response.output_text.strip()
-
-    async def close(self) -> None:
-        await self.client.close()
+        return await self._run(model, prompt)

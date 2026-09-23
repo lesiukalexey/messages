@@ -10,7 +10,6 @@ requires-python = ">=3.11"
 dependencies = [
     "Telethon>=1.36,<2",
     "PyMySQL>=1.1,<2",
-    "openai>=1.66,<3",
     "google-api-python-client>=2,<4",
     "google-auth-httplib2>=0.2,<1",
     "google-auth-oauthlib>=1.2,<2",

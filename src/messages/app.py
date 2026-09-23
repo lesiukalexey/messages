@@ -143,9 +143,9 @@ async def run() -> None:
     store.initialize()
     history = History()
     calendar = GoogleCalendar(settings.google_token_file, settings.timezone)
-    responder = Responder(settings.openai_api_key, settings.timezone) if settings.openai_api_key else None
-    if responder is None:
-        logger.warning("OPENAI_API_KEY is not configured; replies will be skipped")
+    responder = Responder(settings)
+    if not settings.codex_binary.is_file():
+        logger.warning("Codex CLI is not installed at CODEX_BINARY; replies will fail until installed")
     client = TelegramClient(str(settings.session_path), settings.api_id, settings.api_hash)
     await client.start()
     me = await client.get_me()
@@ -283,9 +283,6 @@ async def run() -> None:
         category = store.contact_category(peer_id)
         if category not in ("friends", "recruiters"):
             store.audit(peer_id, "skipped", "contact is not categorized")
-            return
-        if responder is None:
-            store.audit(peer_id, "failed", "OPENAI_API_KEY is not configured")
             return
         if not store.claim_message(settings.account_id, peer_id, event.message.id):
             return
