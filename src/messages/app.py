@@ -50,6 +50,34 @@ def style_profile() -> str:
     return "\n\n".join(profiles)[:12000] or DEFAULT_STYLE
 
 
+TYPO_WORD = re.compile(r"(?<![\w@./:-])[^\W\d_]{3,}(?![\w./:-])", re.UNICODE)
+CYRILLIC_ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюяіїєґ"
+
+
+def occasionally_introduce_typo(text: str) -> str:
+    """Add a natural-sized typo to about one eligible word in every hundred."""
+    result = text
+    for match in reversed(list(TYPO_WORD.finditer(text))):
+        word = match.group()
+        if random.random() >= 0.01:
+            continue
+        positions = [index for index, character in enumerate(word) if character.isalpha()]
+        if len(positions) < 3:
+            continue
+        position = random.choice(positions)
+        if random.random() < 0.5:
+            changed = word[:position] + word[position + 1:]
+        else:
+            character = word[position]
+            alphabet = "abcdefghijklmnopqrstuvwxyz" if character.isascii() else CYRILLIC_ALPHABET
+            choices = [letter.upper() if character.isupper() else letter for letter in alphabet]
+            choices = [letter for letter in choices if letter.casefold() != character.casefold()]
+            replacement = random.choice(choices)
+            changed = word[:position] + replacement + word[position + 1:]
+        result = result[:match.start()] + changed + result[match.end():]
+    return result
+
+
 class BioGate:
     def __init__(self, client: TelegramClient, me_id: int) -> None:
         self.client = client
@@ -758,7 +786,7 @@ async def run() -> None:
                     )
                 else:
                     reply = plan["reply"]
-                reply = reply.strip()
+                reply = occasionally_introduce_typo(reply.strip())
                 if not reply:
                     raise RuntimeError("model returned an empty reply")
                 store.audit(
