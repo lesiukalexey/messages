@@ -260,34 +260,6 @@ def safe_availability_reply(
     return "I couldn't check my calendar availability. Could we try again later?"
 
 
-def safe_calendar_reply(
-    history: list[dict[str, str]], current_message: str, state: str
-) -> str:
-    text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
-    if re.search(r"[іїєґІЇЄҐ]", text):
-        messages = {
-            "busy": "У цей час я зайнятий. Давай оберемо інший час.",
-            "unknown": "Не вдалося перевірити календар, тому поки не можу підтвердити цей час.",
-            "unauthorized": "Поки не можу підтвердити цей час: Google Calendar не підключений.",
-            "unclear": "Уточни, будь ласка, точний день і час — я спочатку перевірю календар.",
-        }
-    elif re.search(r"[А-Яа-яЁё]", text):
-        messages = {
-            "busy": "В это время я занят. Давай выберем другое время.",
-            "unknown": "Не удалось проверить календарь, поэтому пока не могу подтвердить это время.",
-            "unauthorized": "Пока не могу подтвердить это время: Google Calendar не подключён.",
-            "unclear": "Уточни, пожалуйста, точный день и время — я сначала проверю календарь.",
-        }
-    else:
-        messages = {
-            "busy": "I'm busy then. Let's find another time.",
-            "unknown": "I couldn't check my calendar, so I can't confirm that time yet.",
-            "unauthorized": "I can't confirm that time yet because Google Calendar isn't connected.",
-            "unclear": "Could you clarify the exact date and time? I'll check my calendar first.",
-        }
-    return messages[state]
-
-
 def _format_contact(row: Any) -> str:
     name = row["display_name"] or row["username"] or str(row["peer_id"])
     suffix = f" (@{row['username']})" if row["username"] else ""
@@ -533,7 +505,6 @@ async def run() -> None:
                         else "check"
                     )
                 calendar_result = "No calendar action is needed."
-                calendar_reply: str | None = None
                 availability_reply: str | None = None
                 target_day = (
                     established_availability_date(context, event.raw_text, now)
@@ -578,18 +549,30 @@ async def run() -> None:
                                 "calendar_availability_failed",
                                 type(exc).__name__,
                             )
-                if meeting_in_progress and explicit_time_present(context, event.raw_text) and not start:
-                    calendar_reply = safe_calendar_reply(context, event.raw_text, "unclear")
-                    calendar_result = "The proposed time could not be resolved; no availability was confirmed."
+                if (
+                    target_day is None
+                    and meeting_in_progress
+                    and explicit_time_present(context, event.raw_text)
+                    and not start
+                ):
+                    action = "check"
+                    calendar_result = (
+                        "TIME_UNRESOLVED; no availability was checked and no time was confirmed. "
+                        "Ask only for the missing date or time based on the recent conversation."
+                    )
                     store.audit(peer_id, "calendar_availability_unknown", "could not resolve requested time")
                 if action in ("check", "create"):
                     duration = int(plan.get("duration_minutes") or 0)
                     if not start or duration <= 0:
-                        calendar_reply = safe_calendar_reply(context, event.raw_text, "unclear")
-                        calendar_result = "The requested time is unclear; availability is unknown."
+                        calendar_result = (
+                            "TIME_UNRESOLVED; availability is unknown and no time was confirmed. "
+                            "Ask only for the missing date or time based on recent context."
+                        )
                     elif not calendar.configured:
-                        calendar_reply = safe_calendar_reply(context, event.raw_text, "unauthorized")
-                        calendar_result = "Calendar authorization is missing; availability is unknown."
+                        calendar_result = (
+                            "CALENDAR_UNAVAILABLE; availability could not be checked, so do not "
+                            "confirm the proposed time."
+                        )
                         store.audit(peer_id, "calendar_availability_failed", "authorization missing")
                     else:
                         try:
@@ -600,19 +583,20 @@ async def run() -> None:
                             logger.warning(
                                 "Calendar availability check failed: %s", type(exc).__name__
                             )
-                            calendar_result = "Availability is unknown; do not claim the time is free."
-                            calendar_reply = safe_calendar_reply(context, event.raw_text, "unknown")
+                            calendar_result = (
+                                "AVAILABILITY_UNKNOWN; do not claim the proposed time is free "
+                                "or confirmed."
+                            )
                             store.audit(
                                 peer_id,
                                 "calendar_availability_failed",
                                 type(exc).__name__,
                             )
                             is_free, interval = False, ""
-                        if calendar_result.startswith("Availability is unknown"):
+                        if calendar_result.startswith("AVAILABILITY_UNKNOWN"):
                             pass
                         elif not is_free:
-                            calendar_result = "BUSY; no event was created."
-                            calendar_reply = safe_calendar_reply(context, event.raw_text, "busy")
+                            calendar_result = "BUSY; the proposed time is unavailable and no event was created."
                             store.audit(peer_id, "calendar_availability_checked", "busy")
                         elif action == "create":
                             if not await gate.refresh(force=True):
@@ -645,8 +629,6 @@ async def run() -> None:
                             store.audit(peer_id, "calendar_availability_checked", "free")
                 if availability_reply is not None:
                     reply = availability_reply
-                elif calendar_reply is not None:
-                    reply = calendar_reply
                 elif action in ("check", "create"):
                     reply = await responder.compose_with_calendar_result(
                         model=model,
@@ -656,6 +638,7 @@ async def run() -> None:
                         plan=plan,
                         calendar_result=calendar_result,
                         now=now,
+                        style_profile=style_profile(),
                     )
                 else:
                     reply = plan["reply"]
