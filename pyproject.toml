@@ -5,16 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "messages"
 version = "0.1.0"
-description = "Draft-first personal Telegram assistant"
+description = "Personal Telegram assistant with autonomous replies and calendar scheduling"
 requires-python = ">=3.11"
 dependencies = [
     "Telethon>=1.36,<2",
     "PyMySQL>=1.1,<2",
+    "openai>=1.66,<3",
+    "google-api-python-client>=2,<4",
+    "google-auth-httplib2>=0.2,<1",
+    "google-auth-oauthlib>=1.2,<2",
 ]
 
 [project.scripts]
 messages = "messages.app:main"
 messages-export = "messages.exporter:main"
+messages-calendar-auth = "messages.calendar:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
