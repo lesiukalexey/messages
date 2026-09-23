@@ -488,6 +488,14 @@ async def run() -> None:
                             auto_detect_category=False,
                         )
                 plan.pop("detected_category", None)
+                if category == "recruiters" and not plan.get("should_reply", True):
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(
+                        peer_id,
+                        "skipped",
+                        "recruiter message contains only unknown questions",
+                    )
+                    return
                 start = plan.get("start")
                 action = plan.get("calendar_action", "none")
                 meeting_in_progress = bool(plan.get("meeting_in_progress")) or meeting_context_present(
