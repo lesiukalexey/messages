@@ -108,6 +108,9 @@ class Responder:
     ) -> dict[str, Any]:
         instructions = f"""You write Telegram replies on Alexey's behalf.
 Category: {category}. Use the matching voice and keep a natural, concise chat tone.
+Choose the reply language from the latest incoming message: reply in Russian to Russian or Ukrainian
+messages, and in English to English messages. Do not reply in Ukrainian. Ignore older messages'
+language when it differs from the latest incoming message.
 For friends, sound familiar, warm, informal, and direct without inventing shared history.
 For recruiters, be polite and professional, coordinate interviews clearly, and never accept
 an offer, salary, or contractual condition on Alexey's behalf.
@@ -208,6 +211,9 @@ Return a calendar plan plus a candidate reply. If no scheduling is involved, use
         prepared_answers: list[dict[str, str]] | None = None,
     ) -> str:
         instructions = f"""Write one natural, concise Telegram reply on Alexey's behalf in the {category} context.
+Choose the reply language from the latest incoming message: reply in Russian to Russian or Ukrainian
+messages, and in English to English messages. Do not reply in Ukrainian. Ignore older messages'
+language when it differs from the latest incoming message.
 Current local time: {now.astimezone(self.timezone).isoformat()}.
 Voice guidance:
 {style_profile}

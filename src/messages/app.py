@@ -212,23 +212,15 @@ def established_availability_date(
 
 
 def safe_availability_reply(
-    history: list[dict[str, str]],
     current_message: str,
     slots: list[str] | None,
     day: date,
     today: date,
 ) -> str:
-    text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
-    ukrainian = bool(re.search(r"[іїєґІЇЄҐ]", text))
-    russian = bool(re.search(r"[А-Яа-яЁё]", text)) and not ukrainian
+    russian = bool(re.search(r"[А-Яа-яЁёІЇЄҐіїєґ]", current_message))
     if russian:
         date_label = (
             "сегодня" if day == today else "завтра"
-            if day == today + timedelta(days=1) else day.strftime("%d.%m")
-        )
-    elif ukrainian:
-        date_label = (
-            "сьогодні" if day == today else "завтра"
             if day == today + timedelta(days=1) else day.strftime("%d.%m")
         )
     else:
@@ -238,10 +230,6 @@ def safe_availability_reply(
         )
     if slots:
         times = [datetime.fromisoformat(value).strftime("%H:%M") for value in slots]
-        if ukrainian:
-            if len(times) > 1:
-                return f"{date_label.capitalize()} можу о {', '.join(times[:-1])} або {times[-1]}. Який час тобі підходить?"
-            return f"{date_label.capitalize()} можу о {times[0]}. Тобі підходить?"
         if russian:
             if len(times) > 1:
                 return f"{date_label.capitalize()} могу в {', '.join(times[:-1])} или {times[-1]}. Какой вариант тебе подходит?"
@@ -250,13 +238,9 @@ def safe_availability_reply(
             return f"I'm free {date_label} at {', '.join(times[:-1])} or {times[-1]}. Which works for you?"
         return f"I'm free {date_label} at {times[0]}. Does that work for you?"
     if slots == []:
-        if ukrainian:
-            return f"{date_label.capitalize()} більше не маю вільного часу для зустрічі. Давай подивимось інший день?"
         if russian:
             return f"{date_label.capitalize()} больше нет свободного времени для встречи. Давай посмотрим другой день?"
         return f"I don't have another open time for a meeting {date_label}. Shall we look at another day?"
-    if ukrainian:
-        return "Не вдалося перевірити вільний час у календарі. Давай спробуємо пізніше?"
     if russian:
         return "Не удалось проверить свободное время в календаре. Давай попробуем позже?"
     return "I couldn't check my calendar availability. Could we try again later?"
@@ -538,7 +522,7 @@ async def run() -> None:
                     )
                     if not calendar.configured:
                         availability_reply = safe_availability_reply(
-                            context, event.raw_text, None, target_day, now.date()
+                            event.raw_text, None, target_day, now.date()
                         )
                         store.audit(peer_id, "calendar_availability_failed", "authorization missing")
                     else:
@@ -550,7 +534,7 @@ async def run() -> None:
                                 now,
                             )
                             availability_reply = safe_availability_reply(
-                                context, event.raw_text, slots, target_day, now.date()
+                                event.raw_text, slots, target_day, now.date()
                             )
                             store.audit(
                                 peer_id,
@@ -562,7 +546,7 @@ async def run() -> None:
                                 "Calendar slot search failed: %s", type(exc).__name__
                             )
                             availability_reply = safe_availability_reply(
-                                context, event.raw_text, None, target_day, now.date()
+                                event.raw_text, None, target_day, now.date()
                             )
                             store.audit(
                                 peer_id,
