@@ -679,7 +679,11 @@ async def run() -> None:
                         ensure_ascii=False,
                     ),
                 )
-                await asyncio.sleep(random.uniform(4.0, 8.0))
+                letter_count = sum(character.isalpha() for character in reply)
+                delay_seconds = max(1.0, letter_count / 20.0)
+                if random.random() < 0.3:
+                    delay_seconds += random.uniform(1.0, 10.0)
+                await asyncio.sleep(delay_seconds)
                 if not await gate.refresh(force=True):
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "assistant switched off before send")
