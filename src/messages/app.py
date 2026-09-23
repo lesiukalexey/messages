@@ -775,6 +775,14 @@ async def run() -> None:
                                     duration,
                                     str(plan.get("title") or "Meeting"),
                                     plan.get("location"),
+                                    contact_name=(
+                                        " ".join(
+                                            part for part in (sender.first_name, sender.last_name)
+                                            if part
+                                        ).strip()
+                                        or f"Telegram user {peer_id}"
+                                    ),
+                                    telegram_username=sender.username or "",
                                 )
                                 store.record_calendar_event(
                                     settings.account_id, peer_id, event.message.id, event_id

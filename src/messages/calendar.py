@@ -124,20 +124,32 @@ class GoogleCalendar:
         duration_minutes: int,
         title: str,
         location: str | None = None,
+        *,
+        contact_name: str,
+        telegram_username: str = "",
     ) -> str:
         if not 5 <= duration_minutes <= 720:
             raise ValueError("meeting duration is outside the allowed range")
         begins, ends = self.parse_interval(start, duration_minutes, self.timezone)
         raw_key = f"{account_id}:{peer_id}:{source_message_id}:{begins.isoformat()}".encode()
         event_id = "ev" + hashlib.sha256(raw_key).hexdigest()
+        contact = " ".join(contact_name.split()) or f"Telegram user {peer_id}"
+        username = telegram_username.strip().removeprefix("@")
+        identity = contact[:90]
+        if username:
+            identity += f" (@{username})"
+        summary_prefix = f"{identity} — "
+        description = ["Agreed in Telegram.", f"Contact: {contact}"]
+        if username:
+            description.append(f"Telegram: @{username}")
         body: dict[str, Any] = {
             "id": event_id,
-            "summary": title[:160],
+            "summary": f"{summary_prefix}{title}"[:160],
             "start": {"dateTime": begins.isoformat(), "timeZone": str(self.timezone)},
             "end": {"dateTime": ends.isoformat(), "timeZone": str(self.timezone)},
             "visibility": "private",
             "transparency": "opaque",
-            "description": "Agreed in Telegram.",
+            "description": "\n".join(description),
         }
         if location:
             body["location"] = location[:500]
