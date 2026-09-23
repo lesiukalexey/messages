@@ -22,6 +22,7 @@ from .recruiter_answers import RecruiterAnswers
 from .store import Store
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
+NOTIFICATION_BOT_USERNAME = "@NotificationFastBot"
 DEFAULT_STYLE = "Write like a concise, practical, informal Telegram conversation."
 MEETING_SIGNAL = re.compile(
     r"(встреч|встрет|пересеч|увид|выйд|заед|прид|кофе|обед|ужин|созвон|звон|"
@@ -560,6 +561,9 @@ async def run() -> None:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "contact is in Telegram Manual folder")
                     return
+                session_started_at = store.record_incoming_session(
+                    settings.account_id, peer_id, event.message.date
+                )
                 try:
                     context = await live_chat_history(client, event)
                 except Exception as exc:
@@ -827,6 +831,43 @@ async def run() -> None:
                         ensure_ascii=False,
                     ),
                 )
+                if store.claim_conversation_notification(
+                    settings.account_id, peer_id, session_started_at
+                ):
+                    display_name = " ".join(
+                        part for part in (sender.first_name, sender.last_name) if part
+                    ).strip() or sender.username or f"Telegram user {peer_id}"
+                    username = f" (@{sender.username})" if sender.username else ""
+                    category_label = "рекрутер" if category == "recruiters" else "друг"
+                    notification = (
+                        f"ИИ начал новый диалог: {display_name}{username} "
+                        f"(категория: {category_label})."
+                    )
+                    try:
+                        await client.send_message(NOTIFICATION_BOT_USERNAME, notification)
+                    except Exception as notification_error:
+                        store.finish_conversation_notification(
+                            settings.account_id, peer_id, session_started_at, success=False
+                        )
+                        store.audit(
+                            peer_id,
+                            "conversation_notification_failed",
+                            type(notification_error).__name__,
+                        )
+                        logger.warning(
+                            "Could not notify %s for a new conversation (%s)",
+                            NOTIFICATION_BOT_USERNAME,
+                            type(notification_error).__name__,
+                        )
+                    else:
+                        store.finish_conversation_notification(
+                            settings.account_id, peer_id, session_started_at, success=True
+                        )
+                        store.audit(
+                            peer_id,
+                            "conversation_notification_sent",
+                            NOTIFICATION_BOT_USERNAME,
+                        )
             except Exception as exc:
                 store.message_state(settings.account_id, peer_id, event.message.id, "failed")
                 store.audit(

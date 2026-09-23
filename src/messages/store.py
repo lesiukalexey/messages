@@ -66,7 +66,20 @@ class Store:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (source_account_id, peer_id, source_message_id)
             );
+            CREATE TABLE IF NOT EXISTS conversation_sessions (
+                account_id TEXT NOT NULL,
+                peer_id INTEGER NOT NULL,
+                session_started_at TEXT NOT NULL,
+                last_incoming_at TEXT NOT NULL,
+                notification_state TEXT NOT NULL DEFAULT 'pending',
+                PRIMARY KEY (account_id, peer_id)
+            );
             """
+        )
+        # An interrupted send can be retried on the next successful AI reply.
+        self.connection.execute(
+            "UPDATE conversation_sessions SET notification_state = 'pending' "
+            "WHERE notification_state = 'sending'"
         )
         contact_columns = {
             row["name"]
@@ -163,6 +176,71 @@ class Store:
             """UPDATE processed_messages SET state = ?, updated_at = ?
                WHERE account_id = ? AND peer_id = ? AND message_id = ?""",
             (state, utc_now(), account_id, peer_id, message_id),
+        )
+        self.connection.commit()
+
+    def record_incoming_session(
+        self, account_id: str, peer_id: int, received_at: datetime
+    ) -> str:
+        received = (
+            received_at.astimezone(UTC)
+            if received_at.tzinfo
+            else received_at.replace(tzinfo=UTC)
+        )
+        incoming_at = received.isoformat()
+        row = self.connection.execute(
+            """SELECT session_started_at, last_incoming_at, notification_state
+               FROM conversation_sessions WHERE account_id = ? AND peer_id = ?""",
+            (account_id, peer_id),
+        ).fetchone()
+        if row is None:
+            session_started_at = incoming_at
+            last_incoming_at = incoming_at
+            notification_state = "pending"
+        else:
+            previous = datetime.fromisoformat(row["last_incoming_at"])
+            new_session = (received - previous).total_seconds() > 30 * 60
+            if new_session:
+                session_started_at = incoming_at
+                notification_state = "pending"
+            else:
+                session_started_at = row["session_started_at"]
+                notification_state = row["notification_state"]
+            last_incoming_at = incoming_at if received > previous else row["last_incoming_at"]
+        self.connection.execute(
+            """INSERT INTO conversation_sessions
+                   (account_id, peer_id, session_started_at, last_incoming_at, notification_state)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(account_id, peer_id) DO UPDATE SET
+                 session_started_at=excluded.session_started_at,
+                 last_incoming_at=excluded.last_incoming_at,
+                 notification_state=excluded.notification_state""",
+            (account_id, peer_id, session_started_at, last_incoming_at, notification_state),
+        )
+        self.connection.commit()
+        return session_started_at
+
+    def claim_conversation_notification(
+        self, account_id: str, peer_id: int, session_started_at: str
+    ) -> bool:
+        cursor = self.connection.execute(
+            """UPDATE conversation_sessions SET notification_state = 'sending'
+               WHERE account_id = ? AND peer_id = ? AND session_started_at = ?
+                 AND notification_state = 'pending'""",
+            (account_id, peer_id, session_started_at),
+        )
+        self.connection.commit()
+        return cursor.rowcount == 1
+
+    def finish_conversation_notification(
+        self, account_id: str, peer_id: int, session_started_at: str, success: bool
+    ) -> None:
+        state = "sent" if success else "pending"
+        self.connection.execute(
+            """UPDATE conversation_sessions SET notification_state = ?
+               WHERE account_id = ? AND peer_id = ? AND session_started_at = ?
+                 AND notification_state = 'sending'""",
+            (state, account_id, peer_id, session_started_at),
         )
         self.connection.commit()
 
