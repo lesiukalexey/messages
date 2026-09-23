@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -182,6 +182,82 @@ def meeting_context_present(history: list[dict[str, str]], current_message: str)
 def explicit_time_present(history: list[dict[str, str]], current_message: str) -> bool:
     text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
     return bool(EXPLICIT_CLOCK.search(text))
+
+
+def availability_question(message: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:\b(?:когда|во сколько|коли)\b.{0,60}\b(?:свобод\w*|вільн\w*|удоб\w*|зручн\w*|можеш\w*)"
+            r"|\b(?:when|what time)\b.{0,60}\b(?:free|available)\b)",
+            message,
+            re.IGNORECASE,
+        )
+    )
+
+
+def established_availability_date(
+    history: list[dict[str, str]], current_message: str, now: datetime
+) -> date | None:
+    recent = [item.get("text", "") for item in history[-12:]] + [current_message]
+    today_words = re.compile(r"\b(?:сегодня|today|this (?:morning|afternoon|evening))\b", re.IGNORECASE)
+    tomorrow_words = re.compile(r"\b(?:завтра|tomorrow)\b", re.IGNORECASE)
+    for message in reversed(recent):
+        if tomorrow_words.search(message):
+            return now.date() + timedelta(days=1)
+        if today_words.search(message):
+            return now.date()
+    return None
+
+
+def safe_availability_reply(
+    history: list[dict[str, str]],
+    current_message: str,
+    slots: list[str] | None,
+    day: date,
+    today: date,
+) -> str:
+    text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
+    ukrainian = bool(re.search(r"[іїєґІЇЄҐ]", text))
+    russian = bool(re.search(r"[А-Яа-яЁё]", text)) and not ukrainian
+    if russian:
+        date_label = (
+            "сегодня" if day == today else "завтра"
+            if day == today + timedelta(days=1) else day.strftime("%d.%m")
+        )
+    elif ukrainian:
+        date_label = (
+            "сьогодні" if day == today else "завтра"
+            if day == today + timedelta(days=1) else day.strftime("%d.%m")
+        )
+    else:
+        date_label = (
+            "today" if day == today else "tomorrow"
+            if day == today + timedelta(days=1) else day.strftime("%d.%m")
+        )
+    if slots:
+        times = [datetime.fromisoformat(value).strftime("%H:%M") for value in slots]
+        if ukrainian:
+            if len(times) > 1:
+                return f"{date_label.capitalize()} можу о {', '.join(times[:-1])} або {times[-1]}. Який час тобі підходить?"
+            return f"{date_label.capitalize()} можу о {times[0]}. Тобі підходить?"
+        if russian:
+            if len(times) > 1:
+                return f"{date_label.capitalize()} могу в {', '.join(times[:-1])} или {times[-1]}. Какой вариант тебе подходит?"
+            return f"{date_label.capitalize()} могу в {times[0]}. Тебе подходит?"
+        if len(times) > 1:
+            return f"I'm free {date_label} at {', '.join(times[:-1])} or {times[-1]}. Which works for you?"
+        return f"I'm free {date_label} at {times[0]}. Does that work for you?"
+    if slots == []:
+        if ukrainian:
+            return f"{date_label.capitalize()} більше не маю вільного часу для зустрічі. Давай подивимось інший день?"
+        if russian:
+            return f"{date_label.capitalize()} больше нет свободного времени для встречи. Давай посмотрим другой день?"
+        return f"I don't have another open time for a meeting {date_label}. Shall we look at another day?"
+    if ukrainian:
+        return "Не вдалося перевірити вільний час у календарі. Давай спробуємо пізніше?"
+    if russian:
+        return "Не удалось проверить свободное время в календаре. Давай попробуем позже?"
+    return "I couldn't check my calendar availability. Could we try again later?"
 
 
 def safe_calendar_reply(
@@ -458,6 +534,50 @@ async def run() -> None:
                     )
                 calendar_result = "No calendar action is needed."
                 calendar_reply: str | None = None
+                availability_reply: str | None = None
+                target_day = (
+                    established_availability_date(context, event.raw_text, now)
+                    if availability_question(event.raw_text)
+                    else None
+                )
+                if target_day is not None:
+                    action = "none"
+                    duration = int(
+                        plan.get("duration_minutes") or (60 if category == "friends" else 30)
+                    )
+                    if not calendar.configured:
+                        availability_reply = safe_availability_reply(
+                            context, event.raw_text, None, target_day, now.date()
+                        )
+                        store.audit(peer_id, "calendar_availability_failed", "authorization missing")
+                    else:
+                        try:
+                            slots = await asyncio.to_thread(
+                                calendar.available_slots,
+                                target_day,
+                                duration,
+                                now,
+                            )
+                            availability_reply = safe_availability_reply(
+                                context, event.raw_text, slots, target_day, now.date()
+                            )
+                            store.audit(
+                                peer_id,
+                                "calendar_availability_checked",
+                                f"suggested_slot_count={len(slots)}",
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Calendar slot search failed: %s", type(exc).__name__
+                            )
+                            availability_reply = safe_availability_reply(
+                                context, event.raw_text, None, target_day, now.date()
+                            )
+                            store.audit(
+                                peer_id,
+                                "calendar_availability_failed",
+                                type(exc).__name__,
+                            )
                 if meeting_in_progress and explicit_time_present(context, event.raw_text) and not start:
                     calendar_reply = safe_calendar_reply(context, event.raw_text, "unclear")
                     calendar_result = "The proposed time could not be resolved; no availability was confirmed."
@@ -523,7 +643,9 @@ async def run() -> None:
                         else:
                             calendar_result = f"FREE at {interval}; no event created yet."
                             store.audit(peer_id, "calendar_availability_checked", "free")
-                if calendar_reply is not None:
+                if availability_reply is not None:
+                    reply = availability_reply
+                elif calendar_reply is not None:
                     reply = calendar_reply
                 elif action in ("check", "create"):
                     reply = await responder.compose_with_calendar_result(

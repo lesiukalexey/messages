@@ -54,8 +54,11 @@ messages make the hiring context clear. The categories are separate in
 ## Calendar
 
 Google Calendar is used for availability checks and agreed meeting events. The
-assistant checks free/busy before saying a time is available. It creates a
-private event only when the conversation clearly confirms a meeting; event
+assistant checks free/busy before saying a time is available. When asked when
+Alexey is free, it reuses a date established in recent chat context and offers
+up to three calendar-verified slots between 09:00 and 22:00 local time for that
+day. It creates a private event
+only when the conversation clearly confirms a meeting; event
 creation is idempotent per incoming Telegram message. It does not invite
 attendees or disclose other event details. Default duration is 60 minutes for
 friends and 30 minutes for recruiters when none was specified.

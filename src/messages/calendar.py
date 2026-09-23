@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -58,6 +58,62 @@ class GoogleCalendar:
         if calendar.get("errors"):
             raise RuntimeError("Google Calendar could not check availability")
         return not bool(calendar.get("busy")), f"{begins.isoformat()}/{ends.isoformat()}"
+
+    def available_slots(
+        self,
+        day: date,
+        duration_minutes: int,
+        earliest: datetime,
+        limit: int = 3,
+    ) -> list[str]:
+        if not 5 <= duration_minutes <= 720:
+            raise ValueError("meeting duration is outside the allowed range")
+        day_start = datetime.combine(day, time(9, 0), self.timezone)
+        day_end = datetime.combine(day, time(22, 0), self.timezone)
+        earliest = (
+            earliest.astimezone(self.timezone)
+            if earliest.tzinfo
+            else earliest.replace(tzinfo=self.timezone)
+        )
+        cursor = max(day_start, earliest)
+        minutes = cursor.hour * 60 + cursor.minute + bool(cursor.second or cursor.microsecond)
+        cursor = datetime.combine(day, time.min, self.timezone) + timedelta(
+            minutes=((minutes + 29) // 30) * 30
+        )
+        if cursor < day_start:
+            cursor = day_start
+
+        body = {
+            "timeMin": day_start.isoformat(),
+            "timeMax": day_end.isoformat(),
+            "timeZone": str(self.timezone),
+            "items": [{"id": "primary"}],
+        }
+        response = self._service().freebusy().query(body=body).execute()
+        calendar = response.get("calendars", {}).get("primary", {})
+        if calendar.get("errors"):
+            raise RuntimeError("Google Calendar could not check availability")
+        busy = [
+            (
+                datetime.fromisoformat(item["start"].replace("Z", "+00:00")).astimezone(
+                    self.timezone
+                ),
+                datetime.fromisoformat(item["end"].replace("Z", "+00:00")).astimezone(
+                    self.timezone
+                ),
+            )
+            for item in calendar.get("busy", [])
+        ]
+
+        slots: list[str] = []
+        while cursor + timedelta(minutes=duration_minutes) <= day_end and len(slots) < limit:
+            end = cursor + timedelta(minutes=duration_minutes)
+            if all(cursor >= busy_end or end <= busy_start for busy_start, busy_end in busy):
+                slots.append(cursor.isoformat())
+                cursor += timedelta(minutes=duration_minutes)
+            else:
+                cursor += timedelta(minutes=30)
+        return slots
 
     def create(
         self,
