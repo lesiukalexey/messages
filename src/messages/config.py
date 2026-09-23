@@ -17,6 +17,7 @@ class Settings:
     timezone: str
     google_client_file: Path
     google_token_file: Path
+    recruiter_answers_file: Path
     log_level: str = "INFO"
 
     @classmethod
@@ -77,6 +78,12 @@ class Settings:
                 os.getenv(
                     "GOOGLE_CALENDAR_TOKEN_FILE",
                     "/home/admin/messages-runtime/google-calendar/token.json",
+                )
+            ),
+            recruiter_answers_file=Path(
+                os.getenv(
+                    "RECRUITER_ANSWERS_FILE",
+                    "/var/www/job-apply/data/profiles/lesiuk.alexey@gmail.com/external-form-fields.yaml",
                 )
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),

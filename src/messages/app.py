@@ -18,6 +18,7 @@ from .calendar import GoogleCalendar
 from .config import Settings
 from .llm import Responder
 from .runtime import load_environment
+from .recruiter_answers import RecruiterAnswers
 from .store import Store
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
@@ -282,6 +283,7 @@ async def run() -> None:
     history = History()
     calendar = GoogleCalendar(settings.google_token_file, settings.timezone)
     responder = Responder(settings)
+    recruiter_answers = RecruiterAnswers(settings.recruiter_answers_file)
     if not settings.codex_binary.is_file():
         logger.warning("Codex CLI is not installed at CODEX_BINARY; replies will fail until installed")
     client = TelegramClient(str(settings.session_path), settings.api_id, settings.api_hash)
@@ -446,6 +448,9 @@ async def run() -> None:
                 opening = history.opening(settings.account_id, peer_id)
                 now = datetime.now(ZoneInfo(settings.timezone))
                 model = store.setting("model", settings.default_model)
+                prepared_answers = (
+                    recruiter_answers.match(event.raw_text) if category == "recruiters" else []
+                )
                 plan = await responder.plan(
                     model=model,
                     category=category,
@@ -455,6 +460,7 @@ async def run() -> None:
                     style_profile=style_profile(),
                     opening_history=opening,
                     auto_detect_category=auto_detect_category,
+                    prepared_answers=prepared_answers,
                 )
                 detected_category = plan.pop("detected_category", category)
                 if auto_detect_category:
@@ -477,6 +483,10 @@ async def run() -> None:
                         store.audit(peer_id, "contact_auto_categorized", resolved_category)
                     if resolved_category != category:
                         category = resolved_category
+                        prepared_answers = (
+                            recruiter_answers.match(event.raw_text)
+                            if category == "recruiters" else []
+                        )
                         plan = await responder.plan(
                             model=model,
                             category=category,
@@ -486,6 +496,7 @@ async def run() -> None:
                             style_profile=style_profile(),
                             opening_history=opening,
                             auto_detect_category=False,
+                            prepared_answers=prepared_answers,
                         )
                 plan.pop("detected_category", None)
                 if category == "recruiters" and not plan.get("should_reply", True):
@@ -648,6 +659,7 @@ async def run() -> None:
                         calendar_result=calendar_result,
                         now=now,
                         style_profile=style_profile(),
+                        prepared_answers=prepared_answers,
                     )
                 else:
                     reply = plan["reply"]
