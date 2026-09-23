@@ -636,13 +636,9 @@ async def run() -> None:
                             prepared_answers=prepared_answers,
                         )
                 plan.pop("detected_category", None)
-                if category == "recruiters" and not plan.get("should_reply", True):
+                if not plan.get("should_reply", True):
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(
-                        peer_id,
-                        "skipped",
-                        "recruiter message contains only unknown questions",
-                    )
+                    store.audit(peer_id, "skipped", "responder found no safe contextual reply")
                     return
                 start = plan.get("start")
                 action = plan.get("calendar_action", "none")
@@ -661,6 +657,9 @@ async def run() -> None:
                         if plan.get("confirmed_agreement") or assistant_accepts
                         else "check"
                     )
+                if action in ("check", "create") and not meeting_in_progress:
+                    action = "none"
+                    store.audit(peer_id, "calendar_action_suppressed", "no clear meeting context")
                 calendar_result = "No calendar action is needed."
                 availability_reply: str | None = None
                 target_day = (
