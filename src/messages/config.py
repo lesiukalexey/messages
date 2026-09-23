@@ -32,7 +32,7 @@ class Settings:
         options = tuple(
             model.strip()
             for model in os.getenv(
-                "CODEX_MODELS", "gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"
+                "CODEX_MODELS", "gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol,gpt-6-luna"
             ).split(",")
             if model.strip()
         )
