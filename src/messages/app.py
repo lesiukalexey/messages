@@ -452,7 +452,7 @@ async def run() -> None:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "assistant switched off before send")
                     return
-                sent = await event.respond(reply, reply_to=event.message.id)
+                sent = await event.respond(reply)
                 store.message_state(settings.account_id, peer_id, event.message.id, "sent")
                 store.audit(
                     peer_id,
