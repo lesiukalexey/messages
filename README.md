@@ -11,9 +11,11 @@ The Telegram profile bio controls the assistant:
 - Bio equal to `free` (ignoring case and surrounding whitespace): OFF.
 - Empty bio or any other bio: ON.
 
-If the profile cannot be read, the worker fails closed. Only categorized
-contacts are eligible even when the assistant is on. Groups, channels, bots,
-Saved Messages, and uncategorized contacts are ignored.
+If the profile cannot be read, the worker fails closed. Groups, channels, bots,
+and Saved Messages are ignored. On the first incoming message, the assistant
+classifies the conversation as `recruiters` when it is clearly about hiring;
+otherwise it assigns `friends`. It uses the opening messages and can promote an
+automatically assigned friend to recruiter if recruiting becomes clear later.
 
 ## Settings in Telegram
 
@@ -22,7 +24,7 @@ Send commands to **Saved Messages** from the same account running the assistant:
 ```text
 /help
 /model
-/model gpt-5-mini
+/model gpt-5.6-luna
 /category @username friends
 /category @username recruiters
 /category remove @username
@@ -41,10 +43,13 @@ login for the `admin` account, as Job Apply does. Codex receives the incoming
 message and up to 23 recent messages from that same chat to produce the reply.
 No OpenAI API key is needed.
 
-Contacts start uncategorized and are not answered. Assign each chat explicitly
-to `friends` or `recruiters` with its Telegram username. The categories are
-separate in `/contacts` and receive different model context. Use `/dialogs` to
-page through exported one-to-one chats and see which ones still need a category.
+New contacts are classified and answered automatically. Clear recruiting or
+job opportunity conversations go to `recruiters`; everyone else goes to
+`friends`. You can override a contact at any time with `/category @username
+friends` or `/category @username recruiters`. Manual choices stay fixed.
+Automatically classified friends can be promoted to recruiters if later
+messages make the hiring context clear. The categories are separate in
+`/contacts` and receive different model context.
 
 ## Calendar
 

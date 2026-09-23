@@ -18,6 +18,7 @@ PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "reply": {"type": "string"},
+        "detected_category": {"type": "string", "enum": ["friends", "recruiters"]},
         "calendar_action": {"type": "string", "enum": ["none", "check", "create"]},
         "confirmed_agreement": {"type": "boolean"},
         "start": {"type": ["string", "null"]},
@@ -27,6 +28,7 @@ PLAN_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "reply",
+        "detected_category",
         "calendar_action",
         "confirmed_agreement",
         "start",
@@ -94,12 +96,20 @@ class Responder:
         current_message: str,
         now: datetime,
         style_profile: str,
+        opening_history: list[dict[str, str]] | None = None,
+        auto_detect_category: bool = False,
     ) -> dict[str, Any]:
         instructions = f"""You write Telegram replies on Alexey's behalf.
 Category: {category}. Use the matching voice and keep a natural, concise chat tone.
 For friends, sound familiar, warm, informal, and direct without inventing shared history.
 For recruiters, be polite and professional, coordinate interviews clearly, and never accept
 an offer, salary, or contractual condition on Alexey's behalf.
+Set detected_category to recruiters only when the conversation is about recruiting Alexey,
+such as a job opportunity, vacancy, interview, or hiring discussion. If there is no clear
+recruiting evidence, set it to friends. Do not classify someone as a recruiter merely because
+they mention their own job or ask an ordinary social question. If category assignment is manual,
+preserve the supplied category in detected_category. If it is automatic, use the opening
+conversation and current message to detect whether recruiting becomes clear.
 Current local time: {now.astimezone(self.timezone).isoformat()}.
 Voice guidance:
 {style_profile}
@@ -126,8 +136,10 @@ Calendar rules:
 
 Return a calendar plan plus a candidate reply. If no scheduling is involved, use calendar_action=none."""
         payload = {
+            "conversation_opening": (opening_history or [])[:12],
             "history": history[-24:],
             "incoming_message": current_message,
+            "category_is_automatic": auto_detect_category,
         }
         prompt = (
             instructions

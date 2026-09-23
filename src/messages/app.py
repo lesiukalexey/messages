@@ -109,6 +109,24 @@ class History:
             for row in rows
         ]
 
+    def opening(self, account_id: str, peer_id: int, limit: int = 12) -> list[dict[str, str]]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT text, outgoing, date FROM messages
+                   WHERE account_id = %s AND dialog_id = %s AND text <> ''
+                   ORDER BY date ASC LIMIT %s""",
+                (account_id, peer_id, limit),
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "role": "assistant" if row["outgoing"] else "contact",
+                "text": row["text"][:4000],
+                "time": str(row["date"] or ""),
+            }
+            for row in rows
+        ]
+
     def dialogs(self, account_id: str, limit: int, offset: int) -> list[dict[str, Any]]:
         with self.connection.cursor() as cursor:
             cursor.execute(
@@ -170,10 +188,11 @@ async def run() -> None:
                 "Commands (send in Saved Messages):\n"
                 "/model — show or choose a model\n"
                 "/model MODEL_ID — switch model\n"
-                "/category @username friends|recruiters — assign a chat\n"
-                "/category remove @username — exclude a chat\n"
+                "/category @username friends|recruiters — override auto classification\n"
+                "/category remove @username — clear manual assignment\n"
                 "/contacts [friends|recruiters] — list assigned chats\n"
-                "/dialogs [page] — list exported chats to categorize\n"
+                "/dialogs [page] — list exported chats and current categories\n"
+                "New chats become recruiters when hiring is clear; everyone else is friends.\n"
                 "Edit your Telegram bio to toggle: `free` = OFF; empty/other = ON."
             )
         if command == "/model":
@@ -202,9 +221,9 @@ async def run() -> None:
                     return "Only real individual Telegram users can be categorized."
                 store.set_contact_category(entity.id, None, entity.username or "", entity.first_name or "")
                 store.audit(entity.id, "contact_uncategorized", "")
-                return f"Removed category for {entity.username or entity.id}; assistant will ignore this chat."
+                return f"Cleared manual category for {entity.username or entity.id}; the next message will be classified automatically."
             if len(parts) != 3 or parts[2].casefold() not in ("friends", "recruiters"):
-                return "Use /category @username friends or /category @username recruiters."
+                return "Use /category @username friends or /category @username recruiters to override automatic classification."
             identifier, category = parts[1], parts[2].casefold()
             try:
                 entity = await resolve_user(client, identifier)
@@ -219,7 +238,7 @@ async def run() -> None:
                 " ".join(part for part in (entity.first_name, entity.last_name) if part) or "",
             )
             store.audit(entity.id, "contact_categorized", category)
-            return f"{entity.username or entity.id} assigned to {category}."
+            return f"{entity.username or entity.id} manually assigned to {category}."
         if command == "/contacts":
             category = parts[1].casefold() if len(parts) > 1 else None
             if category not in (None, "friends", "recruiters"):
@@ -235,7 +254,7 @@ async def run() -> None:
                 return "No more exported one-to-one chats. Run messages-export to refresh the list."
             lines = []
             for row in rows:
-                category = store.contact_category(row["dialog_id"]) or "unassigned"
+                category = store.contact_category(row["dialog_id"]) or "not yet classified"
                 name = row["name"] or row["username"] or str(row["dialog_id"])
                 identity = f"@{row['username']}" if row["username"] else f"id:{row['dialog_id']}"
                 lines.append(f"• {name} ({identity}) — {category}")
@@ -245,7 +264,7 @@ async def run() -> None:
     async def contacts_text(category: str | None, db: Store) -> str:
         rows = db.contacts(category)
         if not rows:
-            return "No categorized contacts yet. Use /category @username friends|recruiters."
+            return "No contacts classified yet. New chats are classified automatically; use /category to override."
         grouped: dict[str, list[str]] = {"friends": [], "recruiters": []}
         for row in rows:
             grouped[row["category"]].append(_format_contact(row))
@@ -277,13 +296,16 @@ async def run() -> None:
         peer_id = event.chat_id
         if not event.is_private or not event.raw_text.strip():
             return
+        sender = await event.get_sender()
+        if not isinstance(sender, types.User) or sender.bot or sender.deleted or sender.is_self:
+            return
         if not await gate.refresh():
             store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
             return
         category = store.contact_category(peer_id)
-        if category not in ("friends", "recruiters"):
-            store.audit(peer_id, "skipped", "contact is not categorized")
-            return
+        category_source = store.contact_category_source(peer_id)
+        auto_detect_category = category is None or category_source == "automatic"
+        category = category or "friends"
         if not store.claim_message(settings.account_id, peer_id, event.message.id):
             return
 
@@ -294,6 +316,7 @@ async def run() -> None:
                     store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
                     return
                 context = history.latest(settings.account_id, peer_id)
+                opening = history.opening(settings.account_id, peer_id)
                 now = datetime.now(ZoneInfo(settings.timezone))
                 model = store.setting("model", settings.default_model)
                 plan = await responder.plan(
@@ -303,7 +326,41 @@ async def run() -> None:
                     current_message=event.raw_text,
                     now=now,
                     style_profile=style_profile(),
+                    opening_history=opening,
+                    auto_detect_category=auto_detect_category,
                 )
+                detected_category = plan.pop("detected_category", category)
+                if auto_detect_category:
+                    resolved_category = (
+                        "recruiters"
+                        if category == "recruiters" or detected_category == "recruiters"
+                        else "friends"
+                    )
+                    if store.contact_category(peer_id) != resolved_category:
+                        display_name = " ".join(
+                            part for part in (sender.first_name, sender.last_name) if part
+                        )
+                        store.set_contact_category(
+                            peer_id,
+                            resolved_category,
+                            sender.username or "",
+                            display_name,
+                            source="automatic",
+                        )
+                        store.audit(peer_id, "contact_auto_categorized", resolved_category)
+                    if resolved_category != category:
+                        category = resolved_category
+                        plan = await responder.plan(
+                            model=model,
+                            category=category,
+                            history=context,
+                            current_message=event.raw_text,
+                            now=now,
+                            style_profile=style_profile(),
+                            opening_history=opening,
+                            auto_detect_category=False,
+                        )
+                plan.pop("detected_category", None)
                 action = plan.get("calendar_action", "none")
                 calendar_result = "No calendar action is needed."
                 if action in ("check", "create"):
@@ -443,15 +500,13 @@ async def run() -> None:
                 pass
         history.close()
         store.close()
-        if responder:
-            await responder.close()
         await client.disconnect()
 
 
 async def contacts_text(category: str | None, store: Store) -> str:
     rows = store.contacts(category)
     if not rows:
-        return "No categorized contacts yet. Use /category @username friends|recruiters."
+        return "No contacts classified yet. New chats are classified automatically; use /category to override."
     grouped: dict[str, list[str]] = {"friends": [], "recruiters": []}
     for row in rows:
         name = row["display_name"] or row["username"] or str(row["peer_id"])

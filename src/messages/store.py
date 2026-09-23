@@ -30,6 +30,7 @@ class Store:
                 account_id TEXT NOT NULL,
                 peer_id INTEGER NOT NULL,
                 category TEXT CHECK (category IN ('friends', 'recruiters')),
+                category_source TEXT NOT NULL DEFAULT 'manual',
                 username TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
@@ -67,6 +68,14 @@ class Store:
             );
             """
         )
+        contact_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(assistant_contacts)")
+        }
+        if "category_source" not in contact_columns:
+            self.connection.execute(
+                "ALTER TABLE assistant_contacts ADD COLUMN category_source TEXT NOT NULL DEFAULT 'manual'"
+            )
         self.connection.commit()
 
     def contact_category(self, peer_id: int) -> str | None:
@@ -76,19 +85,32 @@ class Store:
         ).fetchone()
         return row["category"] if row else None
 
+    def contact_category_source(self, peer_id: int) -> str | None:
+        row = self.connection.execute(
+            "SELECT category_source FROM assistant_contacts WHERE account_id = ? AND peer_id = ?",
+            (self.account_id, peer_id),
+        ).fetchone()
+        return row["category_source"] if row else None
+
     def set_contact_category(
-        self, peer_id: int, category: str | None, username: str = "", display_name: str = ""
+        self,
+        peer_id: int,
+        category: str | None,
+        username: str = "",
+        display_name: str = "",
+        source: str = "manual",
     ) -> None:
         if category not in (None, "friends", "recruiters"):
             raise ValueError("category must be friends, recruiters, or None")
         self.connection.execute(
             """INSERT INTO assistant_contacts
-                   (account_id, peer_id, category, username, display_name, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
+                   (account_id, peer_id, category, category_source, username, display_name, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(account_id, peer_id) DO UPDATE SET category=excluded.category,
+                 category_source=excluded.category_source,
                  username=excluded.username, display_name=excluded.display_name,
                  updated_at=excluded.updated_at""",
-            (self.account_id, peer_id, category, username, display_name, utc_now()),
+            (self.account_id, peer_id, category, source, username, display_name, utc_now()),
         )
         self.connection.commit()
 
