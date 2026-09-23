@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -160,6 +161,57 @@ class Store:
         )
         self.connection.commit()
 
+    def recover_interrupted_messages(self, max_age: timedelta = timedelta(minutes=30)) -> list[tuple[int, int]]:
+        """Requeue safe interrupted work and expire stale or ambiguous sends."""
+        now = datetime.now(UTC)
+        cutoff = (now - max_age).isoformat()
+        rows = list(
+            self.connection.execute(
+                """SELECT peer_id, message_id, created_at FROM processed_messages
+                   WHERE account_id = ? AND state IN ('processing', 'pending')""",
+                (self.account_id,),
+            )
+        )
+        generated: set[tuple[int, int]] = set()
+        for row in self.connection.execute(
+            "SELECT peer_id, details FROM assistant_audit_events "
+            "WHERE account_id = ? AND event = 'generated' AND peer_id IS NOT NULL",
+            (self.account_id,),
+        ):
+            try:
+                details = json.loads(row["details"])
+                message_id = int(details["incoming_message_id"])
+            except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+                continue
+            generated.add((row["peer_id"], message_id))
+
+        requeued: list[tuple[int, int]] = []
+        for row in rows:
+            peer_id, message_id = row["peer_id"], row["message_id"]
+            key = (peer_id, message_id)
+            if key in generated:
+                state, audit = "failed", "interrupted_after_generation"
+                details = f"message_id={message_id}; send outcome unknown; not retried"
+            elif row["created_at"] < cutoff:
+                state, audit = "skipped", "interrupted_message_expired"
+                details = f"message_id={message_id}; older than {int(max_age.total_seconds() // 60)} minutes"
+            else:
+                state, audit = "pending", "interrupted_message_requeued"
+                details = f"message_id={message_id}"
+                requeued.append(key)
+            self.connection.execute(
+                "UPDATE processed_messages SET state = ?, updated_at = ? "
+                "WHERE account_id = ? AND peer_id = ? AND message_id = ?",
+                (state, now.isoformat(), self.account_id, peer_id, message_id),
+            )
+            self.connection.execute(
+                """INSERT INTO assistant_audit_events
+                   (account_id, peer_id, event, details, created_at) VALUES (?, ?, ?, ?, ?)""",
+                (self.account_id, peer_id, audit, details, now.isoformat()),
+            )
+        self.connection.commit()
+        return requeued
+
     def claim_message(self, account_id: str, peer_id: int, message_id: int) -> bool:
         now = utc_now()
         cursor = self.connection.execute(
@@ -168,8 +220,16 @@ class Store:
                ) VALUES (?, ?, ?, 'processing', ?, ?)""",
             (account_id, peer_id, message_id, now, now),
         )
+        claimed = cursor.rowcount == 1
+        if not claimed:
+            cursor = self.connection.execute(
+                """UPDATE processed_messages SET state = 'processing', updated_at = ?
+                   WHERE account_id = ? AND peer_id = ? AND message_id = ? AND state = 'pending'""",
+                (now, account_id, peer_id, message_id),
+            )
+            claimed = cursor.rowcount == 1
         self.connection.commit()
-        return cursor.rowcount == 1
+        return claimed
 
     def message_state(self, account_id: str, peer_id: int, message_id: int, state: str) -> None:
         self.connection.execute(

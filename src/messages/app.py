@@ -6,7 +6,7 @@ import logging
 import os
 import random
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -302,6 +302,24 @@ async def live_chat_history(
     return result[-23:]
 
 
+class RecoveredMessageEvent:
+    def __init__(self, client: TelegramClient, message: Any) -> None:
+        self.client = client
+        self.message = message
+        self.chat_id = message.chat_id
+        self.raw_text = message.raw_text or ""
+        self.is_private = True
+
+    async def get_sender(self) -> Any:
+        return await self.message.get_sender()
+
+    async def get_input_chat(self) -> Any:
+        return await self.message.get_input_chat()
+
+    async def respond(self, text: str) -> Any:
+        return await self.client.send_message(self.chat_id, text)
+
+
 def meeting_context_present(history: list[dict[str, str]], current_message: str) -> bool:
     text = "\n".join([*(item.get("text", "") for item in history[-12:]), current_message])
     return bool(MEETING_SIGNAL.search(text))
@@ -390,6 +408,9 @@ async def run() -> None:
     settings.session_path.parent.chmod(0o700)
     store = Store(settings.database_path, settings.account_id)
     store.initialize()
+    interrupted_messages = store.recover_interrupted_messages()
+    if interrupted_messages:
+        logger.info("Recovered %s recent interrupted Telegram messages", len(interrupted_messages))
     history = History()
     calendar = GoogleCalendar(settings.google_token_file, settings.timezone)
     responder = Responder(settings)
@@ -547,15 +568,21 @@ async def run() -> None:
         sender = await event.get_sender()
         if not isinstance(sender, types.User) or sender.bot or sender.deleted or sender.is_self:
             return
+        if not store.claim_message(settings.account_id, peer_id, event.message.id):
+            return
+        message_date = event.message.date
+        if message_date and datetime.now(UTC) - message_date > timedelta(minutes=30):
+            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+            store.audit(peer_id, "skipped", "incoming message is older than 30 minutes")
+            return
         if not await gate.refresh():
+            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
             store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
             return
         category = store.contact_category(peer_id)
         category_source = store.contact_category_source(peer_id)
         auto_detect_category = category is None or category_source == "automatic"
         category = category or "friends"
-        if not store.claim_message(settings.account_id, peer_id, event.message.id):
-            return
 
         async with locks.setdefault(peer_id, asyncio.Lock()):
             try:
@@ -901,6 +928,24 @@ async def run() -> None:
                     f"{type(exc).__name__}: {str(exc)[:300]}",
                 )
                 logger.exception("Could not answer incoming Telegram message")
+
+    await client.catch_up()
+    for peer_id, message_id in interrupted_messages:
+        try:
+            message = await client.get_messages(peer_id, ids=message_id)
+            if message is None or message.out or not (message.raw_text or "").strip():
+                store.message_state(settings.account_id, peer_id, message_id, "failed")
+                store.audit(peer_id, "interrupted_message_unavailable", f"message_id={message_id}")
+                continue
+            await on_message(RecoveredMessageEvent(client, message))
+        except Exception as exc:
+            store.message_state(settings.account_id, peer_id, message_id, "failed")
+            store.audit(
+                peer_id,
+                "interrupted_message_recovery_failed",
+                f"message_id={message_id}; {type(exc).__name__}",
+            )
+            logger.exception("Could not recover interrupted Telegram message %s", message_id)
 
     poller: asyncio.Task[None] | None = None
     try:
