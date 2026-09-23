@@ -12,7 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pymysql
-from telethon import TelegramClient, events, functions, types
+from telethon import TelegramClient, events, functions, types, utils
 
 from .calendar import GoogleCalendar
 from .config import Settings
@@ -88,6 +88,103 @@ class BioGate:
             finally:
                 self.last_check = now
         return self.enabled
+
+
+class ManualFolderGate:
+    """Resolve the Manual filter from its peers and supported filter flags."""
+
+    def __init__(self, client: TelegramClient) -> None:
+        self.client = client
+        self.ready = False
+        self.loaded = False
+        self.folder_id: int | None = None
+        self.peer_ids: set[int] = set()
+        self.dirty = True
+        self.last_check = 0.0
+        self.lock = asyncio.Lock()
+
+    def invalidate(self) -> None:
+        self.dirty = True
+
+    def contains(self, peer_id: int) -> bool:
+        return self.ready and peer_id in self.peer_ids
+
+    async def refresh(self, force: bool = False) -> bool:
+        now = asyncio.get_running_loop().time()
+        if not force and not self.dirty and now - self.last_check < 30:
+            return self.ready
+        if not force and not self.ready and now - self.last_check < 5:
+            return False
+        async with self.lock:
+            now = asyncio.get_running_loop().time()
+            if not force and not self.dirty and now - self.last_check < 30:
+                return self.ready
+            if not force and not self.ready and now - self.last_check < 5:
+                return False
+            try:
+                result = await self.client(functions.messages.GetDialogFiltersRequest())
+                folder = next(
+                    (
+                        item for item in result.filters
+                        if (getattr(getattr(item, "title", None), "text", "") or "")
+                        .strip().casefold() == "manual"
+                    ),
+                    None,
+                )
+                was_loaded = self.loaded
+                previous_folder_id = self.folder_id
+                previous_peer_ids = self.peer_ids
+                peer_ids: set[int] = set()
+                if folder is not None:
+                    peers = [*getattr(folder, "pinned_peers", []), *getattr(folder, "include_peers", [])]
+                    peer_ids.update(utils.get_peer_id(peer) for peer in peers)
+
+                    if getattr(folder, "contacts", False) or getattr(folder, "non_contacts", False):
+                        folders_to_scan = [0]
+                        if not getattr(folder, "exclude_archived", False):
+                            folders_to_scan.append(1)
+                        for standard_folder_id in folders_to_scan:
+                            async for dialog in self.client.iter_dialogs(folder=standard_folder_id):
+                                entity = dialog.entity
+                                if not isinstance(entity, types.User):
+                                    continue
+                                is_contact = bool(getattr(entity, "contact", False))
+                                if (is_contact and getattr(folder, "contacts", False)) or (
+                                    not is_contact and getattr(folder, "non_contacts", False)
+                                ):
+                                    peer_ids.add(dialog.id)
+
+                    excluded = {
+                        utils.get_peer_id(peer)
+                        for peer in getattr(folder, "exclude_peers", [])
+                    }
+                    peer_ids.difference_update(excluded)
+                    self.folder_id = folder.id
+                else:
+                    self.folder_id = None
+                self.peer_ids = peer_ids
+                self.ready = True
+                self.loaded = True
+                self.dirty = False
+                if folder is None and (not was_loaded or previous_folder_id is not None):
+                    logging.getLogger(__name__).warning(
+                        "Telegram folder 'Manual' was not found; folder exclusion is inactive"
+                    )
+                elif previous_folder_id != self.folder_id or previous_peer_ids != self.peer_ids:
+                    logging.getLogger(__name__).info(
+                        "Telegram folder 'Manual' refreshed; %d dialogs excluded",
+                        len(self.peer_ids),
+                    )
+            except Exception as exc:
+                self.ready = False
+                self.dirty = True
+                logging.getLogger(__name__).warning(
+                    "Could not read Telegram folder 'Manual'; private replies are paused (%s)",
+                    type(exc).__name__,
+                )
+            finally:
+                self.last_check = now
+        return self.ready
 
 
 class History:
@@ -275,6 +372,8 @@ async def run() -> None:
     me = await client.get_me()
     gate = BioGate(client, me.id)
     await gate.refresh(force=True)
+    manual_folder = ManualFolderGate(client)
+    await manual_folder.refresh(force=True)
     locks: dict[int, asyncio.Lock] = {}
 
     async def send_control(text: str) -> None:
@@ -299,6 +398,7 @@ async def run() -> None:
                 "/contacts [friends|recruiters] — list assigned chats\n"
                 "/dialogs [page] — list exported chats and current categories\n"
                 "New chats become recruiters when hiring is clear; everyone else is friends.\n"
+                "Chats in the Telegram folder 'Manual' are ignored.\n"
                 "Edit your Telegram bio to toggle: `free` = OFF; empty/other = ON."
             )
         if command == "/model":
@@ -396,6 +496,9 @@ async def run() -> None:
             gate.invalidate()
             await gate.refresh(force=True)
             logger.info("Telegram bio changed; assistant is %s", "on" if gate.enabled else "off")
+        if isinstance(update, (types.UpdateDialogFilter, types.UpdateDialogFilters)):
+            manual_folder.invalidate()
+            await manual_folder.refresh(force=True)
 
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
@@ -420,6 +523,14 @@ async def run() -> None:
                 if not await gate.refresh(force=True):
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
+                    return
+                if not await manual_folder.refresh():
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(peer_id, "skipped", "Telegram Manual folder state is unavailable")
+                    return
+                if manual_folder.contains(peer_id):
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(peer_id, "skipped", "contact is in Telegram Manual folder")
                     return
                 try:
                     context = await live_chat_history(client, event)
