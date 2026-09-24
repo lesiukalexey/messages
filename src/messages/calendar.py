@@ -59,6 +59,56 @@ class GoogleCalendar:
             raise RuntimeError("Google Calendar could not check availability")
         return not bool(calendar.get("busy")), f"{begins.isoformat()}/{ends.isoformat()}"
 
+    def update_duration(
+        self,
+        event_id: str,
+        start: str,
+        requested_duration_minutes: int,
+    ) -> tuple[bool, str | None]:
+        if not 5 <= requested_duration_minutes <= 720:
+            raise ValueError("meeting duration is outside the allowed range")
+        begins, _ = self.parse_interval(start, requested_duration_minutes, self.timezone)
+        requested_end = begins + timedelta(minutes=requested_duration_minutes)
+        service = self._service()
+        existing = service.events().get(calendarId="primary", eventId=event_id).execute()
+        event_start = datetime.fromisoformat(existing["start"]["dateTime"]).astimezone(
+            self.timezone
+        )
+        current_end = datetime.fromisoformat(existing["end"]["dateTime"]).astimezone(
+            self.timezone
+        )
+        if event_start != begins:
+            raise RuntimeError("the calendar event start changed before duration update")
+        if current_end == requested_end:
+            return True, None
+
+        if requested_end > current_end:
+            response = service.freebusy().query(
+                body={
+                    "timeMin": current_end.isoformat(),
+                    "timeMax": requested_end.isoformat(),
+                    "timeZone": str(self.timezone),
+                    "items": [{"id": "primary"}],
+                }
+            ).execute()
+            calendar = response.get("calendars", {}).get("primary", {})
+            if calendar.get("errors"):
+                raise RuntimeError("Google Calendar could not check the requested extension")
+            busy = calendar.get("busy", [])
+            if busy:
+                conflict_start = min(
+                    datetime.fromisoformat(item["start"].replace("Z", "+00:00"))
+                    for item in busy
+                ).astimezone(self.timezone)
+                return False, conflict_start.isoformat()
+
+        service.events().patch(
+            calendarId="primary",
+            eventId=event_id,
+            body={"end": {"dateTime": requested_end.isoformat(), "timeZone": str(self.timezone)}},
+        ).execute()
+        return True, None
+
     def available_slots(
         self,
         day: date,

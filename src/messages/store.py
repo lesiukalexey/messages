@@ -67,6 +67,15 @@ class Store:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (source_account_id, peer_id, source_message_id)
             );
+            CREATE TABLE IF NOT EXISTS pending_calendar_durations (
+                account_id TEXT NOT NULL,
+                peer_id INTEGER NOT NULL,
+                event_id TEXT NOT NULL,
+                start_at TEXT NOT NULL,
+                provisional_duration_minutes INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, peer_id)
+            );
             CREATE TABLE IF NOT EXISTS conversation_sessions (
                 account_id TEXT NOT NULL,
                 peer_id INTEGER NOT NULL,
@@ -320,6 +329,49 @@ class Store:
                (source_account_id, peer_id, source_message_id, event_id, created_at)
                VALUES (?, ?, ?, ?, ?)""",
             (account_id, peer_id, message_id, event_id, utc_now()),
+        )
+        self.connection.commit()
+
+    def pending_calendar_duration(self, account_id: str, peer_id: int) -> sqlite3.Row | None:
+        row = self.connection.execute(
+            """SELECT event_id, start_at, provisional_duration_minutes
+               FROM pending_calendar_durations WHERE account_id = ? AND peer_id = ?""",
+            (account_id, peer_id),
+        ).fetchone()
+        if row is None:
+            return None
+        starts_at = datetime.fromisoformat(row["start_at"])
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=UTC)
+        if starts_at <= datetime.now(UTC):
+            self.clear_pending_calendar_duration(account_id, peer_id)
+            return None
+        return row
+
+    def set_pending_calendar_duration(
+        self,
+        account_id: str,
+        peer_id: int,
+        event_id: str,
+        start_at: str,
+        duration_minutes: int,
+    ) -> None:
+        self.connection.execute(
+            """INSERT INTO pending_calendar_durations
+                   (account_id, peer_id, event_id, start_at, provisional_duration_minutes, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(account_id, peer_id) DO UPDATE SET
+                 event_id=excluded.event_id, start_at=excluded.start_at,
+                 provisional_duration_minutes=excluded.provisional_duration_minutes,
+                 updated_at=excluded.updated_at""",
+            (account_id, peer_id, event_id, start_at, duration_minutes, utc_now()),
+        )
+        self.connection.commit()
+
+    def clear_pending_calendar_duration(self, account_id: str, peer_id: int) -> None:
+        self.connection.execute(
+            "DELETE FROM pending_calendar_durations WHERE account_id = ? AND peer_id = ?",
+            (account_id, peer_id),
         )
         self.connection.commit()
 

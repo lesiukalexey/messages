@@ -627,6 +627,16 @@ async def run() -> None:
                     )
                     context = history.latest(settings.account_id, peer_id)
                 opening = history.opening(settings.account_id, peer_id)
+                pending_duration = store.pending_calendar_duration(settings.account_id, peer_id)
+                pending_meeting_context = (
+                    {
+                        "start_at": pending_duration["start_at"],
+                        "provisional_duration_minutes": pending_duration[
+                            "provisional_duration_minutes"
+                        ],
+                    }
+                    if pending_duration else None
+                )
                 now = datetime.now(ZoneInfo(settings.timezone))
                 model = store.setting("model", settings.default_model)
                 prepared_answers = (
@@ -642,6 +652,7 @@ async def run() -> None:
                     opening_history=opening,
                     auto_detect_category=auto_detect_category,
                     prepared_answers=prepared_answers,
+                    pending_meeting_duration=pending_meeting_context,
                 )
                 detected_category = plan.pop("detected_category", category)
                 if auto_detect_category:
@@ -678,14 +689,108 @@ async def run() -> None:
                             opening_history=opening,
                             auto_detect_category=False,
                             prepared_answers=prepared_answers,
+                            pending_meeting_duration=pending_meeting_context,
                         )
                 plan.pop("detected_category", None)
-                if not plan.get("should_reply", True):
+                duration_followup_reply: str | None = None
+                duration_update_succeeded = False
+                pending_duration = store.pending_calendar_duration(settings.account_id, peer_id)
+                if pending_duration and plan.get("duration_stated"):
+                    requested_duration = int(plan.get("duration_minutes") or 0)
+                    previous_duration = int(pending_duration["provisional_duration_minutes"])
+                    conflict_at: str | None = None
+                    if not 5 <= requested_duration <= 720:
+                        calendar_result = (
+                            "DURATION_INVALID; the requested duration is outside 5 minutes to 12 "
+                            "hours; leave the existing event unchanged and ask for a valid length."
+                        )
+                    elif not calendar.configured:
+                        calendar_result = (
+                            "DURATION_CHECK_FAILED; calendar access is unavailable; leave the "
+                            "existing event unchanged."
+                        )
+                    else:
+                        block_reason = await reply_policy_block(peer_id, force=True)
+                        if block_reason:
+                            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                            store.audit(
+                                peer_id,
+                                "skipped",
+                                f"{block_reason} before calendar duration update",
+                            )
+                            return
+                        try:
+                            duration_update_succeeded, conflict_at = await asyncio.to_thread(
+                                calendar.update_duration,
+                                pending_duration["event_id"],
+                                pending_duration["start_at"],
+                                requested_duration,
+                            )
+                        except Exception as exc:
+                            store.audit(
+                                peer_id,
+                                "calendar_event_duration_update_failed",
+                                type(exc).__name__,
+                            )
+                            calendar_result = (
+                                "DURATION_CHECK_FAILED; calendar access failed; leave the existing "
+                                "event unchanged."
+                            )
+                        else:
+                            if duration_update_succeeded:
+                                store.clear_pending_calendar_duration(settings.account_id, peer_id)
+                                store.audit(
+                                    peer_id,
+                                    "calendar_event_duration_updated",
+                                    f"{previous_duration}->{requested_duration} minutes",
+                                )
+                                calendar_result = (
+                                    f"DURATION_UPDATED; changed the existing event from "
+                                    f"{previous_duration} to {requested_duration} minutes."
+                                )
+                            elif conflict_at:
+                                conflict_time = datetime.fromisoformat(
+                                    conflict_at
+                                ).astimezone(ZoneInfo(settings.timezone))
+                                store.audit(
+                                    peer_id,
+                                    "calendar_event_duration_conflict",
+                                    f"requested={requested_duration}; conflict_at={conflict_time.isoformat()}",
+                                )
+                                calendar_result = (
+                                    f"DURATION_CONFLICT; the longer duration overlaps another "
+                                    f"calendar event starting at {conflict_time.isoformat()}; "
+                                    f"leave the current {previous_duration}-minute event unchanged."
+                                )
+                            else:
+                                calendar_result = (
+                                    "DURATION_CHECK_FAILED; the calendar returned no conflict time; "
+                                    "leave the existing event unchanged."
+                                )
+                    duration_followup_reply = await responder.compose_with_calendar_result(
+                        model=model,
+                        category=category,
+                        history=context,
+                        current_message=event.raw_text,
+                        plan=plan,
+                        calendar_result=calendar_result,
+                        now=now,
+                        style_profile=style_profile(),
+                        prepared_answers=prepared_answers,
+                    )
+                if not plan.get("should_reply", True) and duration_followup_reply is None:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "responder found no safe contextual reply")
                     return
-                start = plan.get("start")
-                action = plan.get("calendar_action", "none")
+                start = None if duration_followup_reply is not None else plan.get("start")
+                action = (
+                    "duration_update"
+                    if duration_followup_reply is not None
+                    else plan.get("calendar_action", "none")
+                )
+                if pending_duration and duration_followup_reply is None:
+                    start = None
+                    action = "none"
                 meeting_in_progress = bool(plan.get("meeting_in_progress")) or meeting_context_present(
                     context, event.raw_text
                 )
@@ -831,12 +936,34 @@ async def run() -> None:
                                 store.record_calendar_event(
                                     settings.account_id, peer_id, event.message.id, event_id
                                 )
-                            calendar_result = "FREE; calendar event successfully created."
+                            if not plan.get("duration_stated"):
+                                store.set_pending_calendar_duration(
+                                    settings.account_id,
+                                    peer_id,
+                                    event_id,
+                                    start,
+                                    duration,
+                                )
+                                calendar_result = (
+                                    "DURATION_PENDING_ASK; calendar event successfully created "
+                                    f"with a provisional duration of {duration} minutes because "
+                                    "the contact did not state a duration. Ask how long the "
+                                    "meeting should be."
+                                )
+                                store.audit(
+                                    peer_id,
+                                    "calendar_duration_followup_requested",
+                                    f"provisional_duration={duration} minutes",
+                                )
+                            else:
+                                calendar_result = "FREE; calendar event successfully created."
                             store.audit(peer_id, "calendar_event_created", event_id)
                         else:
                             calendar_result = f"FREE at {interval}; no event created yet."
                             store.audit(peer_id, "calendar_availability_checked", "free")
-                if availability_reply is not None:
+                if duration_followup_reply is not None:
+                    reply = duration_followup_reply
+                elif availability_reply is not None:
                     reply = availability_reply
                 elif action in ("check", "create"):
                     reply = await responder.compose_with_calendar_result(
