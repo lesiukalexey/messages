@@ -384,10 +384,16 @@ class Store:
                 row["owner_started"] and row["awaiting_contact"]
                 and row["control_mode"] == "ai"
             )
-            control_mode = "ai" if initial_opt_in else "manual"
-            owner_started = row["owner_started"] if initial_opt_in else 0
+            owner_preceded_first_contact = (
+                leading_space
+                and not row["owner_started"]
+                and sent < datetime.fromisoformat(row["session_started_at"])
+            )
+            keep_initial_opt_in = initial_opt_in or owner_preceded_first_contact
+            control_mode = "ai" if keep_initial_opt_in else "manual"
+            owner_started = 1 if keep_initial_opt_in else 0
             awaiting_contact = 1 if initial_opt_in else 0
-            consume_opt_in_marker = False
+            consume_opt_in_marker = owner_preceded_first_contact
             previous_activity = row["last_activity_at"] or row["last_incoming_at"]
             if sent < datetime.fromisoformat(previous_activity):
                 sent_iso = previous_activity
