@@ -80,6 +80,14 @@ def style_profile() -> str:
     return "\n\n".join(profiles)[:12000] or DEFAULT_STYLE
 
 
+def personal_context_profile() -> str:
+    path = RUNTIME_ROOT / "profiles" / "personal-context.md"
+    try:
+        return path.read_text(encoding="utf-8")[:18000]
+    except FileNotFoundError:
+        return ""
+
+
 TYPO_WORD = re.compile(r"(?<![\w@./:-])[^\W\d_]{3,}(?![\w./:-])", re.UNICODE)
 CYRILLIC_ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюяіїєґ"
 
@@ -468,6 +476,9 @@ async def run() -> None:
     history = History()
     calendar = GoogleCalendar(settings.google_token_file, settings.timezone)
     responder = Responder(settings)
+    personal_context = personal_context_profile()
+    if personal_context:
+        logger.info("Personal context profile loaded (%s characters)", len(personal_context))
     recruiter_answers = RecruiterAnswers(settings.recruiter_answers_file)
     if not settings.codex_binary.is_file():
         logger.warning("Codex CLI is not installed at CODEX_BINARY; replies will fail until installed")
@@ -770,6 +781,7 @@ async def run() -> None:
                     auto_detect_category=auto_detect_category,
                     prepared_answers=prepared_answers,
                     pending_meeting_duration=pending_meeting_context,
+                    personal_context=personal_context,
                 )
                 detected_category = plan.pop("detected_category", category)
                 if auto_detect_category and detected_category == "realtors":
@@ -826,6 +838,7 @@ async def run() -> None:
                             auto_detect_category=False,
                             prepared_answers=prepared_answers,
                             pending_meeting_duration=pending_meeting_context,
+                            personal_context=personal_context,
                         )
                 plan.pop("detected_category", None)
                 web_search_requested = bool(plan.get("web_search"))
@@ -952,6 +965,7 @@ async def run() -> None:
                         now=now,
                         style_profile=style_profile(),
                         prepared_answers=prepared_answers,
+                        personal_context=personal_context,
                         web_search_results=web_search_results if web_search_requested else None,
                     )
                 start = None if duration_followup_reply is not None else plan.get("start")
@@ -1187,6 +1201,7 @@ async def run() -> None:
                         now=now,
                         style_profile=style_profile(),
                         prepared_answers=prepared_answers,
+                        personal_context=personal_context,
                         web_search_results=web_search_results,
                     )
                 elif duration_followup_reply is not None:
@@ -1204,6 +1219,7 @@ async def run() -> None:
                         now=now,
                         style_profile=style_profile(),
                         prepared_answers=prepared_answers,
+                        personal_context=personal_context,
                     )
                 else:
                     reply = plan["reply"]
