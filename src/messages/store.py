@@ -355,7 +355,7 @@ class Store:
         return session_started_at
 
     def record_owner_outgoing(
-        self, account_id: str, peer_id: int, sent_at: datetime, leading_space: bool
+        self, account_id: str, peer_id: int, sent_at: datetime, ai_opt_in: bool
     ) -> tuple[str, bool]:
         sent = sent_at.astimezone(UTC) if sent_at.tzinfo else sent_at.replace(tzinfo=UTC)
         sent_iso = sent.isoformat()
@@ -380,10 +380,10 @@ class Store:
             previous_activity = row["last_activity_at"] or row["last_incoming_at"]
             if sent < datetime.fromisoformat(previous_activity):
                 sent_iso = previous_activity
-        control_mode = "ai" if leading_space else "manual"
-        owner_started = 1 if leading_space else 0
-        awaiting_contact = 1 if leading_space else 0
-        consume_opt_in_marker = leading_space
+        control_mode = "ai" if ai_opt_in else "manual"
+        owner_started = 1 if ai_opt_in else 0
+        awaiting_contact = 1 if ai_opt_in else 0
+        consume_opt_in_marker = ai_opt_in
         self.connection.execute(
             """INSERT INTO conversation_sessions
                    (account_id, peer_id, session_started_at, last_incoming_at,

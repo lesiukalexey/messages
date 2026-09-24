@@ -967,25 +967,25 @@ async def run() -> None:
             settings.account_id,
             event.chat_id,
             event.message.date or now,
-            text.startswith(" "),
+            text.endswith("."),
         )
         store.audit(event.chat_id, "conversation_control_changed", control_mode)
-        if consume_opt_in_marker and text[1:]:
+        if consume_opt_in_marker and text[:-1]:
+            trimmed_length = len(text[:-1].encode("utf-16-le")) // 2
             entities = []
             for original in event.message.entities or []:
                 entity = copy(original)
-                if entity.offset == 0:
-                    if entity.length <= 1:
+                entity_end = entity.offset + entity.length
+                if entity_end > trimmed_length:
+                    if entity.offset >= trimmed_length:
                         continue
-                    entity.length -= 1
-                else:
-                    entity.offset -= 1
+                    entity.length -= entity_end - trimmed_length
                 entities.append(entity)
             try:
                 await client.edit_message(
                     event.chat_id,
                     event.message.id,
-                    text[1:],
+                    text[:-1],
                     parse_mode=None,
                     formatting_entities=entities,
                 )
