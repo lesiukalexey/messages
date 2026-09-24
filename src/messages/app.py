@@ -809,6 +809,17 @@ async def run() -> None:
     locks: dict[int, asyncio.Lock] = {}
     assistant_send_markers: dict[tuple[int, str], datetime] = {}
 
+    async def acknowledge_answered_message(event: events.NewMessage.Event) -> None:
+        try:
+            await client.send_read_acknowledge(
+                await event.get_input_chat(), max_id=event.message.id
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not mark answered incoming private message as read (%s)",
+                type(exc).__name__,
+            )
+
     def mark_assistant_send(peer_id: int, text: str) -> None:
         assistant_send_markers[(peer_id, text)] = datetime.now(UTC) + timedelta(minutes=2)
 
@@ -832,6 +843,7 @@ async def run() -> None:
             msg_id=event.message.id,
             reaction=[types.ReactionEmoji(emoticon=emoji)],
         ))
+        await acknowledge_answered_message(event)
         store.message_state(settings.account_id, peer_id, event.message.id, "sent")
         store.audit(
             peer_id,
@@ -1080,16 +1092,6 @@ async def run() -> None:
                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                 store.audit(peer_id, "skipped", "night quiet hours")
             return
-        if event.is_private:
-            try:
-                await client.send_read_acknowledge(
-                    await event.get_input_chat(), max_id=event.message.id
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Could not mark incoming private message as read (%s)",
-                    type(exc).__name__,
-                )
         if not event.is_private or not event.raw_text.strip():
             return
         sender = await event.get_sender()
@@ -1802,6 +1804,7 @@ async def run() -> None:
                     return
                 mark_assistant_send(peer_id, reply)
                 sent = await event.respond(reply)
+                await acknowledge_answered_message(event)
                 store.message_state(settings.account_id, peer_id, event.message.id, "sent")
                 store.audit(
                     peer_id,
