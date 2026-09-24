@@ -19,6 +19,8 @@ PLAN_SCHEMA: dict[str, Any] = {
     "properties": {
         "reply": {"type": "string"},
         "should_reply": {"type": "boolean"},
+        "should_react": {"type": "boolean"},
+        "reaction_emoji": {"type": "string", "enum": ["", "👍", "🔥", "❤️", "🙏", "😂", "🙂"]},
         "detected_category": {"type": "string", "enum": ["friends", "recruiters"]},
         "meeting_in_progress": {"type": "boolean"},
         "calendar_action": {"type": "string", "enum": ["none", "check", "create"]},
@@ -33,6 +35,8 @@ PLAN_SCHEMA: dict[str, Any] = {
     "required": [
         "reply",
         "should_reply",
+        "should_react",
+        "reaction_emoji",
         "detected_category",
         "meeting_in_progress",
         "calendar_action",
@@ -128,7 +132,13 @@ have a known and useful answer, answer only those parts. If the whole message as
 facts and no safe useful response remains, set should_reply=false and set reply to an empty string.
 Also set should_reply=false for an unclear/contextless non-meeting message that cannot be answered
 without guessing; set reply to an empty string. Do not treat a date or time alone as meeting intent.
-Otherwise set should_reply=true. Routine scheduling questions may still get one concise clarification
+Otherwise set should_reply=true. For a standalone acknowledgment or a message that needs no
+answer or next step, set should_reply=false and should_react=true, choose one fitting reaction_emoji,
+and leave reply empty. A short answer to a question Alexey just asked is still an answer; handle its
+meaning and any required action. Use a reaction only when a text reply would add nothing; do not react instead
+of answering a question, handling a request, giving a needed clarification, or completing follow-up.
+For other no-reply cases set should_react=false and reaction_emoji to an empty string. Choose only
+from the supplied reaction options. Routine scheduling questions may still get one concise clarification
 for a genuinely missing date or time when the conversation clearly concerns a meeting.
 Set detected_category to recruiters only when the conversation is about recruiting Alexey,
 such as a job opportunity, vacancy, interview, or hiring discussion. If there is no clear

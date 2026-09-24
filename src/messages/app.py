@@ -34,6 +34,15 @@ EXPLICIT_CLOCK = re.compile(
     r"\b(?:в|к|на|около)\s*(?:[01]?\d|2[0-3])(?:[-–][0-5]\d)?\b)",
     re.IGNORECASE,
 )
+ACKNOWLEDGEMENTS = {
+    "ага": "👍", "да": "👍", "давай": "👍", "договорились": "👍",
+    "ладно": "👍", "ок": "👍", "окей": "👍", "понял": "👍", "поняла": "👍",
+    "принято": "👍", "хорошо": "👍", "ясно": "👍", "спасибо": "🙏",
+    "отлично": "🔥", "класс": "🔥", "круто": "🔥", "супер": "🔥",
+    "ok": "👍", "okay": "👍", "sure": "👍", "gotit": "👍",
+    "thanks": "🙏", "great": "🔥", "awesome": "🔥",
+}
+REACTION_EMOJIS = {"👍", "🔥", "❤️", "🙏", "😂", "🙂"}
 
 
 def style_profile() -> str:
@@ -77,6 +86,19 @@ def occasionally_introduce_typo(text: str) -> str:
             changed = word[:position] + replacement + word[position + 1:]
         result = result[:match.start()] + changed + result[match.end():]
     return result
+
+
+def acknowledgement_reaction(message: str) -> str | None:
+    normalized = re.sub(r"[\s.!?,;:…()]+", "", message.casefold())
+    return ACKNOWLEDGEMENTS.get(normalized)
+
+
+def latest_assistant_asked_question(history: list[dict[str, str]]) -> bool:
+    latest_assistant = next(
+        (message for message in reversed(history) if message.get("role") == "assistant"),
+        None,
+    )
+    return bool(latest_assistant and "?" in latest_assistant.get("text", ""))
 
 
 class BioGate:
@@ -573,6 +595,48 @@ async def run() -> None:
             auto_folder.invalidate()
             await auto_folder.refresh(force=True)
 
+    async def notify_conversation_started(
+        peer_id: int, sender: types.User, category: str, session_started_at: str
+    ) -> None:
+        if not store.claim_conversation_notification(
+            settings.account_id, peer_id, session_started_at
+        ):
+            return
+        display_name = " ".join(
+            part for part in (sender.first_name, sender.last_name) if part
+        ).strip() or sender.username or f"Telegram user {peer_id}"
+        username = f" (@{sender.username})" if sender.username else ""
+        category_label = "рекрутер" if category == "recruiters" else "друг"
+        notification = (
+            f"ИИ начал новый диалог: {display_name}{username} "
+            f"(категория: {category_label})."
+        )
+        try:
+            await client.send_message(NOTIFICATION_BOT_USERNAME, notification)
+        except Exception as notification_error:
+            store.finish_conversation_notification(
+                settings.account_id, peer_id, session_started_at, success=False
+            )
+            store.audit(
+                peer_id,
+                "conversation_notification_failed",
+                type(notification_error).__name__,
+            )
+            logger.warning(
+                "Could not notify %s for a new conversation (%s)",
+                NOTIFICATION_BOT_USERNAME,
+                type(notification_error).__name__,
+            )
+        else:
+            store.finish_conversation_notification(
+                settings.account_id, peer_id, session_started_at, success=True
+            )
+            store.audit(
+                peer_id,
+                "conversation_notification_sent",
+                NOTIFICATION_BOT_USERNAME,
+            )
+
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
         peer_id = event.chat_id
@@ -692,6 +756,11 @@ async def run() -> None:
                             pending_meeting_duration=pending_meeting_context,
                         )
                 plan.pop("detected_category", None)
+                acknowledgement = acknowledgement_reaction(event.raw_text)
+                if acknowledgement and not latest_assistant_asked_question(context):
+                    plan["should_reply"] = False
+                    plan["should_react"] = True
+                    plan["reaction_emoji"] = acknowledgement
                 duration_followup_reply: str | None = None
                 duration_update_succeeded = False
                 pending_duration = store.pending_calendar_duration(settings.account_id, peer_id)
@@ -778,10 +847,6 @@ async def run() -> None:
                         style_profile=style_profile(),
                         prepared_answers=prepared_answers,
                     )
-                if not plan.get("should_reply", True) and duration_followup_reply is None:
-                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "responder found no safe contextual reply")
-                    return
                 start = None if duration_followup_reply is not None else plan.get("start")
                 action = (
                     "duration_update"
@@ -961,6 +1026,46 @@ async def run() -> None:
                         else:
                             calendar_result = f"FREE at {interval}; no event created yet."
                             store.audit(peer_id, "calendar_availability_checked", "free")
+                text_reply_required = (
+                    duration_followup_reply is not None
+                    or availability_reply is not None
+                    or action in ("check", "duration_update")
+                    or (
+                        action == "create"
+                        and calendar_result != "FREE; calendar event successfully created."
+                    )
+                )
+                if not plan.get("should_reply", True) and not text_reply_required:
+                    if not plan.get("should_react"):
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        store.audit(peer_id, "skipped", "responder found no safe contextual reply")
+                        return
+                    block_reason = await reply_policy_block(peer_id, force=True)
+                    if block_reason:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        store.audit(peer_id, "skipped", f"{block_reason} before reaction")
+                        return
+                    emoji = plan.get("reaction_emoji")
+                    if emoji not in REACTION_EMOJIS:
+                        emoji = "👍"
+                    await client(functions.messages.SendReactionRequest(
+                        peer=await event.get_input_chat(),
+                        msg_id=event.message.id,
+                        reaction=[types.ReactionEmoji(emoticon=emoji)],
+                    ))
+                    store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                    store.audit(
+                        peer_id,
+                        "reacted",
+                        json.dumps(
+                            {"incoming_message_id": event.message.id, "emoji": emoji},
+                            ensure_ascii=False,
+                        ),
+                    )
+                    await notify_conversation_started(
+                        peer_id, sender, category, session_started_at
+                    )
+                    return
                 if duration_followup_reply is not None:
                     reply = duration_followup_reply
                 elif availability_reply is not None:
@@ -1021,43 +1126,9 @@ async def run() -> None:
                         ensure_ascii=False,
                     ),
                 )
-                if store.claim_conversation_notification(
-                    settings.account_id, peer_id, session_started_at
-                ):
-                    display_name = " ".join(
-                        part for part in (sender.first_name, sender.last_name) if part
-                    ).strip() or sender.username or f"Telegram user {peer_id}"
-                    username = f" (@{sender.username})" if sender.username else ""
-                    category_label = "рекрутер" if category == "recruiters" else "друг"
-                    notification = (
-                        f"ИИ начал новый диалог: {display_name}{username} "
-                        f"(категория: {category_label})."
-                    )
-                    try:
-                        await client.send_message(NOTIFICATION_BOT_USERNAME, notification)
-                    except Exception as notification_error:
-                        store.finish_conversation_notification(
-                            settings.account_id, peer_id, session_started_at, success=False
-                        )
-                        store.audit(
-                            peer_id,
-                            "conversation_notification_failed",
-                            type(notification_error).__name__,
-                        )
-                        logger.warning(
-                            "Could not notify %s for a new conversation (%s)",
-                            NOTIFICATION_BOT_USERNAME,
-                            type(notification_error).__name__,
-                        )
-                    else:
-                        store.finish_conversation_notification(
-                            settings.account_id, peer_id, session_started_at, success=True
-                        )
-                        store.audit(
-                            peer_id,
-                            "conversation_notification_sent",
-                            NOTIFICATION_BOT_USERNAME,
-                        )
+                await notify_conversation_started(
+                    peer_id, sender, category, session_started_at
+                )
             except Exception as exc:
                 store.message_state(settings.account_id, peer_id, event.message.id, "failed")
                 store.audit(
