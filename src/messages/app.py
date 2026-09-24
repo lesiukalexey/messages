@@ -793,21 +793,23 @@ async def run() -> None:
 
     async def reply_policy_block(peer_id: int, force: bool = True) -> str | None:
         owner_opt_in = store.conversation_owner_opt_in_active(settings.account_id, peer_id)
-        if (
-            store.conversation_control_mode(settings.account_id, peer_id) == "manual"
-            and not owner_opt_in
-        ):
-            return "conversation is being handled manually by Alexey"
         if not await manual_folder.refresh(force=force):
             return "Telegram Manual folder state is unavailable"
         if manual_folder.contains(peer_id) and not owner_opt_in:
             return "contact is in Telegram Manual folder"
         if not await auto_folder.refresh(force=force):
             return "Telegram Auto folder state is unavailable"
+        auto_enabled = auto_folder.contains(peer_id)
+        if (
+            store.conversation_control_mode(settings.account_id, peer_id) == "manual"
+            and not owner_opt_in
+            and not auto_enabled
+        ):
+            return "conversation is being handled manually by Alexey"
         await gate.refresh(force=force)
         if gate.error:
             return "global bio switch is unreadable"
-        if not gate.enabled and not auto_folder.contains(peer_id) and not owner_opt_in:
+        if not gate.enabled and not auto_enabled and not owner_opt_in:
             return "global bio switch is off and contact is not in Telegram Auto folder"
         return None
     locks: dict[int, asyncio.Lock] = {}
