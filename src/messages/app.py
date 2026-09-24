@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import copy
 from difflib import SequenceMatcher
 import json
 import logging
@@ -962,13 +963,44 @@ async def run() -> None:
             return
         if marker_expiry:
             assistant_send_markers.pop(key, None)
-        control_mode = store.record_owner_outgoing(
+        control_mode, consume_opt_in_marker = store.record_owner_outgoing(
             settings.account_id,
             event.chat_id,
             event.message.date or now,
             text.startswith(" "),
         )
         store.audit(event.chat_id, "conversation_control_changed", control_mode)
+        if consume_opt_in_marker and text[1:]:
+            entities = []
+            for original in event.message.entities or []:
+                entity = copy(original)
+                if entity.offset == 0:
+                    if entity.length <= 1:
+                        continue
+                    entity.length -= 1
+                else:
+                    entity.offset -= 1
+                entities.append(entity)
+            try:
+                await client.edit_message(
+                    event.chat_id,
+                    event.message.id,
+                    text[1:],
+                    parse_mode=None,
+                    formatting_entities=entities,
+                )
+            except Exception as exc:
+                store.audit(
+                    event.chat_id,
+                    "conversation_opt_in_marker_removal_failed",
+                    type(exc).__name__,
+                )
+                logger.warning(
+                    "Could not remove the leading-space opt-in marker (%s)",
+                    type(exc).__name__,
+                )
+            else:
+                store.audit(event.chat_id, "conversation_opt_in_marker_removed")
 
     @client.on(events.NewMessage(outgoing=True))
     async def on_control_message(event: events.NewMessage.Event) -> None:

@@ -356,7 +356,7 @@ class Store:
 
     def record_owner_outgoing(
         self, account_id: str, peer_id: int, sent_at: datetime, leading_space: bool
-    ) -> str:
+    ) -> tuple[str, bool]:
         sent = sent_at.astimezone(UTC) if sent_at.tzinfo else sent_at.replace(tzinfo=UTC)
         sent_iso = sent.isoformat()
         row = self.connection.execute(
@@ -375,6 +375,7 @@ class Store:
             notification_state = "pending"
             control_mode = "ai" if leading_space else "manual"
             owner_started, awaiting_contact = 1, 1
+            consume_opt_in_marker = leading_space
         else:
             session_started_at = row["session_started_at"]
             last_incoming_at = row["last_incoming_at"]
@@ -386,6 +387,7 @@ class Store:
             control_mode = "ai" if initial_opt_in else "manual"
             owner_started = row["owner_started"] if initial_opt_in else 0
             awaiting_contact = 1 if initial_opt_in else 0
+            consume_opt_in_marker = False
             previous_activity = row["last_activity_at"] or row["last_incoming_at"]
             if sent < datetime.fromisoformat(previous_activity):
                 sent_iso = previous_activity
@@ -407,7 +409,7 @@ class Store:
              control_mode, owner_started, awaiting_contact, sent_iso),
         )
         self.connection.commit()
-        return control_mode
+        return control_mode, consume_opt_in_marker
 
     def conversation_control_mode(self, account_id: str, peer_id: int) -> str:
         row = self.connection.execute(
