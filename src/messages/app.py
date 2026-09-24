@@ -65,6 +65,28 @@ ACKNOWLEDGEMENTS = {
     "thanks": "🙏", "great": "🔥", "awesome": "🔥",
 }
 REACTION_EMOJIS = {"👍", "🔥", "❤️", "🙏", "😂", "🙂"}
+RU_PRESENCE_CHECK = re.compile(
+    r"(?:\bau\b|\bты\s+(?:(?:еще|ещё)\s+)?(?:тут|здесь)\b|"
+    r"\bя\s+(?:(?:(?:все|всё)\s+)?(?:еще|ещё)\s+)?(?:тут|здесь)\b"
+    r".{0,40}\bа\s+ты\b|"
+    r"\bжду\s+(?:твоего\s+)?ответа\b.{0,80}\bа\s+ты\b|"
+    r"\bти\s+(?:ще\s+)?тут\b|"
+    r"\bя\s+ще\s+тут\b.{0,40}\bа\s+ти\b)",
+    re.IGNORECASE,
+)
+EN_PRESENCE_CHECK = re.compile(
+    r"(?:\bare\s+you\s+(?:still\s+)?(?:here|there|around)\b|"
+    r"\byou\s+still\s+(?:here|there|around)\b|\banyone\s+there\b)",
+    re.IGNORECASE,
+)
+
+
+def direct_presence_reply(text: str) -> str | None:
+    if EN_PRESENCE_CHECK.search(text):
+        return "Yes, I'm here)"
+    if RU_PRESENCE_CHECK.search(text):
+        return "Да, я тут)"
+    return None
 
 
 def style_profile() -> str:
@@ -1312,6 +1334,12 @@ async def run() -> None:
                     plan["should_reply"] = False
                     plan["should_react"] = True
                     plan["reaction_emoji"] = acknowledgement
+                presence_reply = direct_presence_reply(event.raw_text)
+                if presence_reply and not plan.get("should_reply", True):
+                    plan["should_reply"] = True
+                    plan["should_react"] = False
+                    plan["reply"] = presence_reply
+                    store.audit(peer_id, "no_reply_overridden", "direct presence check")
                 duration_followup_reply: str | None = None
                 duration_update_succeeded = False
                 pending_duration = store.pending_calendar_duration(settings.account_id, peer_id)
