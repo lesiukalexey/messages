@@ -89,6 +89,33 @@ def direct_presence_reply(text: str) -> str | None:
     return None
 
 
+def is_direct_question(text: str) -> bool:
+    if "?" in text or "？" in text:
+        return True
+    return bool(re.match(
+        r"^\s*(?:а\s+)?(?:кто|что|где|куда|откуда|когда|почему|зачем|как|"
+        r"сколько|какой|какая|какие|можно\s+ли|можешь\s+ли|"
+        r"who|what|where|when|why|how|which|can you|could you)\b",
+        text,
+        re.IGNORECASE,
+    ))
+
+
+def day_only_meeting_invitation(text: str) -> bool:
+    day = re.search(
+        r"\b(?:сегодня|завтра|послезавтра|today|tomorrow)\b",
+        text,
+        re.IGNORECASE,
+    )
+    invitation = re.search(
+        r"\b(?:давай|давайте|можем|можно|хочешь|хотите|предлагаю|let's|shall we|can we|could we)\b"
+        r".{0,80}\b(?:встрет\w*|увид\w*|meet|see each other)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(day and invitation and not EXPLICIT_CLOCK.search(text))
+
+
 def style_profile() -> str:
     style_path = Path(
         os.getenv(
@@ -1196,8 +1223,10 @@ async def run() -> None:
                 )
                 now = datetime.now(ZoneInfo(settings.timezone))
                 model = store.setting("model", settings.default_model)
+                day_only_invitation = day_only_meeting_invitation(event.raw_text)
                 calendar_related = (
                     availability_question(event.raw_text)
+                    or day_only_invitation
                     or meeting_context_present(context, event.raw_text)
                 )
                 if calendar_related:
@@ -1493,7 +1522,7 @@ async def run() -> None:
                     calendar_result = "The contact declined the finish-by time; ask for another meeting time."
                 target_day = (
                     established_availability_date(context, event.raw_text, now)
-                    if availability_question(event.raw_text)
+                    if availability_question(event.raw_text) or day_only_invitation
                     else None
                 )
                 if target_day is not None:
@@ -1517,6 +1546,13 @@ async def run() -> None:
                             availability_reply = safe_availability_reply(
                                 event.raw_text, slots, target_day, now.date()
                             )
+                            if day_only_invitation and slots:
+                                prefix = (
+                                    "Да, давай. "
+                                    if re.search(r"[А-Яа-яЁёІЇЄҐіїєґ]", event.raw_text)
+                                    else "Sure. "
+                                )
+                                availability_reply = prefix + availability_reply
                             store.audit(
                                 peer_id,
                                 "calendar_availability_checked",
@@ -1693,6 +1729,45 @@ async def run() -> None:
                         else:
                             calendar_result = f"FREE at {interval}; no event created yet."
                             store.audit(peer_id, "calendar_availability_checked", "free")
+                if (
+                    is_direct_question(event.raw_text)
+                    and (
+                        not plan.get("should_reply", True)
+                        or not str(plan.get("reply") or "").strip()
+                    )
+                    and availability_reply is None
+                    and calendar_boundary_reply is None
+                    and duration_followup_reply is None
+                    and action == "none"
+                ):
+                    plan["should_reply"] = True
+                    plan["should_react"] = False
+                    if not str(plan.get("reply") or "").strip():
+                        plan["reply"] = await responder.compose_with_calendar_result(
+                            model=model,
+                            category=category,
+                            history=context,
+                            current_message=event.raw_text,
+                            plan=plan,
+                            calendar_result=(
+                                "QUESTION_REQUIRES_ANSWER; answer the current question. "
+                                "If a needed fact is unknown, say so briefly or ask for the "
+                                "specific missing detail. Do not invent facts."
+                            ),
+                            now=now,
+                            style_profile=style_profile(),
+                            previous_reply_examples=previous_reply_examples,
+                            recent_outgoing_replies=recent_outgoing_replies,
+                            prepared_answers=prepared_answers,
+                            personal_context=personal_context,
+                        )
+                    if not str(plan.get("reply") or "").strip():
+                        plan["reply"] = (
+                            "Не могу точно ответить на этот вопрос."
+                            if re.search(r"[А-Яа-яЁёІЇЄҐіїєґ]", event.raw_text)
+                            else "I can't answer that accurately."
+                        )
+                    store.audit(peer_id, "no_reply_overridden", "direct question")
                 text_reply_required = (
                     web_search_requested
                     or duration_followup_reply is not None
