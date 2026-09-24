@@ -119,11 +119,12 @@ class BioGate:
         return self.enabled
 
 
-class ManualFolderGate:
-    """Resolve the Manual filter from its peers and supported filter flags."""
+class DialogFilterGate:
+    """Resolve a Telegram dialog filter from its peers and supported flags."""
 
-    def __init__(self, client: TelegramClient) -> None:
+    def __init__(self, client: TelegramClient, title: str) -> None:
         self.client = client
+        self.title = title
         self.ready = False
         self.loaded = False
         self.folder_id: int | None = None
@@ -156,7 +157,7 @@ class ManualFolderGate:
                     (
                         item for item in result.filters
                         if (getattr(getattr(item, "title", None), "text", "") or "")
-                        .strip().casefold() == "manual"
+                        .strip().casefold() == self.title.casefold()
                     ),
                     None,
                 )
@@ -197,18 +198,21 @@ class ManualFolderGate:
                 self.dirty = False
                 if folder is None and (not was_loaded or previous_folder_id is not None):
                     logging.getLogger(__name__).warning(
-                        "Telegram folder 'Manual' was not found; folder exclusion is inactive"
+                        "Telegram dialog filter '%s' was not found",
+                        self.title,
                     )
                 elif previous_folder_id != self.folder_id or previous_peer_ids != self.peer_ids:
                     logging.getLogger(__name__).info(
-                        "Telegram folder 'Manual' refreshed; %d dialogs excluded",
+                        "Telegram folder '%s' refreshed; %d dialogs included",
+                        self.title,
                         len(self.peer_ids),
                     )
             except Exception as exc:
                 self.ready = False
                 self.dirty = True
                 logging.getLogger(__name__).warning(
-                    "Could not read Telegram folder 'Manual'; private replies are paused (%s)",
+                    "Could not read Telegram folder '%s'; private replies are paused (%s)",
+                    self.title,
                     type(exc).__name__,
                 )
             finally:
@@ -422,8 +426,24 @@ async def run() -> None:
     me = await client.get_me()
     gate = BioGate(client, me.id)
     await gate.refresh(force=True)
-    manual_folder = ManualFolderGate(client)
+    manual_folder = DialogFilterGate(client, "Manual")
     await manual_folder.refresh(force=True)
+    auto_folder = DialogFilterGate(client, "Auto")
+    await auto_folder.refresh(force=True)
+
+    async def reply_policy_block(peer_id: int, force: bool = True) -> str | None:
+        if not await manual_folder.refresh(force=force):
+            return "Telegram Manual folder state is unavailable"
+        if manual_folder.contains(peer_id):
+            return "contact is in Telegram Manual folder"
+        if not await auto_folder.refresh(force=force):
+            return "Telegram Auto folder state is unavailable"
+        await gate.refresh(force=force)
+        if gate.error:
+            return "global bio switch is unreadable"
+        if not gate.enabled and not auto_folder.contains(peer_id):
+            return "global bio switch is off and contact is not in Telegram Auto folder"
+        return None
     locks: dict[int, asyncio.Lock] = {}
 
     async def send_control(text: str) -> None:
@@ -449,7 +469,8 @@ async def run() -> None:
                 "/dialogs [page] — list exported chats and current categories\n"
                 "New chats become recruiters when hiring is clear; everyone else is friends.\n"
                 "Chats in the Telegram folder 'Manual' are ignored.\n"
-                "Edit your Telegram bio to toggle: `free` = OFF; empty/other = ON."
+                "Chats in folder 'Auto' can receive replies even when bio is `free`.\n"
+                "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/other = ON."
             )
         if command == "/model":
             if len(parts) == 1:
@@ -549,6 +570,8 @@ async def run() -> None:
         if isinstance(update, (types.UpdateDialogFilter, types.UpdateDialogFilters)):
             manual_folder.invalidate()
             await manual_folder.refresh(force=True)
+            auto_folder.invalidate()
+            await auto_folder.refresh(force=True)
 
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
@@ -575,9 +598,10 @@ async def run() -> None:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
             store.audit(peer_id, "skipped", "incoming message is older than 30 minutes")
             return
-        if not await gate.refresh():
+        block_reason = await reply_policy_block(peer_id, force=True)
+        if block_reason:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-            store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
+            store.audit(peer_id, "skipped", block_reason)
             return
         category = store.contact_category(peer_id)
         category_source = store.contact_category_source(peer_id)
@@ -586,17 +610,10 @@ async def run() -> None:
 
         async with locks.setdefault(peer_id, asyncio.Lock()):
             try:
-                if not await gate.refresh(force=True):
+                block_reason = await reply_policy_block(peer_id, force=True)
+                if block_reason:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "global bio switch is off or unreadable")
-                    return
-                if not await manual_folder.refresh(force=True):
-                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "Telegram Manual folder state is unavailable")
-                    return
-                if manual_folder.contains(peer_id):
-                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "contact is in Telegram Manual folder")
+                    store.audit(peer_id, "skipped", block_reason)
                     return
                 session_started_at = store.record_incoming_session(
                     settings.account_id, peer_id, event.message.date
@@ -782,9 +799,10 @@ async def run() -> None:
                             calendar_result = "BUSY; the proposed time is unavailable and no event was created."
                             store.audit(peer_id, "calendar_availability_checked", "busy")
                         elif action == "create":
-                            if not await gate.refresh(force=True):
+                            block_reason = await reply_policy_block(peer_id, force=True)
+                            if block_reason:
                                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                                store.audit(peer_id, "skipped", "assistant switched off before calendar write")
+                                store.audit(peer_id, "skipped", f"{block_reason} before calendar write")
                                 return
                             existing = store.calendar_event_exists(
                                 settings.account_id, peer_id, event.message.id
@@ -855,17 +873,10 @@ async def run() -> None:
                 if random.random() < 0.3:
                     delay_seconds += random.uniform(1.0, 10.0)
                 await asyncio.sleep(delay_seconds)
-                if not await gate.refresh(force=True):
+                block_reason = await reply_policy_block(peer_id, force=True)
+                if block_reason:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "assistant switched off before send")
-                    return
-                if not await manual_folder.refresh(force=True):
-                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "Telegram Manual folder state unavailable before send")
-                    return
-                if manual_folder.contains(peer_id):
-                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "contact moved to Telegram Manual folder before send")
+                    store.audit(peer_id, "skipped", f"{block_reason} before send")
                     return
                 sent = await event.respond(reply)
                 store.message_state(settings.account_id, peer_id, event.message.id, "sent")
