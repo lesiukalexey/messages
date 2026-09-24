@@ -109,6 +109,41 @@ class GoogleCalendar:
         ).execute()
         return True, None
 
+    def next_busy_start(self, start_at: str) -> str | None:
+        begins = datetime.fromisoformat(start_at)
+        if begins.tzinfo is None:
+            begins = begins.replace(tzinfo=self.timezone)
+        begins = begins.astimezone(self.timezone)
+        day_end = datetime.combine(begins.date() + timedelta(days=1), time.min, self.timezone)
+        if begins >= day_end:
+            return None
+        response = self._service().freebusy().query(
+            body={
+                "timeMin": begins.isoformat(),
+                "timeMax": day_end.isoformat(),
+                "timeZone": str(self.timezone),
+                "items": [{"id": "primary"}],
+            }
+        ).execute()
+        calendar = response.get("calendars", {}).get("primary", {})
+        if calendar.get("errors"):
+            raise RuntimeError("Google Calendar could not check same-day availability")
+        intervals = [
+            (
+                datetime.fromisoformat(item["start"].replace("Z", "+00:00")).astimezone(
+                    self.timezone
+                ),
+                datetime.fromisoformat(item["end"].replace("Z", "+00:00")).astimezone(
+                    self.timezone
+                ),
+            )
+            for item in calendar.get("busy", [])
+        ]
+        if any(busy_start <= begins < busy_end for busy_start, busy_end in intervals):
+            return None
+        future = [busy_start for busy_start, _ in intervals if busy_start > begins]
+        return min(future).isoformat() if future else None
+
     def available_slots(
         self,
         day: date,

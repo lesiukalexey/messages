@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from difflib import SequenceMatcher
 import json
 import logging
 import os
 import random
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -89,27 +90,82 @@ def personal_context_profile() -> str:
 
 
 TYPO_WORD = re.compile(r"(?<![\w@./:-])[^\W\d_]{3,}(?![\w./:-])", re.UNICODE)
-CYRILLIC_ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюяіїєґ"
+CYRILLIC_VOWELS = set("аеёиоуыэюяіїє")
+CYRILLIC_VOICELESS_CONSONANTS = set("пфктсшщхцч")
+LATIN_VOWELS = set("aeiou")
+LATIN_VOICELESS_CONSONANTS = set("ptkfsxhqc")
+
+
+def repeats_recent_reply(reply: str, previous_replies: list[str]) -> bool:
+    def normalized(value: str) -> str:
+        return "".join(re.findall(r"[^\W_]", value.casefold(), re.UNICODE))
+
+    candidate = normalized(reply)
+    candidate_words = set(re.findall(r"[^\W_]{2,}", reply.casefold(), re.UNICODE))
+    for previous in previous_replies:
+        earlier = normalized(previous)
+        if not candidate or not earlier:
+            continue
+        if candidate == earlier:
+            return True
+        if min(len(candidate), len(earlier)) >= 8 and SequenceMatcher(
+            None, candidate, earlier
+        ).ratio() >= 0.9:
+            return True
+        earlier_words = set(re.findall(r"[^\W_]{2,}", previous.casefold(), re.UNICODE))
+        union = candidate_words | earlier_words
+        if len(union) >= 4 and len(candidate_words & earlier_words) / len(union) >= 0.88:
+            return True
+    return False
 
 
 def occasionally_introduce_typo(text: str) -> str:
-    """Add a natural-sized typo to about one eligible word in every hundred."""
+    """Give each eligible word a 1% chance of a constrained single-letter typo."""
     result = text
     for match in reversed(list(TYPO_WORD.finditer(text))):
         word = match.group()
         if random.random() >= 0.01:
             continue
-        positions = [index for index, character in enumerate(word) if character.isalpha()]
-        if len(positions) < 3:
+        letters = [(index, character) for index, character in enumerate(word) if character.isalpha()]
+        if len(letters) < 3:
             continue
-        position = random.choice(positions)
-        if random.random() < 0.5:
+
+        replacements: dict[str, list[tuple[int, list[str]]]] = {
+            "vowel": [],
+            "voiceless": [],
+        }
+        for index, character in letters:
+            folded = character.casefold()
+            if character.isascii():
+                if folded in LATIN_VOWELS:
+                    group = LATIN_VOWELS
+                    kind = "vowel"
+                elif folded in LATIN_VOICELESS_CONSONANTS:
+                    group = LATIN_VOICELESS_CONSONANTS
+                    kind = "voiceless"
+                else:
+                    continue
+            elif folded in CYRILLIC_VOWELS:
+                group = CYRILLIC_VOWELS
+                kind = "vowel"
+            elif folded in CYRILLIC_VOICELESS_CONSONANTS:
+                group = CYRILLIC_VOICELESS_CONSONANTS
+                kind = "voiceless"
+            else:
+                continue
+            choices = [letter for letter in group if letter != folded]
+            if character.isupper():
+                choices = [letter.upper() for letter in choices]
+            replacements[kind].append((index, choices))
+
+        operations = ["delete"]
+        operations.extend(kind for kind, positions in replacements.items() if positions)
+        operation = random.choice(operations)
+        if operation == "delete":
+            position = random.choice([index for index, _ in letters])
             changed = word[:position] + word[position + 1:]
         else:
-            character = word[position]
-            alphabet = "abcdefghijklmnopqrstuvwxyz" if character.isascii() else CYRILLIC_ALPHABET
-            choices = [letter.upper() if character.isupper() else letter for letter in alphabet]
-            choices = [letter for letter in choices if letter.casefold() != character.casefold()]
+            position, choices = random.choice(replacements[operation])
             replacement = random.choice(choices)
             changed = word[:position] + replacement + word[position + 1:]
         result = result[:match.start()] + changed + result[match.end():]
@@ -135,6 +191,53 @@ def latest_assistant_asked_question(history: list[dict[str, str]]) -> bool:
         None,
     )
     return bool(latest_assistant and "?" in latest_assistant.get("text", ""))
+
+
+def latest_assistant_asked_finish_by(history: list[dict[str, str]]) -> bool:
+    latest_assistant = next(
+        (message for message in reversed(history) if message.get("role") == "assistant"),
+        None,
+    )
+    if not latest_assistant:
+        return False
+    text = latest_assistant.get("text", "").casefold()
+    return bool(
+        re.search(r"\d{1,2}[:.]\d{2}", text)
+        and ("потом занят" in text or "busy after that" in text)
+    )
+
+
+def clear_yes_answer(message: str) -> bool:
+    return bool(
+        re.match(
+            r"^\s*(?:да|ага|угу|так|звісно|конечно|думаю\s+да|успеем|ок(?:ей)?|хорошо|yes|yeah|sure|okay?)\b",
+            message,
+            re.IGNORECASE,
+        )
+    )
+
+
+def clear_no_answer(message: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(?:нет(?:,\s*не\s+успеем)?|не\s+успеем|вряд\s+ли|no(?:,\s*not\s+really)?|not\s+really)[.!?\s]*",
+            message,
+            re.IGNORECASE,
+        )
+    )
+
+
+def counterparty_asks_alexey_to_choose_time(message: str) -> bool:
+    normalized = message.casefold()
+    has_alternatives = bool(
+        re.search(r"\b(?:или|or)\b", normalized)
+        or len(re.findall(r"(?<!\d)(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?!\d)", normalized)) > 1
+    )
+    asks_alexey = bool(
+        re.search(r"\b(?:тебе|вам|какой|какое|вариант|which|what|you)\b", normalized)
+        and re.search(r"\b(?:удоб\w*|подход\w*|works? for you|suits? you)\b", normalized)
+    )
+    return has_alternatives and asks_alexey
 
 
 class BioGate:
@@ -290,8 +393,10 @@ class History:
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=True,
         )
+        self._past_reply_cache: dict[str, list[dict[str, Any]]] = {}
+        self._past_reply_cache_loaded_at: dict[str, datetime] = {}
 
-    def latest(self, account_id: str, peer_id: int, limit: int = 23) -> list[dict[str, str]]:
+    def latest(self, account_id: str, peer_id: int, limit: int = 80) -> list[dict[str, str]]:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """SELECT text, outgoing, date FROM messages
@@ -328,6 +433,123 @@ class History:
             for row in rows
         ]
 
+    def relevant_past_replies(
+        self,
+        account_id: str,
+        peer_id: int,
+        incoming: str,
+        search_queries: list[str] | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, str]]:
+        """Find similar historical Q/A pairs across the owner's Telegram accounts."""
+        stop_words = {
+            "это", "как", "что", "где", "когда", "зачем", "почему", "можно", "будет",
+            "есть", "был", "была", "были", "для", "или", "если", "тогда", "какой",
+            "какая", "какие", "сколько", "чем", "тебе", "тебя", "твой", "твоя", "мне",
+            "меня", "его", "её", "они", "она", "оно", "the", "and", "for", "you",
+            "your", "are", "was", "what", "when", "where", "why", "how", "can", "could",
+            "would", "with", "from", "that", "this", "have", "has", "какбы", "просто",
+        }
+        token_pattern = re.compile(r"[^\W_]{3,}", re.UNICODE)
+
+        def tokens(value: str) -> set[str]:
+            return {word for word in token_pattern.findall(value.lower()) if word not in stop_words}
+
+        query_sets = [tokens(incoming[:4000])]
+        query_sets.extend(tokens(value[:400]) for value in (search_queries or []) if value.strip())
+        query_sets = [value for value in query_sets if value]
+        if not query_sets:
+            return []
+        history_accounts = ("personal", "personal2")
+        cache_key = "|".join(history_accounts)
+        cache_age = datetime.now(UTC) - self._past_reply_cache_loaded_at.get(
+            cache_key, datetime.min.replace(tzinfo=UTC)
+        )
+        if cache_key not in self._past_reply_cache or cache_age > timedelta(minutes=10):
+            placeholders = ", ".join(["%s"] * len(history_accounts))
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    f"""SELECT account_id, dialog_id, message_id, text, outgoing FROM messages
+                        WHERE account_id IN ({placeholders}) AND text <> ''
+                        ORDER BY account_id ASC, dialog_id ASC, message_id ASC""",
+                    history_accounts,
+                )
+                rows = cursor.fetchall()
+
+            pairs: list[dict[str, Any]] = []
+            current_source: str | None = None
+            current_dialog: int | None = None
+            question = ""
+            replies: list[str] = []
+
+            def save_pair() -> None:
+                if current_dialog is not None and question and replies:
+                    pairs.append({
+                        "previous_question": question[:500],
+                        "previous_reply": "\n".join(replies)[:1200],
+                        "source_account": current_source,
+                        "dialog_id": current_dialog,
+                    })
+
+            for row in rows:
+                source_account = str(row["account_id"])
+                dialog_id = int(row["dialog_id"])
+                if (source_account, dialog_id) != (current_source, current_dialog):
+                    save_pair()
+                    current_source = source_account
+                    current_dialog = dialog_id
+                    question = ""
+                    replies = []
+                message_text = str(row["text"] or "").strip()
+                if not message_text:
+                    continue
+                if not row["outgoing"]:
+                    save_pair()
+                    question = message_text
+                    replies = []
+                elif question and len(replies) < 3:
+                    replies.append(message_text)
+            save_pair()
+            self._past_reply_cache[cache_key] = pairs
+            self._past_reply_cache_loaded_at[cache_key] = datetime.now(UTC)
+
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for pair in self._past_reply_cache[cache_key]:
+            candidate_tokens = tokens(pair["previous_question"])
+            candidate_scores = []
+            for query_tokens in query_sets:
+                overlap = query_tokens & candidate_tokens
+                if overlap and (len(overlap) >= 2 or any(len(word) >= 7 for word in overlap)):
+                    candidate_scores.append(
+                        len(overlap) / ((len(query_tokens) * len(candidate_tokens)) ** 0.5)
+                    )
+            if not candidate_scores:
+                continue
+            score = max(candidate_scores)
+            if score >= 0.16:
+                same_contact = pair["dialog_id"] == peer_id
+                if same_contact:
+                    score *= 1.25
+                scored.append((score, pair))
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        selected: list[dict[str, str]] = []
+        seen_questions: set[str] = set()
+        for _, pair in scored:
+            key = " ".join(sorted(tokens(pair["previous_question"])))
+            if key in seen_questions:
+                continue
+            seen_questions.add(key)
+            selected.append({
+                "previous_question": pair["previous_question"],
+                "previous_reply": pair["previous_reply"],
+                "same_contact": "yes" if pair["dialog_id"] == peer_id else "no",
+                "source_account": pair["source_account"],
+            })
+            if len(selected) >= limit:
+                break
+        return selected
+
     def dialogs(self, account_id: str, limit: int, offset: int) -> list[dict[str, Any]]:
         with self.connection.cursor() as cursor:
             cursor.execute(
@@ -343,7 +565,7 @@ class History:
 
 
 async def live_chat_history(
-    client: TelegramClient, event: events.NewMessage.Event, limit: int = 24
+    client: TelegramClient, event: events.NewMessage.Event, limit: int = 80
 ) -> list[dict[str, str]]:
     messages = await client.get_messages(await event.get_input_chat(), limit=limit)
     ordered = list(reversed(messages))
@@ -361,7 +583,7 @@ async def live_chat_history(
                 "time": message.date.isoformat() if message.date else "",
             }
         )
-    return result[-23:]
+    return result[-80:]
 
 
 class RecoveredMessageEvent:
@@ -403,17 +625,72 @@ def availability_question(message: str) -> bool:
     )
 
 
+
+
+def is_quiet_hours(value: datetime, timezone_name: str) -> bool:
+    zone = ZoneInfo(timezone_name)
+    local = value.replace(tzinfo=zone) if value.tzinfo is None else value.astimezone(zone)
+    return local.hour < 9
+
+def interval_overlaps_quiet_hours(
+    start_at: str, duration_minutes: int, timezone_name: str
+) -> bool:
+    """Return whether a local calendar interval overlaps midnight through 09:00."""
+    try:
+        start = datetime.fromisoformat(start_at)
+        zone = ZoneInfo(timezone_name)
+    except (TypeError, ValueError):
+        return False
+    start = start.replace(tzinfo=zone) if start.tzinfo is None else start.astimezone(zone)
+    end = start + timedelta(minutes=duration_minutes)
+    day = start.date()
+    while day <= end.date():
+        quiet_start = datetime.combine(day, time.min, tzinfo=zone)
+        quiet_end = datetime.combine(day, time(9, 0), tzinfo=zone)
+        if start < quiet_end and end > quiet_start:
+            return True
+        day += timedelta(days=1)
+    return False
+
+
+def quiet_hours_reply(current_message: str) -> str:
+    russian = bool(re.search(r"[А-Яа-яЁёІЇЄҐіїєґ]", current_message))
+    if russian:
+        return "В это время не получится. Давай выберем другое время?"
+    return "That time won't work for me. Could we choose another time?"
+
 def established_availability_date(
     history: list[dict[str, str]], current_message: str, now: datetime
 ) -> date | None:
     recent = [item.get("text", "") for item in history[-12:]] + [current_message]
     today_words = re.compile(r"\b(?:сегодня|today|this (?:morning|afternoon|evening))\b", re.IGNORECASE)
     tomorrow_words = re.compile(r"\b(?:завтра|tomorrow)\b", re.IGNORECASE)
+    weekdays = [
+        (re.compile(r"\b(?:понедельник\w*|понеділ\w*|monday)\b", re.IGNORECASE), 0),
+        (re.compile(r"\b(?:вторник\w*|вівтор\w*|tuesday)\b", re.IGNORECASE), 1),
+        (re.compile(r"\b(?:сред(?:а|у|е|ы|ой)|серед\w*|wednesday)\b", re.IGNORECASE), 2),
+        (re.compile(r"\b(?:четверг\w*|четвер\w*|thursday)\b", re.IGNORECASE), 3),
+        (re.compile(r"\b(?:пятниц\w*|п[’']ятниц\w*|friday)\b", re.IGNORECASE), 4),
+        (re.compile(r"\b(?:суббот\w*|субот\w*|saturday)\b", re.IGNORECASE), 5),
+        (re.compile(r"\b(?:воскресень\w*|неділ\w*|sunday)\b", re.IGNORECASE), 6),
+    ]
     for message in reversed(recent):
         if tomorrow_words.search(message):
             return now.date() + timedelta(days=1)
         if today_words.search(message):
             return now.date()
+        matches = [
+            (match.start(), weekday)
+            for pattern, weekday in weekdays
+            if (match := pattern.search(message))
+        ]
+        if matches:
+            position, weekday = max(matches)
+            delta = (weekday - now.weekday()) % 7
+            prefix = message[max(0, position - 30):position]
+            if re.search(r"\b(?:следующ\w*|next)\s*$", prefix, re.IGNORECASE):
+                delta += 7
+            return now.date() + timedelta(days=delta)
     return None
 
 
@@ -445,10 +722,10 @@ def safe_availability_reply(
         return f"I'm free {date_label} at {times[0]}. Does that work for you?"
     if slots == []:
         if russian:
-            return f"{date_label.capitalize()} больше нет свободного времени для встречи. Давай посмотрим другой день?"
+            return f"На {date_label} я уже занят. Давай посмотрим другой день?"
         return f"I don't have another open time for a meeting {date_label}. Shall we look at another day?"
     if russian:
-        return "Не удалось проверить свободное время в календаре. Давай попробуем позже?"
+        return "Не могу точно сказать насчёт этого времени. Давай выберем другой вариант?"
     return "I couldn't check my calendar availability. Could we try again later?"
 
 
@@ -483,7 +760,28 @@ async def run() -> None:
     if not settings.codex_binary.is_file():
         logger.warning("Codex CLI is not installed at CODEX_BINARY; replies will fail until installed")
     client = TelegramClient(str(settings.session_path), settings.api_id, settings.api_hash)
+    quiet_status: bool | None = None
+
+    async def refresh_quiet_hours_status(force: bool = False) -> None:
+        nonlocal quiet_status
+        quiet_now = is_quiet_hours(datetime.now(UTC), settings.timezone)
+        if not force and quiet_status is quiet_now:
+            return
+        try:
+            await client(functions.account.UpdateStatusRequest(offline=quiet_now))
+        except Exception as exc:
+            logger.warning(
+                "Could not update Telegram status for quiet hours (%s)", type(exc).__name__
+            )
+            return
+        quiet_status = quiet_now
+        logger.info(
+            "Telegram presence set to %s for quiet hours",
+            "offline" if quiet_now else "normal",
+        )
+
     await client.start()
+    await refresh_quiet_hours_status(force=True)
     me = await client.get_me()
     gate = BioGate(client, me.id)
     await gate.refresh(force=True)
@@ -493,6 +791,8 @@ async def run() -> None:
     await auto_folder.refresh(force=True)
 
     async def reply_policy_block(peer_id: int, force: bool = True) -> str | None:
+        if store.conversation_control_mode(settings.account_id, peer_id) == "manual":
+            return "conversation is being handled manually by Alexey"
         if not await manual_folder.refresh(force=force):
             return "Telegram Manual folder state is unavailable"
         if manual_folder.contains(peer_id):
@@ -506,6 +806,42 @@ async def run() -> None:
             return "global bio switch is off and contact is not in Telegram Auto folder"
         return None
     locks: dict[int, asyncio.Lock] = {}
+    assistant_send_markers: dict[tuple[int, str], datetime] = {}
+
+    def mark_assistant_send(peer_id: int, text: str) -> None:
+        assistant_send_markers[(peer_id, text.strip())] = datetime.now(UTC) + timedelta(minutes=2)
+
+    async def react_to_incoming(
+        event: events.NewMessage.Event,
+        peer_id: int,
+        sender: types.User,
+        category: str,
+        session_started_at: str,
+        emoji: str,
+    ) -> bool:
+        block_reason = await reply_policy_block(peer_id, force=True)
+        if block_reason:
+            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+            store.audit(peer_id, "skipped", f"{block_reason} before reaction")
+            return False
+        if emoji not in REACTION_EMOJIS:
+            emoji = "👍"
+        await client(functions.messages.SendReactionRequest(
+            peer=await event.get_input_chat(),
+            msg_id=event.message.id,
+            reaction=[types.ReactionEmoji(emoticon=emoji)],
+        ))
+        store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+        store.audit(
+            peer_id,
+            "reacted",
+            json.dumps(
+                {"incoming_message_id": event.message.id, "emoji": emoji},
+                ensure_ascii=False,
+            ),
+        )
+        await notify_conversation_started(peer_id, sender, category, session_started_at)
+        return True
 
     async def send_control(text: str) -> None:
         await client.send_message("me", text)
@@ -615,6 +951,26 @@ async def run() -> None:
         return "\n\n".join(blocks)
 
     @client.on(events.NewMessage(outgoing=True))
+    async def on_owner_outgoing_message(event: events.NewMessage.Event) -> None:
+        if not event.is_private or event.chat_id == me.id:
+            return
+        text = event.raw_text or ""
+        key = (event.chat_id, text.strip())
+        marker_expiry = assistant_send_markers.get(key)
+        now = datetime.now(UTC)
+        if marker_expiry and marker_expiry >= now:
+            return
+        if marker_expiry:
+            assistant_send_markers.pop(key, None)
+        control_mode = store.record_owner_outgoing(
+            settings.account_id,
+            event.chat_id,
+            event.message.date or now,
+            text.startswith(" "),
+        )
+        store.audit(event.chat_id, "conversation_control_changed", control_mode)
+
+    @client.on(events.NewMessage(outgoing=True))
     async def on_control_message(event: events.NewMessage.Event) -> None:
         if not event.is_private or event.chat_id != me.id or not event.raw_text.startswith("/"):
             return
@@ -682,6 +1038,16 @@ async def run() -> None:
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
         peer_id = event.chat_id
+        if event.is_private and (
+            is_quiet_hours(datetime.now(UTC), settings.timezone)
+            or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
+        ):
+            if event.raw_text.strip() and store.claim_message(
+                settings.account_id, peer_id, event.message.id
+            ):
+                store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                store.audit(peer_id, "skipped", "night quiet hours")
+            return
         if event.is_private:
             try:
                 await client.send_read_acknowledge(
@@ -754,6 +1120,11 @@ async def run() -> None:
                         type(exc).__name__,
                     )
                     context = history.latest(settings.account_id, peer_id)
+                recent_outgoing_replies = [
+                    item["text"][:600]
+                    for item in context
+                    if item["role"] == "assistant" and item["text"].strip()
+                ][-20:]
                 opening = history.opening(settings.account_id, peer_id)
                 pending_duration = store.pending_calendar_duration(settings.account_id, peer_id)
                 pending_meeting_context = (
@@ -767,6 +1138,27 @@ async def run() -> None:
                 )
                 now = datetime.now(ZoneInfo(settings.timezone))
                 model = store.setting("model", settings.default_model)
+                calendar_related = (
+                    availability_question(event.raw_text)
+                    or meeting_context_present(context, event.raw_text)
+                )
+                if calendar_related:
+                    # Live conversation context and the calendar are authoritative for scheduling.
+                    # Do not spend two history-search steps on a calendar request.
+                    previous_reply_examples = []
+                else:
+                    try:
+                        search_queries = await responder.expand_history_queries(model, event.raw_text)
+                    except Exception as exc:
+                        search_queries = []
+                        logger.warning("Could not expand history search (%s)", type(exc).__name__)
+                    try:
+                        previous_reply_examples = history.relevant_past_replies(
+                            settings.account_id, peer_id, event.raw_text, search_queries
+                        )
+                    except Exception as exc:
+                        previous_reply_examples = []
+                        logger.warning("Could not search past replies (%s)", type(exc).__name__)
                 prepared_answers = (
                     recruiter_answers.match(event.raw_text) if category == "recruiters" else []
                 )
@@ -777,6 +1169,8 @@ async def run() -> None:
                     current_message=event.raw_text,
                     now=now,
                     style_profile=style_profile(),
+                    previous_reply_examples=previous_reply_examples,
+                    recent_outgoing_replies=recent_outgoing_replies,
                     opening_history=opening,
                     auto_detect_category=auto_detect_category,
                     prepared_answers=prepared_answers,
@@ -834,6 +1228,8 @@ async def run() -> None:
                             current_message=event.raw_text,
                             now=now,
                             style_profile=style_profile(),
+                            previous_reply_examples=previous_reply_examples,
+                            recent_outgoing_replies=recent_outgoing_replies,
                             opening_history=opening,
                             auto_detect_category=False,
                             prepared_answers=prepared_answers,
@@ -892,6 +1288,16 @@ async def run() -> None:
                             "DURATION_INVALID; the requested duration is outside 5 minutes to 12 "
                             "hours; leave the existing event unchanged and ask for a valid length."
                         )
+                    elif interval_overlaps_quiet_hours(
+                        pending_duration["start_at"], requested_duration, settings.timezone
+                    ):
+                        store.clear_pending_calendar_duration(settings.account_id, peer_id)
+                        calendar_result = (
+                            "QUIET_HOURS_BLOCKED; leave the existing event unchanged. "
+                            "Tell the contact this time will not work and ask for another time without naming the blocked interval, boundary, or rejected time. "
+                            "Do not mention the calendar or this rule."
+                        )
+                        store.audit(peer_id, "calendar_quiet_hours_blocked", "duration update")
                     elif not calendar.configured:
                         calendar_result = (
                             "DURATION_CHECK_FAILED; calendar access is unavailable; leave the "
@@ -964,6 +1370,8 @@ async def run() -> None:
                         calendar_result=calendar_result,
                         now=now,
                         style_profile=style_profile(),
+                        previous_reply_examples=previous_reply_examples,
+                        recent_outgoing_replies=recent_outgoing_replies,
                         prepared_answers=prepared_answers,
                         personal_context=personal_context,
                         web_search_results=web_search_results if web_search_requested else None,
@@ -977,26 +1385,48 @@ async def run() -> None:
                 if pending_duration and duration_followup_reply is None:
                     start = None
                     action = "none"
+                    store.clear_pending_calendar_duration(settings.account_id, peer_id)
                 meeting_in_progress = bool(plan.get("meeting_in_progress")) or meeting_context_present(
                     context, event.raw_text
                 )
                 assistant_accepts = bool(plan.get("assistant_accepts_meeting"))
+                counterparty_choice_request = counterparty_asks_alexey_to_choose_time(
+                    event.raw_text
+                )
+                if counterparty_choice_request:
+                    plan["confirmed_agreement"] = False
+                    assistant_accepts = False
+                    action = "check"
+                boundary_question_confirmed = (
+                    latest_assistant_asked_finish_by(context) and clear_yes_answer(event.raw_text)
+                )
+                boundary_question_declined = (
+                    latest_assistant_asked_finish_by(context) and clear_no_answer(event.raw_text)
+                )
+                if boundary_question_confirmed and start:
+                    plan["confirmed_agreement"] = True
+                    meeting_in_progress = True
                 if start and (
                     meeting_in_progress
                     or action in ("check", "create")
                     or plan.get("confirmed_agreement")
                     or assistant_accepts
                 ):
-                    action = (
-                        "create"
-                        if plan.get("confirmed_agreement") or assistant_accepts
-                        else "check"
-                    )
+                    action = "create" if plan.get("confirmed_agreement") else "check"
                 if action in ("check", "create") and not meeting_in_progress:
                     action = "none"
                     store.audit(peer_id, "calendar_action_suppressed", "no clear meeting context")
                 calendar_result = "No calendar action is needed."
                 availability_reply: str | None = None
+                calendar_boundary_reply: str | None = None
+                if boundary_question_declined:
+                    russian = bool(re.search(r"[А-Яа-яЁёІЇЄҐіїєґ]", event.raw_text))
+                    calendar_boundary_reply = (
+                        "Тогда давай выберем другое время?"
+                        if russian
+                        else "Then let's choose another time?"
+                    )
+                    calendar_result = "The contact declined the finish-by time; ask for another meeting time."
                 target_day = (
                     established_availability_date(context, event.raw_text, now)
                     if availability_question(event.raw_text)
@@ -1059,6 +1489,14 @@ async def run() -> None:
                             "TIME_UNRESOLVED; availability is unknown and no time was confirmed. "
                             "Ask only for the missing date or time based on recent context."
                         )
+                    elif interval_overlaps_quiet_hours(start, duration, settings.timezone):
+                        calendar_result = (
+                            "QUIET_HOURS_BLOCKED; do not check or create this meeting. "
+                            "Tell the contact this time will not work and ask for another time without naming the blocked interval, boundary, or rejected time. "
+                            "Do not mention the calendar or this rule."
+                        )
+                        availability_reply = quiet_hours_reply(event.raw_text)
+                        store.audit(peer_id, "calendar_quiet_hours_blocked", "requested interval")
                     elif not calendar.configured:
                         calendar_result = (
                             "CALENDAR_UNAVAILABLE; availability could not be checked, so do not "
@@ -1066,10 +1504,64 @@ async def run() -> None:
                         )
                         store.audit(peer_id, "calendar_availability_failed", "authorization missing")
                     else:
+                        finish_by_confirmation = (
+                            latest_assistant_asked_finish_by(context)
+                            and clear_yes_answer(event.raw_text)
+                            and bool(plan.get("confirmed_agreement") or plan.get("assistant_accepts_meeting"))
+                        )
                         try:
-                            is_free, interval = await asyncio.to_thread(
-                                calendar.check, start, duration
+                            next_busy = None
+                            if action == "create":
+                                next_busy = await asyncio.to_thread(calendar.next_busy_start, start)
+                            proposed_start = datetime.fromisoformat(start).astimezone(
+                                ZoneInfo(settings.timezone)
                             )
+                            boundary = (
+                                datetime.fromisoformat(next_busy).astimezone(ZoneInfo(settings.timezone))
+                                if next_busy else None
+                            )
+                            available_minutes = (
+                                int((boundary - proposed_start).total_seconds() // 60)
+                                if boundary else None
+                            )
+                            needs_finish_by_confirmation = (
+                                next_busy is not None
+                                and not finish_by_confirmation
+                                and available_minutes is not None
+                                and available_minutes < duration
+                            )
+                            if needs_finish_by_confirmation:
+                                time_text = boundary.strftime("%H:%M")
+                                calendar_result = (
+                                    "FINISH_BY_CONFIRMATION_REQUIRED; do not create the meeting yet. "
+                                    f"Ask whether we can finish by {time_text}; never reveal private event details."
+                                )
+                                russian = bool(re.search(r"[А-Яа-яЁёІЇЄҐіїєґ]", event.raw_text))
+                                calendar_boundary_reply = (
+                                    f"Успеем до {time_text}? Я потом занят."
+                                    if russian
+                                    else f"Do you think we can finish by {time_text}? I'm busy after that."
+                                )
+                                store.audit(peer_id, "calendar_finish_by_question", time_text)
+                                is_free, interval = False, ""
+                            else:
+                                if next_busy and finish_by_confirmation and available_minutes is not None:
+                                    if available_minutes < 5:
+                                        calendar_result = (
+                                            "BUSY; there is not enough time before the next same-day commitment. "
+                                            "Do not create the meeting; ask for another time."
+                                        )
+                                        is_free, interval = False, ""
+                                    else:
+                                        duration = min(duration, available_minutes)
+                                        plan["duration_minutes"] = duration
+                                        is_free, interval = await asyncio.to_thread(
+                                            calendar.check, start, duration
+                                        )
+                                else:
+                                    is_free, interval = await asyncio.to_thread(
+                                        calendar.check, start, duration
+                                    )
                         except Exception as exc:
                             logger.warning(
                                 "Calendar availability check failed: %s", type(exc).__name__
@@ -1084,7 +1576,7 @@ async def run() -> None:
                                 type(exc).__name__,
                             )
                             is_free, interval = False, ""
-                        if calendar_result.startswith("AVAILABILITY_UNKNOWN"):
+                        if calendar_result.startswith(("AVAILABILITY_UNKNOWN", "FINISH_BY_CONFIRMATION_REQUIRED")):
                             pass
                         elif not is_free:
                             calendar_result = "BUSY; the proposed time is unavailable and no event was created."
@@ -1130,17 +1622,7 @@ async def run() -> None:
                                     start,
                                     duration,
                                 )
-                                calendar_result = (
-                                    "DURATION_PENDING_ASK; calendar event successfully created "
-                                    f"with a provisional duration of {duration} minutes because "
-                                    "the contact did not state a duration. Ask how long the "
-                                    "meeting should be."
-                                )
-                                store.audit(
-                                    peer_id,
-                                    "calendar_duration_followup_requested",
-                                    f"provisional_duration={duration} minutes",
-                                )
+                                calendar_result = "FREE; calendar event successfully created using an internal duration."
                             else:
                                 calendar_result = "FREE; calendar event successfully created."
                             store.audit(peer_id, "calendar_event_created", event_id)
@@ -1151,6 +1633,7 @@ async def run() -> None:
                     web_search_requested
                     or duration_followup_reply is not None
                     or availability_reply is not None
+                    or calendar_boundary_reply is not None
                     or action in ("check", "duration_update")
                     or (
                         action == "create"
@@ -1162,30 +1645,9 @@ async def run() -> None:
                         store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                         store.audit(peer_id, "skipped", "responder found no safe contextual reply")
                         return
-                    block_reason = await reply_policy_block(peer_id, force=True)
-                    if block_reason:
-                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                        store.audit(peer_id, "skipped", f"{block_reason} before reaction")
-                        return
                     emoji = plan.get("reaction_emoji")
-                    if emoji not in REACTION_EMOJIS:
-                        emoji = "👍"
-                    await client(functions.messages.SendReactionRequest(
-                        peer=await event.get_input_chat(),
-                        msg_id=event.message.id,
-                        reaction=[types.ReactionEmoji(emoticon=emoji)],
-                    ))
-                    store.message_state(settings.account_id, peer_id, event.message.id, "sent")
-                    store.audit(
-                        peer_id,
-                        "reacted",
-                        json.dumps(
-                            {"incoming_message_id": event.message.id, "emoji": emoji},
-                            ensure_ascii=False,
-                        ),
-                    )
-                    await notify_conversation_started(
-                        peer_id, sender, category, session_started_at
+                    await react_to_incoming(
+                        event, peer_id, sender, category, session_started_at, emoji
                     )
                     return
                 if web_search_requested:
@@ -1200,6 +1662,8 @@ async def run() -> None:
                         calendar_result=calendar_result,
                         now=now,
                         style_profile=style_profile(),
+                        previous_reply_examples=previous_reply_examples,
+                        recent_outgoing_replies=recent_outgoing_replies,
                         prepared_answers=prepared_answers,
                         personal_context=personal_context,
                         web_search_results=web_search_results,
@@ -1208,6 +1672,8 @@ async def run() -> None:
                     reply = duration_followup_reply
                 elif availability_reply is not None:
                     reply = availability_reply
+                elif calendar_boundary_reply is not None:
+                    reply = calendar_boundary_reply
                 elif action in ("check", "create"):
                     reply = await responder.compose_with_calendar_result(
                         model=model,
@@ -1218,14 +1684,65 @@ async def run() -> None:
                         calendar_result=calendar_result,
                         now=now,
                         style_profile=style_profile(),
+                        previous_reply_examples=previous_reply_examples,
+                        recent_outgoing_replies=recent_outgoing_replies,
                         prepared_answers=prepared_answers,
                         personal_context=personal_context,
                     )
                 else:
                     reply = plan["reply"]
-                reply = occasionally_introduce_typo(reply.strip())
+                reply = reply.strip()
                 if not reply:
-                    raise RuntimeError("model returned an empty reply")
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(peer_id, "skipped", "responder returned an empty required reply")
+                    return
+                if reply in REACTION_EMOJIS:
+                    await react_to_incoming(
+                        event, peer_id, sender, category, session_started_at, reply
+                    )
+                    return
+                if repeats_recent_reply(reply, recent_outgoing_replies):
+                    original_reply = reply
+                    try:
+                        revised_reply = await responder.rephrase_repeated_reply(
+                            model=model,
+                            category=category,
+                            history=context,
+                            current_message=event.raw_text,
+                            candidate_reply=reply,
+                            recent_outgoing_replies=recent_outgoing_replies,
+                            now=now,
+                            style_profile=style_profile(),
+                            calendar_result=calendar_result,
+                        )
+                        revised_reply = revised_reply.strip()
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not rephrase a repeated candidate reply (%s)",
+                            type(exc).__name__,
+                        )
+                        revised_reply = ""
+                    if revised_reply:
+                        reply = revised_reply
+                        if repeats_recent_reply(reply, recent_outgoing_replies):
+                            store.audit(
+                                peer_id,
+                                "reply_repetition_persisted",
+                                "second candidate also repeated; sent to avoid silence",
+                            )
+                    else:
+                        # A wording collision must not silence a message that needs a reply.
+                        reply = original_reply
+                        store.audit(
+                            peer_id,
+                            "reply_rephrase_failed",
+                            "sent original candidate to avoid silence",
+                        )
+                reply = occasionally_introduce_typo(reply)
+                if not reply:
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(peer_id, "skipped", "candidate reply became empty before send")
+                    return
                 store.audit(
                     peer_id,
                     "generated",
@@ -1251,6 +1768,7 @@ async def run() -> None:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", f"{block_reason} before send")
                     return
+                mark_assistant_send(peer_id, reply)
                 sent = await event.respond(reply)
                 store.message_state(settings.account_id, peer_id, event.message.id, "sent")
                 store.audit(
@@ -1302,9 +1820,12 @@ async def run() -> None:
         async def poll_bio() -> None:
             while True:
                 await asyncio.sleep(15)
-                await gate.refresh(force=True)
+                await refresh_quiet_hours_status()
+                if not is_quiet_hours(datetime.now(UTC), settings.timezone):
+                    await gate.refresh(force=True)
 
         poller = asyncio.create_task(poll_bio())
+        await refresh_quiet_hours_status(force=True)
         logger.info(
             "Telegram assistant started for account %s; bio switch is %s",
             settings.account_id,

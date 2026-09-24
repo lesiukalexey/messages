@@ -82,9 +82,31 @@ class Store:
                 session_started_at TEXT NOT NULL,
                 last_incoming_at TEXT NOT NULL,
                 notification_state TEXT NOT NULL DEFAULT 'pending',
+                control_mode TEXT NOT NULL DEFAULT 'ai',
+                owner_started INTEGER NOT NULL DEFAULT 0,
+                awaiting_contact INTEGER NOT NULL DEFAULT 0,
+                last_activity_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (account_id, peer_id)
             );
             """
+        )
+        session_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(conversation_sessions)")
+        }
+        for name, declaration in (
+            ("control_mode", "TEXT NOT NULL DEFAULT 'ai'"),
+            ("owner_started", "INTEGER NOT NULL DEFAULT 0"),
+            ("awaiting_contact", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_activity_at", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in session_columns:
+                self.connection.execute(
+                    f"ALTER TABLE conversation_sessions ADD COLUMN {name} {declaration}"
+                )
+        self.connection.execute(
+            "UPDATE conversation_sessions SET last_activity_at = last_incoming_at "
+            "WHERE last_activity_at = ''"
         )
         # An interrupted send can be retried on the next successful AI reply.
         self.connection.execute(
@@ -282,7 +304,8 @@ class Store:
         )
         incoming_at = received.isoformat()
         row = self.connection.execute(
-            """SELECT session_started_at, last_incoming_at, notification_state
+            """SELECT session_started_at, last_incoming_at, notification_state,
+                      control_mode, owner_started, awaiting_contact, last_activity_at
                FROM conversation_sessions WHERE account_id = ? AND peer_id = ?""",
             (account_id, peer_id),
         ).fetchone()
@@ -290,28 +313,108 @@ class Store:
             session_started_at = incoming_at
             last_incoming_at = incoming_at
             notification_state = "pending"
+            control_mode, owner_started, awaiting_contact = "ai", 0, 0
+            last_activity_at = incoming_at
         else:
-            previous = datetime.fromisoformat(row["last_incoming_at"])
-            new_session = (received - previous).total_seconds() > 30 * 60
+            previous_activity = datetime.fromisoformat(
+                row["last_activity_at"] or row["last_incoming_at"]
+            )
+            new_session = (received - previous_activity).total_seconds() > 30 * 60
             if new_session:
                 session_started_at = incoming_at
                 notification_state = "pending"
+                control_mode, owner_started, awaiting_contact = "ai", 0, 0
             else:
                 session_started_at = row["session_started_at"]
                 notification_state = row["notification_state"]
-            last_incoming_at = incoming_at if received > previous else row["last_incoming_at"]
+                control_mode = row["control_mode"]
+                owner_started = row["owner_started"]
+                awaiting_contact = 0
+            previous_incoming = datetime.fromisoformat(row["last_incoming_at"])
+            last_incoming_at = incoming_at if received > previous_incoming else row["last_incoming_at"]
+            last_activity_at = incoming_at if received > previous_activity else (
+                row["last_activity_at"] or row["last_incoming_at"]
+            )
         self.connection.execute(
             """INSERT INTO conversation_sessions
-                   (account_id, peer_id, session_started_at, last_incoming_at, notification_state)
-               VALUES (?, ?, ?, ?, ?)
+                   (account_id, peer_id, session_started_at, last_incoming_at, notification_state,
+                    control_mode, owner_started, awaiting_contact, last_activity_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(account_id, peer_id) DO UPDATE SET
                  session_started_at=excluded.session_started_at,
                  last_incoming_at=excluded.last_incoming_at,
-                 notification_state=excluded.notification_state""",
-            (account_id, peer_id, session_started_at, last_incoming_at, notification_state),
+                 notification_state=excluded.notification_state,
+                 control_mode=excluded.control_mode,
+                 owner_started=excluded.owner_started,
+                 awaiting_contact=excluded.awaiting_contact,
+                 last_activity_at=excluded.last_activity_at""",
+            (account_id, peer_id, session_started_at, last_incoming_at, notification_state,
+             control_mode, owner_started, awaiting_contact, last_activity_at),
         )
         self.connection.commit()
         return session_started_at
+
+    def record_owner_outgoing(
+        self, account_id: str, peer_id: int, sent_at: datetime, leading_space: bool
+    ) -> str:
+        sent = sent_at.astimezone(UTC) if sent_at.tzinfo else sent_at.replace(tzinfo=UTC)
+        sent_iso = sent.isoformat()
+        row = self.connection.execute(
+            """SELECT session_started_at, last_incoming_at, notification_state,
+                      control_mode, owner_started, awaiting_contact, last_activity_at
+               FROM conversation_sessions WHERE account_id = ? AND peer_id = ?""",
+            (account_id, peer_id),
+        ).fetchone()
+        stale = False
+        if row is not None:
+            old_activity = row["last_activity_at"] or row["last_incoming_at"]
+            stale = (sent - datetime.fromisoformat(old_activity)).total_seconds() > 30 * 60
+        if row is None or stale:
+            session_started_at = sent_iso
+            last_incoming_at = sent_iso
+            notification_state = "pending"
+            control_mode = "ai" if leading_space else "manual"
+            owner_started, awaiting_contact = 1, 1
+        else:
+            session_started_at = row["session_started_at"]
+            last_incoming_at = row["last_incoming_at"]
+            notification_state = row["notification_state"]
+            initial_opt_in = (
+                row["owner_started"] and row["awaiting_contact"]
+                and row["control_mode"] == "ai"
+            )
+            control_mode = "ai" if initial_opt_in else "manual"
+            owner_started = row["owner_started"] if initial_opt_in else 0
+            awaiting_contact = 1 if initial_opt_in else 0
+            previous_activity = row["last_activity_at"] or row["last_incoming_at"]
+            if sent < datetime.fromisoformat(previous_activity):
+                sent_iso = previous_activity
+        self.connection.execute(
+            """INSERT INTO conversation_sessions
+                   (account_id, peer_id, session_started_at, last_incoming_at,
+                    notification_state, control_mode, owner_started, awaiting_contact,
+                    last_activity_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(account_id, peer_id) DO UPDATE SET
+                 session_started_at=excluded.session_started_at,
+                 last_incoming_at=excluded.last_incoming_at,
+                 notification_state=excluded.notification_state,
+                 control_mode=excluded.control_mode,
+                 owner_started=excluded.owner_started,
+                 awaiting_contact=excluded.awaiting_contact,
+                 last_activity_at=excluded.last_activity_at""",
+            (account_id, peer_id, session_started_at, last_incoming_at, notification_state,
+             control_mode, owner_started, awaiting_contact, sent_iso),
+        )
+        self.connection.commit()
+        return control_mode
+
+    def conversation_control_mode(self, account_id: str, peer_id: int) -> str:
+        row = self.connection.execute(
+            "SELECT control_mode FROM conversation_sessions WHERE account_id = ? AND peer_id = ?",
+            (account_id, peer_id),
+        ).fetchone()
+        return row["control_mode"] if row else "ai"
 
     def claim_conversation_notification(
         self, account_id: str, peer_id: int, session_started_at: str
