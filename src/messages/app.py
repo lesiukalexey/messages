@@ -810,7 +810,7 @@ async def run() -> None:
     assistant_send_markers: dict[tuple[int, str], datetime] = {}
 
     def mark_assistant_send(peer_id: int, text: str) -> None:
-        assistant_send_markers[(peer_id, text.strip())] = datetime.now(UTC) + timedelta(minutes=2)
+        assistant_send_markers[(peer_id, text)] = datetime.now(UTC) + timedelta(minutes=2)
 
     async def react_to_incoming(
         event: events.NewMessage.Event,
@@ -956,7 +956,7 @@ async def run() -> None:
         if not event.is_private or event.chat_id == me.id:
             return
         text = event.raw_text or ""
-        key = (event.chat_id, text.strip())
+        key = (event.chat_id, text)
         marker_expiry = assistant_send_markers.get(key)
         now = datetime.now(UTC)
         if marker_expiry and marker_expiry >= now:

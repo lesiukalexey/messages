@@ -373,30 +373,17 @@ class Store:
             session_started_at = sent_iso
             last_incoming_at = sent_iso
             notification_state = "pending"
-            control_mode = "ai" if leading_space else "manual"
-            owner_started, awaiting_contact = 1, 1
-            consume_opt_in_marker = leading_space
         else:
             session_started_at = row["session_started_at"]
             last_incoming_at = row["last_incoming_at"]
             notification_state = row["notification_state"]
-            initial_opt_in = (
-                row["owner_started"] and row["awaiting_contact"]
-                and row["control_mode"] == "ai"
-            )
-            owner_preceded_first_contact = (
-                leading_space
-                and not row["owner_started"]
-                and sent < datetime.fromisoformat(row["session_started_at"])
-            )
-            keep_initial_opt_in = initial_opt_in or owner_preceded_first_contact
-            control_mode = "ai" if keep_initial_opt_in else "manual"
-            owner_started = 1 if keep_initial_opt_in else 0
-            awaiting_contact = 1 if initial_opt_in else 0
-            consume_opt_in_marker = owner_preceded_first_contact
             previous_activity = row["last_activity_at"] or row["last_incoming_at"]
             if sent < datetime.fromisoformat(previous_activity):
                 sent_iso = previous_activity
+        control_mode = "ai" if leading_space else "manual"
+        owner_started = 1 if leading_space else 0
+        awaiting_contact = 1 if leading_space else 0
+        consume_opt_in_marker = leading_space
         self.connection.execute(
             """INSERT INTO conversation_sessions
                    (account_id, peer_id, session_started_at, last_incoming_at,
