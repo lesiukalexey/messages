@@ -34,6 +34,25 @@ EXPLICIT_CLOCK = re.compile(
     r"\b(?:в|к|на|около)\s*(?:[01]?\d|2[0-3])(?:[-–][0-5]\d)?\b)",
     re.IGNORECASE,
 )
+REALTOR_MENTION = re.compile(
+    r"\b(?:ри[эе]лтор\w*|маклер\w*|агент\s+по\s+(?:недвижим\w*|аренд\w*)|"
+    r"realtor\w*|real\s+estate\s+(?:agent|broker))\b",
+    re.IGNORECASE,
+)
+PROPERTY_TERMS = (
+    r"(?:квартир\w*|апартамент\w*|жиль\w*|недвижим\w*|дом\w*|"
+    r"apartment\w*|flat\w*|house\w*|home\w*|property\w*|housing)"
+)
+PROPERTY_DEALS = (
+    r"(?:аренд\w*|сдач\w*|сдава\w*|сдам|сдаю|сдать|снять|сниму|продаж\w*|"
+    r"продат\w*|продаю|продам|куплю|покуп\w*|rent\w*|lease\w*|sell\w*|"
+    r"sale\w*|buy\w*|purchase\w*)"
+)
+PROPERTY_DEAL = re.compile(
+    rf"(?:\b{PROPERTY_TERMS}\b.{{0,100}}\b{PROPERTY_DEALS}\b|"
+    rf"\b{PROPERTY_DEALS}\b.{{0,100}}\b{PROPERTY_TERMS}\b)",
+    re.IGNORECASE,
+)
 ACKNOWLEDGEMENTS = {
     "ага": "👍", "да": "👍", "давай": "👍", "договорились": "👍",
     "ладно": "👍", "ок": "👍", "окей": "👍", "понял": "👍", "поняла": "👍",
@@ -91,6 +110,14 @@ def occasionally_introduce_typo(text: str) -> str:
 def acknowledgement_reaction(message: str) -> str | None:
     normalized = re.sub(r"[\s.!?,;:…()]+", "", message.casefold())
     return ACKNOWLEDGEMENTS.get(normalized)
+
+
+def real_estate_topic(message: str) -> str | None:
+    if REALTOR_MENTION.search(message):
+        return "realtor_or_real_estate_agent"
+    if PROPERTY_DEAL.search(message):
+        return "residential_property_rental_or_sale"
+    return None
 
 
 def latest_assistant_asked_question(history: list[dict[str, str]]) -> bool:
@@ -485,13 +512,14 @@ async def run() -> None:
                 "Commands (send in Saved Messages):\n"
                 "/model — show or choose a model\n"
                 "/model MODEL_ID — switch model\n"
-                "/category @username friends|recruiters — override auto classification\n"
+                "/category @username friends|recruiters|realtors — override auto classification\n"
                 "/category remove @username — clear manual assignment\n"
-                "/contacts [friends|recruiters] — list assigned chats\n"
+                "/contacts [friends|recruiters|realtors] — list assigned chats\n"
                 "/dialogs [page] — list exported chats and current categories\n"
-                "New chats become recruiters when hiring is clear; everyone else is friends.\n"
+                "New chats become recruiters for hiring, realtors for property rentals/sales, or friends otherwise.\n"
                 "Chats in the Telegram folder 'Manual' are ignored.\n"
-                "Chats in folder 'Auto' can receive replies even when bio is `free`.\n"
+                "Chats in folder 'Auto' can receive replies even when bio is `free`, except realtors.\n"
+                "Realtors and real estate rental/sale conversations never receive automatic replies.\n"
                 "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/other = ON."
             )
         if command == "/model":
@@ -521,8 +549,8 @@ async def run() -> None:
                 store.set_contact_category(entity.id, None, entity.username or "", entity.first_name or "")
                 store.audit(entity.id, "contact_uncategorized", "")
                 return f"Cleared manual category for {entity.username or entity.id}; the next message will be classified automatically."
-            if len(parts) != 3 or parts[2].casefold() not in ("friends", "recruiters"):
-                return "Use /category @username friends or /category @username recruiters to override automatic classification."
+            if len(parts) != 3 or parts[2].casefold() not in ("friends", "recruiters", "realtors"):
+                return "Use /category @username friends, recruiters, or realtors to override automatic classification."
             identifier, category = parts[1], parts[2].casefold()
             try:
                 entity = await resolve_user(client, identifier)
@@ -540,8 +568,8 @@ async def run() -> None:
             return f"{entity.username or entity.id} manually assigned to {category}."
         if command == "/contacts":
             category = parts[1].casefold() if len(parts) > 1 else None
-            if category not in (None, "friends", "recruiters"):
-                return "Use /contacts, /contacts friends, or /contacts recruiters."
+            if category not in (None, "friends", "recruiters", "realtors"):
+                return "Use /contacts, /contacts friends, /contacts recruiters, or /contacts realtors."
             return await contacts_text(category, store)
         if command == "/dialogs":
             try:
@@ -564,11 +592,13 @@ async def run() -> None:
         rows = db.contacts(category)
         if not rows:
             return "No contacts classified yet. New chats are classified automatically; use /category to override."
-        grouped: dict[str, list[str]] = {"friends": [], "recruiters": []}
+        grouped: dict[str, list[str]] = {
+            "friends": [], "recruiters": [], "realtors": []
+        }
         for row in rows:
             grouped[row["category"]].append(_format_contact(row))
         blocks = []
-        for name in ((category,) if category else ("friends", "recruiters")):
+        for name in ((category,) if category else ("friends", "recruiters", "realtors")):
             blocks.append(f"{name.title()} ({len(grouped[name])}):\n" + "\n".join(grouped[name]))
         return "\n\n".join(blocks)
 
@@ -662,6 +692,28 @@ async def run() -> None:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
             store.audit(peer_id, "skipped", "incoming message is older than 30 minutes")
             return
+        current_category = store.contact_category(peer_id)
+        exclusion_reason = real_estate_topic(event.raw_text)
+        if current_category == "realtors" or exclusion_reason:
+            if exclusion_reason and current_category != "realtors":
+                display_name = " ".join(
+                    part for part in (sender.first_name, sender.last_name) if part
+                ).strip()
+                store.set_contact_category(
+                    peer_id,
+                    "realtors",
+                    sender.username or "",
+                    display_name,
+                    source="automatic",
+                )
+                store.audit(peer_id, "contact_auto_categorized", "realtors")
+            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+            store.audit(
+                peer_id,
+                "skipped",
+                "automatic messages are disabled for realtor contacts",
+            )
+            return
         block_reason = await reply_policy_block(peer_id, force=True)
         if block_reason:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
@@ -719,6 +771,25 @@ async def run() -> None:
                     pending_meeting_duration=pending_meeting_context,
                 )
                 detected_category = plan.pop("detected_category", category)
+                if auto_detect_category and detected_category == "realtors":
+                    display_name = " ".join(
+                        part for part in (sender.first_name, sender.last_name) if part
+                    ).strip()
+                    store.set_contact_category(
+                        peer_id,
+                        "realtors",
+                        sender.username or "",
+                        display_name,
+                        source="automatic",
+                    )
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    store.audit(peer_id, "contact_auto_categorized", "realtors")
+                    store.audit(
+                        peer_id,
+                        "skipped",
+                        "automatic messages are disabled for realtor contacts",
+                    )
+                    return
                 if auto_detect_category:
                     resolved_category = (
                         "recruiters"
@@ -1186,12 +1257,12 @@ async def contacts_text(category: str | None, store: Store) -> str:
     rows = store.contacts(category)
     if not rows:
         return "No contacts classified yet. New chats are classified automatically; use /category to override."
-    grouped: dict[str, list[str]] = {"friends": [], "recruiters": []}
+    grouped: dict[str, list[str]] = {"friends": [], "recruiters": [], "realtors": []}
     for row in rows:
         name = row["display_name"] or row["username"] or str(row["peer_id"])
         suffix = f" (@{row['username']})" if row["username"] else ""
         grouped[row["category"]].append(f"• {name}{suffix}")
-    categories = (category,) if category else ("friends", "recruiters")
+    categories = (category,) if category else ("friends", "recruiters", "realtors")
     return "\n\n".join(
         f"{name.title()} ({len(grouped[name])}):\n" + "\n".join(grouped[name])
         for name in categories

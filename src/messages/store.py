@@ -30,7 +30,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS assistant_contacts (
                 account_id TEXT NOT NULL,
                 peer_id INTEGER NOT NULL,
-                category TEXT CHECK (category IN ('friends', 'recruiters')),
+                category TEXT CHECK (category IN ('friends', 'recruiters', 'realtors')),
                 category_source TEXT NOT NULL DEFAULT 'manual',
                 username TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '',
@@ -99,6 +99,30 @@ class Store:
             self.connection.execute(
                 "ALTER TABLE assistant_contacts ADD COLUMN category_source TEXT NOT NULL DEFAULT 'manual'"
             )
+        contact_table = self.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assistant_contacts'"
+        ).fetchone()["sql"]
+        if "realtors" not in contact_table:
+            self.connection.execute("ALTER TABLE assistant_contacts RENAME TO assistant_contacts_legacy")
+            self.connection.execute(
+                """CREATE TABLE assistant_contacts (
+                    account_id TEXT NOT NULL,
+                    peer_id INTEGER NOT NULL,
+                    category TEXT CHECK (category IN ('friends', 'recruiters', 'realtors')),
+                    category_source TEXT NOT NULL DEFAULT 'manual',
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (account_id, peer_id)
+                )"""
+            )
+            self.connection.execute(
+                """INSERT INTO assistant_contacts
+                   (account_id, peer_id, category, category_source, username, display_name, updated_at)
+                   SELECT account_id, peer_id, category, category_source, username, display_name, updated_at
+                   FROM assistant_contacts_legacy"""
+            )
+            self.connection.execute("DROP TABLE assistant_contacts_legacy")
         self.connection.commit()
 
     def contact_category(self, peer_id: int) -> str | None:
@@ -123,8 +147,8 @@ class Store:
         display_name: str = "",
         source: str = "manual",
     ) -> None:
-        if category not in (None, "friends", "recruiters"):
-            raise ValueError("category must be friends, recruiters, or None")
+        if category not in (None, "friends", "recruiters", "realtors"):
+            raise ValueError("category must be friends, recruiters, realtors, or None")
         self.connection.execute(
             """INSERT INTO assistant_contacts
                    (account_id, peer_id, category, category_source, username, display_name, updated_at)

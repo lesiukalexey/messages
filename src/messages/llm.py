@@ -21,7 +21,7 @@ PLAN_SCHEMA: dict[str, Any] = {
         "should_reply": {"type": "boolean"},
         "should_react": {"type": "boolean"},
         "reaction_emoji": {"type": "string", "enum": ["", "👍", "🔥", "❤️", "🙏", "😂", "🙂"]},
-        "detected_category": {"type": "string", "enum": ["friends", "recruiters"]},
+        "detected_category": {"type": "string", "enum": ["friends", "recruiters", "realtors"]},
         "meeting_in_progress": {"type": "boolean"},
         "calendar_action": {"type": "string", "enum": ["none", "check", "create"]},
         "confirmed_agreement": {"type": "boolean"},
@@ -140,12 +140,14 @@ of answering a question, handling a request, giving a needed clarification, or c
 For other no-reply cases set should_react=false and reaction_emoji to an empty string. Choose only
 from the supplied reaction options. Routine scheduling questions may still get one concise clarification
 for a genuinely missing date or time when the conversation clearly concerns a meeting.
-Set detected_category to recruiters only when the conversation is about recruiting Alexey,
-such as a job opportunity, vacancy, interview, or hiring discussion. If there is no clear
-recruiting evidence, set it to friends. Do not classify someone as a recruiter merely because
-they mention their own job or ask an ordinary social question. If category assignment is manual,
-preserve the supplied category in detected_category. If it is automatic, use the opening
-conversation and current message to detect whether recruiting becomes clear.
+Set detected_category to realtors when the contact is a realtor or the conversation is about
+renting, buying, or selling residential property. Such contacts are excluded from automatic replies.
+Otherwise set it to recruiters only when the conversation is about recruiting Alexey, such as a job
+opportunity, vacancy, interview, or hiring discussion. If there is no clear real-estate or recruiting
+evidence, set it to friends. Do not classify someone as a recruiter merely because they mention their
+own job or ask an ordinary social question. If category assignment is manual, preserve the supplied
+category in detected_category. If it is automatic, use the opening conversation and current message
+to detect recruiting or real-estate context.
 Current local time: {now.astimezone(self.timezone).isoformat()}.
 Voice guidance:
 {style_profile}
