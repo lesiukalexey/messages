@@ -792,18 +792,22 @@ async def run() -> None:
     await auto_folder.refresh(force=True)
 
     async def reply_policy_block(peer_id: int, force: bool = True) -> str | None:
-        if store.conversation_control_mode(settings.account_id, peer_id) == "manual":
+        owner_opt_in = store.conversation_owner_opt_in_active(settings.account_id, peer_id)
+        if (
+            store.conversation_control_mode(settings.account_id, peer_id) == "manual"
+            and not owner_opt_in
+        ):
             return "conversation is being handled manually by Alexey"
         if not await manual_folder.refresh(force=force):
             return "Telegram Manual folder state is unavailable"
-        if manual_folder.contains(peer_id):
+        if manual_folder.contains(peer_id) and not owner_opt_in:
             return "contact is in Telegram Manual folder"
         if not await auto_folder.refresh(force=force):
             return "Telegram Auto folder state is unavailable"
         await gate.refresh(force=force)
         if gate.error:
             return "global bio switch is unreadable"
-        if not gate.enabled and not auto_folder.contains(peer_id):
+        if not gate.enabled and not auto_folder.contains(peer_id) and not owner_opt_in:
             return "global bio switch is off and contact is not in Telegram Auto folder"
         return None
     locks: dict[int, asyncio.Lock] = {}
@@ -878,8 +882,8 @@ async def run() -> None:
                 "/contacts [friends|recruiters|realtors] — list assigned chats\n"
                 "/dialogs [page] — list exported chats and current categories\n"
                 "New chats become recruiters for hiring, realtors for property rentals/sales, or friends otherwise.\n"
-                "Chats in the Telegram folder 'Manual' are ignored.\n"
-                "Chats in folder 'Auto' can receive replies even when bio is `free`, except realtors.\n"
+                "Chats in the Telegram folder 'Manual' are ignored unless you opt in by ending your message with a period; the bot removes the period.\n"
+                "A period opt-in also overrides bio `free` for that conversation, until your next message without a period or 30 minutes of inactivity. `Auto` still overrides `free`.\n"
                 "Realtors and real estate rental/sale conversations never receive automatic replies.\n"
                 "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/other = ON."
             )
@@ -1008,7 +1012,7 @@ async def run() -> None:
                     type(exc).__name__,
                 )
                 logger.warning(
-                    "Could not remove the leading-space opt-in marker (%s)",
+                    "Could not remove the trailing-period opt-in marker (%s)",
                     type(exc).__name__,
                 )
             else:

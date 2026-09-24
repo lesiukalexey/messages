@@ -406,10 +406,27 @@ class Store:
 
     def conversation_control_mode(self, account_id: str, peer_id: int) -> str:
         row = self.connection.execute(
-            "SELECT control_mode FROM conversation_sessions WHERE account_id = ? AND peer_id = ?",
+            "SELECT control_mode, last_activity_at, last_incoming_at FROM conversation_sessions "
+            "WHERE account_id = ? AND peer_id = ?",
             (account_id, peer_id),
         ).fetchone()
-        return row["control_mode"] if row else "ai"
+        if not row:
+            return "ai"
+        last_activity = row["last_activity_at"] or row["last_incoming_at"]
+        if datetime.now(UTC) - datetime.fromisoformat(last_activity) > timedelta(minutes=30):
+            return "ai"
+        return row["control_mode"]
+
+    def conversation_owner_opt_in_active(self, account_id: str, peer_id: int) -> bool:
+        row = self.connection.execute(
+            """SELECT control_mode, owner_started, last_activity_at, last_incoming_at
+               FROM conversation_sessions WHERE account_id = ? AND peer_id = ?""",
+            (account_id, peer_id),
+        ).fetchone()
+        if not row or row["control_mode"] != "ai" or not row["owner_started"]:
+            return False
+        last_activity = row["last_activity_at"] or row["last_incoming_at"]
+        return datetime.now(UTC) - datetime.fromisoformat(last_activity) <= timedelta(minutes=30)
 
     def claim_conversation_notification(
         self, account_id: str, peer_id: int, session_started_at: str
