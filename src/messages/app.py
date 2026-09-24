@@ -20,6 +20,7 @@ from .llm import Responder
 from .runtime import load_environment
 from .recruiter_answers import RecruiterAnswers
 from .store import Store
+from .web_search import search_web
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
 NOTIFICATION_BOT_USERNAME = "@NotificationFastBot"
@@ -827,6 +828,40 @@ async def run() -> None:
                             pending_meeting_duration=pending_meeting_context,
                         )
                 plan.pop("detected_category", None)
+                web_search_requested = bool(plan.get("web_search"))
+                web_search_results: list[dict[str, str]] | None = []
+                web_search_query = str(plan.get("web_search_query") or "").strip()[:320]
+                if web_search_requested:
+                    plan["should_reply"] = True
+                    plan["should_react"] = False
+                    if not web_search_query:
+                        web_search_results = []
+                    else:
+                        try:
+                            web_search_results = await asyncio.to_thread(
+                                search_web, web_search_query
+                            )
+                        except Exception as exc:
+                            web_search_results = None
+                            logger.warning("Web search failed (%s)", type(exc).__name__)
+                    store.audit(
+                        peer_id,
+                        "web_search_completed",
+                        json.dumps(
+                            {
+                                "status": (
+                                    "unavailable" if web_search_results is None
+                                    else "results" if web_search_results
+                                    else "empty"
+                                ),
+                                "result_count": len(web_search_results or []),
+                                "source_domains": [
+                                    item["domain"] for item in (web_search_results or [])
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
                 acknowledgement = acknowledgement_reaction(event.raw_text)
                 if acknowledgement and not latest_assistant_asked_question(context):
                     plan["should_reply"] = False
@@ -917,6 +952,7 @@ async def run() -> None:
                         now=now,
                         style_profile=style_profile(),
                         prepared_answers=prepared_answers,
+                        web_search_results=web_search_results if web_search_requested else None,
                     )
                 start = None if duration_followup_reply is not None else plan.get("start")
                 action = (
@@ -1098,7 +1134,8 @@ async def run() -> None:
                             calendar_result = f"FREE at {interval}; no event created yet."
                             store.audit(peer_id, "calendar_availability_checked", "free")
                 text_reply_required = (
-                    duration_followup_reply is not None
+                    web_search_requested
+                    or duration_followup_reply is not None
                     or availability_reply is not None
                     or action in ("check", "duration_update")
                     or (
@@ -1137,7 +1174,22 @@ async def run() -> None:
                         peer_id, sender, category, session_started_at
                     )
                     return
-                if duration_followup_reply is not None:
+                if web_search_requested:
+                    if availability_reply is not None:
+                        calendar_result = f"APPROVED CALENDAR RESPONSE: {availability_reply}"
+                    reply = await responder.compose_with_calendar_result(
+                        model=model,
+                        category=category,
+                        history=context,
+                        current_message=event.raw_text,
+                        plan=plan,
+                        calendar_result=calendar_result,
+                        now=now,
+                        style_profile=style_profile(),
+                        prepared_answers=prepared_answers,
+                        web_search_results=web_search_results,
+                    )
+                elif duration_followup_reply is not None:
                     reply = duration_followup_reply
                 elif availability_reply is not None:
                     reply = availability_reply
@@ -1167,6 +1219,8 @@ async def run() -> None:
                             "category": category,
                             "model": model,
                             "calendar_action": action,
+                            "web_search": web_search_requested,
+                            "web_search_result_count": len(web_search_results or []),
                         },
                         ensure_ascii=False,
                     ),
