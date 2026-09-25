@@ -88,6 +88,21 @@ class Store:
                 last_activity_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (account_id, peer_id)
             );
+            CREATE TABLE IF NOT EXISTS learning_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                normalized_question TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL CHECK (
+                    status IN ('queued', 'posting', 'awaiting', 'answering', 'answered')
+                ),
+                channel_message_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS learning_owner_ids (
+                user_id INTEGER PRIMARY KEY,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         session_columns = {
@@ -112,6 +127,11 @@ class Store:
         self.connection.execute(
             "UPDATE conversation_sessions SET notification_state = 'pending' "
             "WHERE notification_state = 'sending'"
+        )
+        self.connection.execute(
+            "UPDATE learning_questions SET status = 'queued', updated_at = ? "
+            "WHERE status IN ('posting', 'answering')",
+            (utc_now(),),
         )
         contact_columns = {
             row["name"]
@@ -145,6 +165,106 @@ class Store:
                    FROM assistant_contacts_legacy"""
             )
             self.connection.execute("DROP TABLE assistant_contacts_legacy")
+        self.connection.commit()
+
+    def register_learning_owner(self, user_id: int) -> None:
+        self.connection.execute(
+            "INSERT OR REPLACE INTO learning_owner_ids (user_id, updated_at) VALUES (?, ?)",
+            (user_id, utc_now()),
+        )
+        self.connection.commit()
+
+    def learning_owner_ids(self) -> set[int]:
+        return {
+            int(row["user_id"])
+            for row in self.connection.execute("SELECT user_id FROM learning_owner_ids")
+        }
+
+    def enqueue_learning_question(self, question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        if not normalized:
+            return False
+        now = utc_now()
+        cursor = self.connection.execute(
+            """INSERT OR IGNORE INTO learning_questions
+               (question, normalized_question, status, created_at, updated_at)
+               VALUES (?, ?, 'queued', ?, ?)""",
+            (question.strip(), normalized, now, now),
+        )
+        self.connection.commit()
+        return cursor.rowcount == 1
+
+    def claim_next_learning_question(self) -> sqlite3.Row | None:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            if self.connection.execute(
+                "SELECT 1 FROM learning_questions "
+                "WHERE status IN ('posting', 'awaiting', 'answering') LIMIT 1"
+            ).fetchone():
+                self.connection.commit()
+                return None
+            row = self.connection.execute(
+                "SELECT id, question FROM learning_questions WHERE status = 'queued' ORDER BY id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                self.connection.commit()
+                return None
+            self.connection.execute(
+                "UPDATE learning_questions SET status = 'posting', updated_at = ? WHERE id = ?",
+                (utc_now(), row["id"]),
+            )
+            self.connection.commit()
+            return row
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def mark_learning_question_awaiting(self, question_id: int, channel_message_id: int) -> None:
+        self.connection.execute(
+            "UPDATE learning_questions SET status = 'awaiting', channel_message_id = ?, updated_at = ? WHERE id = ?",
+            (channel_message_id, utc_now(), question_id),
+        )
+        self.connection.commit()
+
+    def retry_learning_question(self, question_id: int) -> None:
+        self.connection.execute(
+            "UPDATE learning_questions SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'posting'",
+            (utc_now(), question_id),
+        )
+        self.connection.commit()
+
+    def awaiting_learning_question(self) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT id, question, channel_message_id FROM learning_questions WHERE status = 'awaiting' ORDER BY id LIMIT 1"
+        ).fetchone()
+
+    def is_learning_question_message(self, message_id: int) -> bool:
+        return self.connection.execute(
+            "SELECT 1 FROM learning_questions WHERE channel_message_id = ? LIMIT 1",
+            (message_id,),
+        ).fetchone() is not None
+
+    def claim_learning_answer(self, question_id: int) -> bool:
+        cursor = self.connection.execute(
+            "UPDATE learning_questions SET status = 'answering', updated_at = ? WHERE id = ? AND status = 'awaiting'",
+            (utc_now(), question_id),
+        )
+        self.connection.commit()
+        return cursor.rowcount == 1
+
+    def retry_learning_answer(self, question_id: int) -> None:
+        self.connection.execute(
+            "UPDATE learning_questions SET status = 'awaiting', updated_at = ? WHERE id = ? AND status = 'answering'",
+            (utc_now(), question_id),
+        )
+        self.connection.commit()
+
+    def finish_learning_question(self, question_id: int) -> None:
+        self.connection.execute(
+            "UPDATE learning_questions SET status = 'answered', updated_at = ? "
+            "WHERE id = ? AND status = 'answering'",
+            (utc_now(), question_id),
+        )
         self.connection.commit()
 
     def contact_category(self, peer_id: int) -> str | None:

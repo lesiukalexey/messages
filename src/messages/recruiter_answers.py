@@ -119,6 +119,31 @@ class RecruiterAnswers:
             })
         return answers
 
+    def learned_answers_context(self) -> list[dict[str, str]]:
+        """Share only owner-authored learned Q&A outside recruiter conversations."""
+        try:
+            document: Any = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            return []
+        learned = document.get("learned_answers", {}) if isinstance(document, dict) else {}
+        if not isinstance(learned, dict):
+            return []
+        pairs = [
+            {"question": question.strip(), "answer": answer.strip()}
+            for question, answer in learned.items()
+            if isinstance(question, str)
+            and isinstance(answer, str)
+            and question.strip()
+            and answer.strip()
+            and not any(
+                marker in question.casefold()
+                for marker in (
+                    "password", "secret", "token", "credential", "security code", "2fa",
+                )
+            )
+        ][-30:]
+        return pairs
+
     def _load(self) -> None:
         stat = self.path.stat()
         if self._mtime_ns == stat.st_mtime_ns:

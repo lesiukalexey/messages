@@ -19,6 +19,7 @@ from telethon import TelegramClient, events, functions, types, utils
 from .calendar import GoogleCalendar
 from .config import Settings
 from .llm import Responder
+from .learning import save_learned_answer
 from .runtime import load_environment
 from .recruiter_answers import RecruiterAnswers
 from .store import Store
@@ -26,6 +27,7 @@ from .web_search import search_web
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
 NOTIFICATION_BOT_USERNAME = "@NotificationFastBot"
+LEARNING_CHANNEL_USERNAME = "@learnDataBot"
 DEFAULT_STYLE = "Write like a concise, practical, informal Telegram conversation."
 MEETING_SIGNAL = re.compile(
     r"(встреч|встрет|пересеч|увид|выйд|заед|прид|кофе|обед|ужин|созвон|звон|"
@@ -74,6 +76,24 @@ def resolve_automatic_category(current: str, detected: str) -> str:
     if current == "friends" or detected == "friends":
         return "friends"
     return "unknown"
+
+
+def sanitize_learning_question(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    question = re.sub(
+        r"https?://\S+|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b|@[A-Za-z0-9_]{3,}",
+        "",
+        value,
+    )
+    question = " ".join(question.split()).strip(" \t\r\n-–—")
+    if re.search(
+        r"password|passcode|secret|security\s+code|2fa|otp|bank(?:ing)?\s+(?:account|card)",
+        question,
+        re.IGNORECASE,
+    ):
+        return ""
+    return question[:500]
 
 
 def recruiter_keyword_fallback(message: str, answers: list[dict[str, str]]) -> dict[str, Any] | None:
@@ -936,6 +956,7 @@ async def run() -> None:
     await client.start()
     await refresh_quiet_hours_status(force=True)
     me = await client.get_me()
+    store.register_learning_owner(me.id)
     if store.setting("legacy_contacts_marked_friends_v1", "") != "done":
         legacy_count = 0
         async for dialog in client.iter_dialogs():
@@ -955,6 +976,39 @@ async def run() -> None:
     await manual_folder.refresh(force=True)
     auto_folder = DialogFilterGate(client, "Auto")
     await auto_folder.refresh(force=True)
+
+    learning_channel = None
+    learning_channel_can_post = False
+    try:
+        learning_channel = await client.get_entity(LEARNING_CHANNEL_USERNAME)
+        permissions = await client.get_permissions(learning_channel, me.id)
+        admin_rights = getattr(permissions, "admin_rights", None)
+        learning_channel_can_post = bool(
+            getattr(permissions, "is_creator", False)
+            or getattr(admin_rights, "post_messages", False)
+        )
+        logger.info(
+            "Learning channel resolved for account %s; posting is %s",
+            settings.account_id,
+            "available" if learning_channel_can_post else "unavailable",
+        )
+    except Exception as exc:
+        logger.warning("Could not access learning channel (%s)", type(exc).__name__)
+
+    async def publish_next_learning_question() -> None:
+        if learning_channel is None or not learning_channel_can_post:
+            return
+        queued = store.claim_next_learning_question()
+        if queued is None:
+            return
+        try:
+            posted = await client.send_message(learning_channel, queued["question"])
+        except Exception as exc:
+            store.retry_learning_question(int(queued["id"]))
+            logger.warning("Could not post learning question (%s)", type(exc).__name__)
+            return
+        store.mark_learning_question_awaiting(int(queued["id"]), posted.id)
+        logger.info("Posted one unanswered question to the learning channel")
 
     async def reply_policy_block(peer_id: int, force: bool = True) -> str | None:
         owner_opt_in = store.conversation_owner_opt_in_active(settings.account_id, peer_id)
@@ -1192,6 +1246,40 @@ async def run() -> None:
             result = "Command failed. Check the assistant log."
         await send_control(result)
 
+    if learning_channel is not None:
+        @client.on(events.NewMessage(chats=learning_channel))
+        async def on_learning_channel_message(event: events.NewMessage.Event) -> None:
+            sender = await event.get_sender()
+            sender_id = getattr(sender, "id", None)
+            if not isinstance(sender_id, int) or sender_id not in store.learning_owner_ids():
+                return
+            if store.is_learning_question_message(event.message.id):
+                return
+            answer = (event.raw_text or "").strip()
+            if not answer or answer.startswith("/") or len(answer) > 5000:
+                return
+            pending = store.awaiting_learning_question()
+            if pending is None:
+                return
+            reply_to = getattr(getattr(event.message, "reply_to", None), "reply_to_msg_id", None)
+            if reply_to is not None and reply_to != pending["channel_message_id"]:
+                return
+            question_id = int(pending["id"])
+            if not store.claim_learning_answer(question_id):
+                return
+            try:
+                save_learned_answer(settings.recruiter_answers_file, pending["question"], answer)
+            except Exception as exc:
+                store.retry_learning_answer(question_id)
+                logger.exception("Could not save a learned answer (%s)", type(exc).__name__)
+                return
+            store.finish_learning_question(question_id)
+            recruiter_answers._mtime_ns = None
+            logger.info("Saved an owner answer from the learning channel")
+            await publish_next_learning_question()
+
+        await publish_next_learning_question()
+
     @client.on(events.Raw)
     async def on_profile_update(update: Any) -> None:
         if isinstance(update, types.UpdateUser) and update.user_id == me.id:
@@ -1376,7 +1464,8 @@ async def run() -> None:
                         logger.warning("Could not search past replies (%s)", type(exc).__name__)
                 prepared_answers = (
                     recruiter_answers.for_recruiter_message(event.raw_text)
-                    if category == "recruiters" else []
+                    if category == "recruiters"
+                    else recruiter_answers.learned_answers_context()
                 )
                 try:
                     plan = await responder.plan(
@@ -1448,7 +1537,8 @@ async def run() -> None:
                         category = resolved_category
                         prepared_answers = (
                             recruiter_answers.for_recruiter_message(event.raw_text)
-                            if category == "recruiters" else []
+                            if category == "recruiters"
+                            else recruiter_answers.learned_answers_context()
                         )
                         try:
                             plan = await responder.plan(
@@ -1483,6 +1573,11 @@ async def run() -> None:
                             plan = fallback
                             prepared_answers = fallback_answers
                 plan.pop("detected_category", None)
+                learning_question = sanitize_learning_question(plan.pop("learn_question", None))
+                if learning_question and not plan.get("web_search"):
+                    if store.enqueue_learning_question(learning_question):
+                        store.audit(peer_id, "unknown_question_queued")
+                        await publish_next_learning_question()
                 web_search_requested = bool(plan.get("web_search"))
                 web_search_results: list[dict[str, str]] | None = []
                 web_search_query = str(plan.get("web_search_query") or "").strip()[:320]
