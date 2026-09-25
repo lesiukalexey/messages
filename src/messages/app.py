@@ -65,6 +65,17 @@ ACKNOWLEDGEMENTS = {
     "thanks": "🙏", "great": "🔥", "awesome": "🔥",
 }
 REACTION_EMOJIS = {"👍", "🔥", "❤️", "🙏", "😂", "🙂"}
+
+
+def resolve_automatic_category(current: str, detected: str) -> str:
+    """Keep a known category while letting an unknown contact become known."""
+    if current == "recruiters" or detected == "recruiters":
+        return "recruiters"
+    if current == "friends" or detected == "friends":
+        return "friends"
+    return "unknown"
+
+
 RU_PRESENCE_CHECK = re.compile(
     r"(?:\bau\b|\bты\s+(?:(?:еще|ещё)\s+)?(?:тут|здесь)\b|"
     r"\bя\s+(?:(?:(?:все|всё)\s+)?(?:еще|ещё)\s+)?(?:тут|здесь)\b"
@@ -833,6 +844,19 @@ async def run() -> None:
     await client.start()
     await refresh_quiet_hours_status(force=True)
     me = await client.get_me()
+    if store.setting("legacy_contacts_marked_friends_v1", "") != "done":
+        legacy_count = 0
+        async for dialog in client.iter_dialogs():
+            user = dialog.entity
+            if not isinstance(user, types.User) or user.bot or user.deleted or user.is_self:
+                continue
+            display_name = " ".join(
+                part for part in (user.first_name, user.last_name) if part
+            ).strip()
+            store.set_existing_contact_friend(user.id, user.username or "", display_name)
+            legacy_count += 1
+        store.set_setting("legacy_contacts_marked_friends_v1", "done")
+        logger.info("Marked %s existing private dialogs as friends where unlabeled", legacy_count)
     gate = BioGate(client, me.id)
     await gate.refresh(force=True)
     manual_folder = DialogFilterGate(client, "Manual")
@@ -924,11 +948,11 @@ async def run() -> None:
                 "Commands (send in Saved Messages):\n"
                 "/model — show or choose a model\n"
                 "/model MODEL_ID — switch model\n"
-                "/category @username friends|recruiters|realtors — override auto classification\n"
+                "/category @username unknown|friends|recruiters|realtors — override auto classification\n"
                 "/category remove @username — clear manual assignment\n"
-                "/contacts [friends|recruiters|realtors] — list assigned chats\n"
+                "/contacts [unknown|friends|recruiters|realtors] — list assigned chats\n"
                 "/dialogs [page] — list exported chats and current categories\n"
-                "New chats become recruiters for hiring, realtors for property rentals/sales, or friends otherwise.\n"
+                "New chats remain unknown until their conversation shows a category.\n"
                 "Chats in the Telegram folder 'Manual' are ignored unless you opt in by ending your message with a period; the bot removes the period.\n"
                 "A period opt-in also overrides bio `free` for that conversation, until your next message without a period or 30 minutes of inactivity. `Auto` still overrides `free`.\n"
                 "Realtors and real estate rental/sale conversations never receive automatic replies.\n"
@@ -961,8 +985,8 @@ async def run() -> None:
                 store.set_contact_category(entity.id, None, entity.username or "", entity.first_name or "")
                 store.audit(entity.id, "contact_uncategorized", "")
                 return f"Cleared manual category for {entity.username or entity.id}; the next message will be classified automatically."
-            if len(parts) != 3 or parts[2].casefold() not in ("friends", "recruiters", "realtors"):
-                return "Use /category @username friends, recruiters, or realtors to override automatic classification."
+            if len(parts) != 3 or parts[2].casefold() not in ("unknown", "friends", "recruiters", "realtors"):
+                return "Use /category @username unknown, friends, recruiters, or realtors to override automatic classification."
             identifier, category = parts[1], parts[2].casefold()
             try:
                 entity = await resolve_user(client, identifier)
@@ -980,8 +1004,8 @@ async def run() -> None:
             return f"{entity.username or entity.id} manually assigned to {category}."
         if command == "/contacts":
             category = parts[1].casefold() if len(parts) > 1 else None
-            if category not in (None, "friends", "recruiters", "realtors"):
-                return "Use /contacts, /contacts friends, /contacts recruiters, or /contacts realtors."
+            if category not in (None, "unknown", "friends", "recruiters", "realtors"):
+                return "Use /contacts, /contacts unknown, /contacts friends, /contacts recruiters, or /contacts realtors."
             return await contacts_text(category, store)
         if command == "/dialogs":
             try:
@@ -993,7 +1017,7 @@ async def run() -> None:
                 return "No more exported one-to-one chats. Run messages-export to refresh the list."
             lines = []
             for row in rows:
-                category = store.contact_category(row["dialog_id"]) or "not yet classified"
+                category = store.contact_category(row["dialog_id"]) or "unknown"
                 name = row["name"] or row["username"] or str(row["dialog_id"])
                 identity = f"@{row['username']}" if row["username"] else f"id:{row['dialog_id']}"
                 lines.append(f"• {name} ({identity}) — {category}")
@@ -1005,12 +1029,12 @@ async def run() -> None:
         if not rows:
             return "No contacts classified yet. New chats are classified automatically; use /category to override."
         grouped: dict[str, list[str]] = {
-            "friends": [], "recruiters": [], "realtors": []
+            "unknown": [], "friends": [], "recruiters": [], "realtors": []
         }
         for row in rows:
             grouped[row["category"]].append(_format_contact(row))
         blocks = []
-        for name in ((category,) if category else ("friends", "recruiters", "realtors")):
+        for name in ((category,) if category else ("unknown", "friends", "recruiters", "realtors")):
             blocks.append(f"{name.title()} ({len(grouped[name])}):\n" + "\n".join(grouped[name]))
         return "\n\n".join(blocks)
 
@@ -1099,7 +1123,10 @@ async def run() -> None:
             part for part in (sender.first_name, sender.last_name) if part
         ).strip() or sender.username or f"Telegram user {peer_id}"
         username = f" (@{sender.username})" if sender.username else ""
-        category_label = "рекрутер" if category == "recruiters" else "друг"
+        category_label = {
+            "unknown": "неизвестно", "friends": "друг",
+            "recruiters": "рекрутер", "realtors": "риелтор",
+        }[category]
         notification = (
             f"ИИ начал новый диалог: {display_name}{username} "
             f"(категория: {category_label})."
@@ -1177,6 +1204,15 @@ async def run() -> None:
                 "automatic messages are disabled for realtor contacts",
             )
             return
+        if current_category is None:
+            display_name = " ".join(
+                part for part in (sender.first_name, sender.last_name) if part
+            ).strip()
+            store.set_contact_category(
+                peer_id, "unknown", sender.username or "", display_name,
+                source="automatic",
+            )
+            store.audit(peer_id, "contact_auto_categorized", "unknown")
         block_reason = await reply_policy_block(peer_id, force=True)
         if block_reason:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
@@ -1185,7 +1221,7 @@ async def run() -> None:
         category = store.contact_category(peer_id)
         category_source = store.contact_category_source(peer_id)
         auto_detect_category = category is None or category_source == "automatic"
-        category = category or "friends"
+        category = category or "unknown"
 
         async with locks.setdefault(peer_id, asyncio.Lock()):
             try:
@@ -1285,11 +1321,7 @@ async def run() -> None:
                     )
                     return
                 if auto_detect_category:
-                    resolved_category = (
-                        "recruiters"
-                        if category == "recruiters" or detected_category == "recruiters"
-                        else "friends"
-                    )
+                    resolved_category = resolve_automatic_category(category, detected_category)
                     if store.contact_category(peer_id) != resolved_category:
                         display_name = " ".join(
                             part for part in (sender.first_name, sender.last_name) if part
@@ -1528,7 +1560,7 @@ async def run() -> None:
                 if target_day is not None:
                     action = "none"
                     duration = int(
-                        plan.get("duration_minutes") or (60 if category == "friends" else 30)
+                        plan.get("duration_minutes") or (30 if category == "recruiters" else 60)
                     )
                     if not calendar.configured:
                         availability_reply = safe_availability_reply(
@@ -1988,12 +2020,12 @@ async def contacts_text(category: str | None, store: Store) -> str:
     rows = store.contacts(category)
     if not rows:
         return "No contacts classified yet. New chats are classified automatically; use /category to override."
-    grouped: dict[str, list[str]] = {"friends": [], "recruiters": [], "realtors": []}
+    grouped: dict[str, list[str]] = {"unknown": [], "friends": [], "recruiters": [], "realtors": []}
     for row in rows:
         name = row["display_name"] or row["username"] or str(row["peer_id"])
         suffix = f" (@{row['username']})" if row["username"] else ""
         grouped[row["category"]].append(f"• {name}{suffix}")
-    categories = (category,) if category else ("friends", "recruiters", "realtors")
+    categories = (category,) if category else ("unknown", "friends", "recruiters", "realtors")
     return "\n\n".join(
         f"{name.title()} ({len(grouped[name])}):\n" + "\n".join(grouped[name])
         for name in categories

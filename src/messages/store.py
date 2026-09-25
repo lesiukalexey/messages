@@ -30,7 +30,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS assistant_contacts (
                 account_id TEXT NOT NULL,
                 peer_id INTEGER NOT NULL,
-                category TEXT CHECK (category IN ('friends', 'recruiters', 'realtors')),
+                category TEXT CHECK (category IN ('unknown', 'friends', 'recruiters', 'realtors')),
                 category_source TEXT NOT NULL DEFAULT 'manual',
                 username TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '',
@@ -124,13 +124,13 @@ class Store:
         contact_table = self.connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assistant_contacts'"
         ).fetchone()["sql"]
-        if "realtors" not in contact_table:
+        if "'unknown'" not in contact_table:
             self.connection.execute("ALTER TABLE assistant_contacts RENAME TO assistant_contacts_legacy")
             self.connection.execute(
                 """CREATE TABLE assistant_contacts (
                     account_id TEXT NOT NULL,
                     peer_id INTEGER NOT NULL,
-                    category TEXT CHECK (category IN ('friends', 'recruiters', 'realtors')),
+                    category TEXT CHECK (category IN ('unknown', 'friends', 'recruiters', 'realtors')),
                     category_source TEXT NOT NULL DEFAULT 'manual',
                     username TEXT NOT NULL DEFAULT '',
                     display_name TEXT NOT NULL DEFAULT '',
@@ -169,8 +169,8 @@ class Store:
         display_name: str = "",
         source: str = "manual",
     ) -> None:
-        if category not in (None, "friends", "recruiters", "realtors"):
-            raise ValueError("category must be friends, recruiters, realtors, or None")
+        if category not in (None, "unknown", "friends", "recruiters", "realtors"):
+            raise ValueError("category must be unknown, friends, recruiters, realtors, or None")
         self.connection.execute(
             """INSERT INTO assistant_contacts
                    (account_id, peer_id, category, category_source, username, display_name, updated_at)
@@ -180,6 +180,20 @@ class Store:
                  username=excluded.username, display_name=excluded.display_name,
                  updated_at=excluded.updated_at""",
             (self.account_id, peer_id, category, source, username, display_name, utc_now()),
+        )
+        self.connection.commit()
+
+    def set_existing_contact_friend(self, peer_id: int, username: str, display_name: str) -> None:
+        """Give an existing dialog a friend label only when it has no label yet."""
+        self.connection.execute(
+            """INSERT INTO assistant_contacts
+                   (account_id, peer_id, category, category_source, username, display_name, updated_at)
+               VALUES (?, ?, 'friends', 'automatic', ?, ?, ?)
+               ON CONFLICT(account_id, peer_id) DO UPDATE SET
+                   category='friends', category_source='automatic',
+                   updated_at=excluded.updated_at
+               WHERE assistant_contacts.category IS NULL""",
+            (self.account_id, peer_id, username, display_name, utc_now()),
         )
         self.connection.commit()
 

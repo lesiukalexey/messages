@@ -1,8 +1,8 @@
 # Messages
 
 Personal Telegram assistant running through an authorized Telethon user session.
-It replies autonomously to one-to-one conversations categorized as `friends` or
-`recruiters`.
+It replies autonomously to eligible one-to-one conversations while their category
+is `unknown`, `friends`, or `recruiters`. Realtor contacts are excluded.
 
 ## Global switch
 
@@ -12,10 +12,10 @@ The Telegram profile bio controls the assistant:
 - Empty bio or any other bio: ON.
 
 If the profile cannot be read, the worker fails closed. Groups, channels, bots,
-and Saved Messages are ignored. On the first incoming message, the assistant
-classifies the conversation as `recruiters` when it is clearly about hiring;
-otherwise it assigns `friends`. It uses the opening messages and can promote an
-automatically assigned friend to recruiter if recruiting becomes clear later.
+and Saved Messages are ignored. A new contact starts as `unknown`. The assistant
+uses each new message and the conversation to assign `friends`, `recruiters`, or
+`realtors` only when the relationship becomes clear. Existing dialogs are treated
+as friends unless they already have an explicit category.
 
 ## Settings in Telegram
 
@@ -27,8 +27,10 @@ Send commands to **Saved Messages** from the same account running the assistant:
 /model gpt-5.6-luna
 /category @username friends
 /category @username recruiters
+/category @username unknown
 /category remove @username
 /contacts
+/contacts unknown
 /contacts friends
 /contacts recruiters
 /dialogs
@@ -43,10 +45,11 @@ login for the `admin` account, as Job Apply does. Codex receives the incoming
 message and up to 23 recent messages from that same chat to produce the reply.
 No OpenAI API key is needed.
 
-New contacts are classified and answered automatically. Clear recruiting or
-job opportunity conversations go to `recruiters`; everyone else goes to
-`friends`. You can override a contact at any time with `/category @username
-friends` or `/category @username recruiters`. Manual choices stay fixed.
+New contacts can receive replies while their category remains `unknown`. Clear
+recruiting or job opportunity conversations go to `recruiters`; clear personal
+conversations go to `friends`. The assistant keeps evaluating later messages
+until the category is clear. You can override a contact with `/category`.
+Manual choices stay fixed.
 Automatically classified friends can be promoted to recruiters if later
 messages make the hiring context clear. The categories are separate in
 `/contacts` and receive different model context.

@@ -21,7 +21,7 @@ PLAN_SCHEMA: dict[str, Any] = {
         "should_reply": {"type": "boolean"},
         "should_react": {"type": "boolean"},
         "reaction_emoji": {"type": "string", "enum": ["", "👍", "🔥", "❤️", "🙏", "😂", "🙂"]},
-        "detected_category": {"type": "string", "enum": ["friends", "recruiters", "realtors"]},
+        "detected_category": {"type": "string", "enum": ["unknown", "friends", "recruiters", "realtors"]},
         "web_search": {"type": "boolean"},
         "web_search_query": {"type": "string"},
         "meeting_in_progress": {"type": "boolean"},
@@ -164,6 +164,10 @@ messages, and in English to English messages. Do not reply in Ukrainian. Ignore 
 language when it differs from the latest incoming message.
 When the current incoming message explicitly asks you to search, look up, check, or find information online, set web_search=true and provide a concise standalone web_search_query based only on that request. Search only for explicit online lookup requests, not ordinary questions or casual conversation. Otherwise set web_search=false and web_search_query to an empty string.
 For friends, sound familiar, warm, informal, and direct without inventing shared history.
+For unknown contacts, use a neutral, natural tone. Do not assume familiarity or a professional
+relationship. Answer the actual message; when their purpose matters and is still unclear, ask one
+natural question that helps establish it. Do not ask for their category or repeat a clarification
+after they have already answered it. Use the next messages to keep evaluating their intent.
 A direct presence check such as “ты тут?”, “я еще тут, а ты?”, or “are you there?” is always safe to answer briefly.
 Do not set should_reply=false for these check-ins; answer with a simple confirmation.
 For recruiters, be polite and professional, coordinate interviews clearly, and never accept
@@ -195,11 +199,11 @@ for a genuinely missing date or time when the conversation clearly concerns a me
 Set detected_category to realtors when the contact is a realtor or the conversation is about
 renting, buying, or selling residential property. Such contacts are excluded from automatic replies.
 Otherwise set it to recruiters only when the conversation is about recruiting Alexey, such as a job
-opportunity, vacancy, interview, or hiring discussion. If there is no clear real-estate or recruiting
-evidence, set it to friends. Do not classify someone as a recruiter merely because they mention their
-own job or ask an ordinary social question. If category assignment is manual, preserve the supplied
-category in detected_category. If it is automatic, use the opening conversation and current message
-to detect recruiting or real-estate context.
+opportunity, vacancy, interview, or hiring discussion. Set it to friends when the conversation gives
+clear evidence of a personal or social relationship with Alexey. A greeting, ordinary question, or
+mention of the contact's own job does not establish a category; return unknown while the intent is
+unclear, even across several messages. Reevaluate using the current message and conversation each
+time. If category assignment is manual, preserve the supplied category in detected_category.
 Current local time: {now.astimezone(self.timezone).isoformat()}.
 Recent outgoing replies in this exact chat are supplied separately. Avoid reusing their wording;
 vary concise phrasing naturally while keeping facts unchanged. Answer a new greeting, question, or
@@ -294,7 +298,7 @@ Calendar rules:
 - If no date or interval is established in the current or recent conversation, leave start null and
   ask which day they mean; do not invent available times.
 - Set duration_stated=true only when the contact explicitly gave the duration for this meeting;
-  then set duration_minutes to that length. If no length was stated, set duration_stated=false and use the internal default of 60 minutes for friends or 30 minutes for recruiters. Never ask the contact for a duration.
+  then set duration_minutes to that length. If no length was stated, set duration_stated=false and use the internal default of 60 minutes for friends or unknown contacts, or 30 minutes for recruiters. Never ask the contact for a duration.
 - If pending metadata identifies an already-created meeting, do not create a duplicate event for a
   follow-up about that meeting. Update its duration only if the contact volunteers a new duration.
 - For an agreed meeting, supply a short title. Do not add attendees or invite anyone.
