@@ -2,13 +2,48 @@ import tempfile
 import unittest
 from pathlib import Path
 import asyncio
+from datetime import datetime, timezone
 
+from messages.config import Settings
+from messages.llm import Responder
 from messages.learning import LearningBot, save_learned_answer
 from messages.recruiter_answers import RecruiterAnswers
 from messages.store import Store
 
 
 class LearningAnswersTest(unittest.TestCase):
+    def test_substantive_position_is_queued_even_when_assistant_replies(self) -> None:
+        class PromptResponder(Responder):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.prompt = ""
+
+            async def _run(
+                self, model: str, prompt: str, schema: dict[str, object] | None = None,
+                timeout_seconds: int = 240,
+            ) -> str:
+                self.prompt = prompt
+                return '{"reply":"Спасибо, но такой формат мне не подходит.","learn_question":"Готов ли я рассматривать обратный аутстаф за 25 долларов в час вместо обычного рейта 20 долларов и на каких условиях?","should_reply":true}'
+
+        settings = Settings(
+            api_id=1, api_hash="", account_id="personal", session_path=Path("/tmp/session"),
+            database_path=Path("/tmp/db"), codex_binary=Path("/tmp/codex"),
+            codex_home=Path("/tmp/codex-home"), model_options=("test",), default_model="test",
+            timezone="Europe/Kyiv", google_client_file=Path("/tmp/client"),
+            google_token_file=Path("/tmp/token"), recruiter_answers_file=Path("/tmp/answers"),
+            learning_bot_token="",
+        )
+        responder = PromptResponder(settings)
+        plan = asyncio.run(responder.plan(
+            "test", "recruiters", [],
+            "Клиент предлагает обратный аутстаф за $25/ч вместо моего обычного рейта $20/ч.",
+            datetime.now(timezone.utc), "", prepared_answers=[],
+        ))
+        self.assertTrue(plan["should_reply"])
+        self.assertIn("learn_question", plan)
+        self.assertIn("substantive choice, preference, boundary", responder.prompt)
+        self.assertIn("even when you can", responder.prompt)
+
     def test_answer_is_saved_and_available_to_future_model_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             profile = Path(directory) / "answers.yaml"
