@@ -981,6 +981,10 @@ async def run() -> None:
     learning_channel_can_post = False
     try:
         learning_channel = await client.get_entity(LEARNING_CHANNEL_USERNAME)
+        if not isinstance(learning_channel, types.Channel):
+            raise ValueError(
+                f"{LEARNING_CHANNEL_USERNAME} resolves to {type(learning_channel).__name__}, not a channel"
+            )
         permissions = await client.get_permissions(learning_channel, me)
         learning_channel_can_post = bool(
             getattr(permissions, "is_creator", False)
@@ -992,6 +996,7 @@ async def run() -> None:
             "available" if learning_channel_can_post else "unavailable",
         )
     except Exception as exc:
+        learning_channel = None
         logger.warning(
             "Could not access learning channel (%s: %s)",
             type(exc).__name__,
