@@ -43,6 +43,8 @@ class LearningAnswersTest(unittest.TestCase):
         self.assertIn("learn_question", plan)
         self.assertIn("substantive choice, preference, boundary", responder.prompt)
         self.assertIn("even when you can", responder.prompt)
+        self.assertIn("test assignments, interview exercises, trial projects", responder.prompt)
+        self.assertIn("Even if you decide to answer yes or no yourself", responder.prompt)
         self.assertIn("omit that part completely", responder.prompt)
         self.assertIn("first-person voice", responder.prompt)
 
