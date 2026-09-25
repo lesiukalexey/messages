@@ -21,7 +21,7 @@ from .config import Settings
 from .llm import Responder
 from .learning import LearningBot
 from .runtime import load_environment
-from .recruiter_answers import RecruiterAnswers
+from .recruiter_answers import CategoryAnswers, RecruiterAnswers
 from .store import Store
 from .web_search import search_web
 
@@ -171,15 +171,29 @@ def no_model_recruiter_fallback(
     answers = prepared_answers
     fallback_category = category
     if category != "recruiters" and auto_detect_category:
-        answers = recruiter_answers.for_recruiter_message(message)
-        if clearly_recruiting_without_model(message, answers):
+        if clearly_recruiting_without_model(message, []):
             fallback_category = "recruiters"
+            answers = recruiter_answers.for_recruiter_message(message)
     if fallback_category != "recruiters":
         return None, prepared_answers
     plan = recruiter_keyword_fallback(message, answers)
     if plan:
         plan["detected_category"] = fallback_category
     return plan, answers
+
+
+def answers_for_category(
+    category: str,
+    message: str,
+    recruiter_answers: RecruiterAnswers,
+    category_answers: dict[str, CategoryAnswers],
+) -> list[dict[str, str]]:
+    if category == "recruiters":
+        return recruiter_answers.for_recruiter_message(message)
+    if category in ("unknown", "friends"):
+        source = category_answers.get(category)
+        return source.learned_answers_context() if source else []
+    return []
 
 
 RU_PRESENCE_CHECK = re.compile(
@@ -924,6 +938,12 @@ async def run() -> None:
     if personal_context:
         logger.info("Personal context profile loaded (%s characters)", len(personal_context))
     recruiter_answers = RecruiterAnswers(settings.recruiter_answers_file)
+    category_answers = {
+        category: CategoryAnswers(settings.category_answers_dir / f"{category}.yaml")
+        for category in ("unknown", "friends", "realtors")
+    }
+    for answer_file in category_answers.values():
+        answer_file.ensure_file()
     if not settings.codex_binary.is_file():
         logger.warning("Codex CLI is not installed at CODEX_BINARY; replies will fail until installed")
     client = TelegramClient(str(settings.session_path), settings.api_id, settings.api_hash)
@@ -972,7 +992,15 @@ async def run() -> None:
     await auto_folder.refresh(force=True)
 
     learning_bot = (
-        LearningBot(settings.learning_bot_token, store, settings.recruiter_answers_file)
+        LearningBot(
+            settings.learning_bot_token,
+            store,
+            settings.recruiter_answers_file,
+            category_profile_paths={
+                category: answer_file.path
+                for category, answer_file in category_answers.items()
+            },
+        )
         if settings.learning_bot_token and settings.account_id == "personal"
         else None
     )
@@ -1402,10 +1430,8 @@ async def run() -> None:
                     except Exception as exc:
                         previous_reply_examples = []
                         logger.warning("Could not search past replies (%s)", type(exc).__name__)
-                prepared_answers = (
-                    recruiter_answers.for_recruiter_message(event.raw_text)
-                    if category == "recruiters"
-                    else recruiter_answers.learned_answers_context()
+                prepared_answers = answers_for_category(
+                    category, event.raw_text, recruiter_answers, category_answers
                 )
                 try:
                     plan = await responder.plan(
@@ -1475,10 +1501,8 @@ async def run() -> None:
                         store.audit(peer_id, "contact_auto_categorized", resolved_category)
                     if resolved_category != category:
                         category = resolved_category
-                        prepared_answers = (
-                            recruiter_answers.for_recruiter_message(event.raw_text)
-                            if category == "recruiters"
-                            else recruiter_answers.learned_answers_context()
+                        prepared_answers = answers_for_category(
+                            category, event.raw_text, recruiter_answers, category_answers
                         )
                         try:
                             plan = await responder.plan(
@@ -1515,7 +1539,7 @@ async def run() -> None:
                 plan.pop("detected_category", None)
                 learning_question = sanitize_learning_question(plan.pop("learn_question", None))
                 if learning_question and not plan.get("web_search"):
-                    if store.enqueue_learning_question(learning_question):
+                    if store.enqueue_learning_question(learning_question, category=category):
                         store.audit(peer_id, "unknown_question_queued")
                         await publish_next_learning_question()
                 web_search_requested = bool(plan.get("web_search"))

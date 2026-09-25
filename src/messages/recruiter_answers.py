@@ -269,3 +269,49 @@ class RecruiterAnswers:
             if aws_answer not in seen_answers and len(selected) < limit:
                 selected.append({"question": "AWS commercial experience", "answer": aws_answer})
         return selected
+
+
+class CategoryAnswers:
+    """Read learned Q&A from one non-recruiter category file only."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def ensure_file(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path.parent.chmod(0o700)
+        try:
+            descriptor = os.open(
+                self.path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            self.path.chmod(0o600)
+            return
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            target.write("learned_answers: {}\n")
+
+    def learned_answers_context(self) -> list[dict[str, str]]:
+        try:
+            document: Any = _read_profile_document(self.path)
+        except (OSError, UnicodeError, yaml.YAMLError):
+            return []
+        learned = document.get("learned_answers", {}) if isinstance(document, dict) else {}
+        if not isinstance(learned, dict):
+            return []
+        pairs = [
+            {"question": question.strip(), "answer": answer.strip()}
+            for question, answer in learned.items()
+            if isinstance(question, str)
+            and isinstance(answer, str)
+            and question.strip()
+            and answer.strip()
+            and not any(
+                marker in question.casefold()
+                for marker in (
+                    "password", "secret", "token", "credential", "security code", "2fa",
+                )
+            )
+        ]
+        return pairs[-30:]

@@ -171,12 +171,21 @@ def save_learned_answer(
 
 class LearningBot:
     def __init__(
-        self, token: str, store: Any, profile_path: Path, lock_path: Path | None = None
+        self,
+        token: str,
+        store: Any,
+        profile_path: Path,
+        lock_path: Path | None = None,
+        category_profile_paths: dict[str, Path] | None = None,
     ) -> None:
         self.token = token
         self.store = store
         self.profile_path = profile_path
         self.lock_path = lock_path or _profile_lock(profile_path)
+        self.category_profile_paths = {
+            "recruiters": profile_path,
+            **(category_profile_paths or {}),
+        }
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
         def send() -> Any:
@@ -202,7 +211,7 @@ class LearningBot:
             return
         try:
             for question in _pending_profile_questions(self.profile_path, self.lock_path):
-                self.store.enqueue_learning_question(question)
+                self.store.enqueue_learning_question(question, category="recruiters")
         except Exception as exc:
             logger.warning("Could not read profile learning questions (%s)", type(exc).__name__)
         queued = self.store.claim_next_learning_question()
@@ -262,12 +271,18 @@ class LearningBot:
         question_id = int(pending["id"])
         if not self.store.claim_learning_answer(question_id):
             return
+        category = str(pending["category"])
+        profile_path = self.category_profile_paths.get(category)
+        if profile_path is None:
+            self.store.retry_learning_answer(question_id)
+            logger.error("No answer file configured for learning question category %s", category)
+            return
         try:
             save_learned_answer(
-                self.profile_path,
+                profile_path,
                 pending["question"],
                 answer,
-                self.lock_path,
+                _profile_lock(profile_path),
             )
         except Exception:
             self.store.retry_learning_answer(question_id)

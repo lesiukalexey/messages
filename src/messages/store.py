@@ -92,6 +92,7 @@ class Store:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 question TEXT NOT NULL,
                 normalized_question TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL DEFAULT 'recruiters',
                 status TEXT NOT NULL CHECK (
                     status IN ('queued', 'posting', 'awaiting', 'answering', 'answered')
                 ),
@@ -104,6 +105,22 @@ class Store:
                 updated_at TEXT NOT NULL
             );
             """
+        )
+        learning_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(learning_questions)")
+        }
+        if "category" not in learning_columns:
+            try:
+                self.connection.execute(
+                    "ALTER TABLE learning_questions ADD COLUMN category TEXT NOT NULL DEFAULT 'recruiters'"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).casefold():
+                    raise
+        self.connection.execute(
+            "UPDATE learning_questions SET normalized_question = 'recruiters:' || normalized_question "
+            "WHERE category = 'recruiters' AND normalized_question NOT LIKE 'recruiters:%'"
         )
         session_columns = {
             row["name"]
@@ -180,16 +197,19 @@ class Store:
             for row in self.connection.execute("SELECT user_id FROM learning_owner_ids")
         }
 
-    def enqueue_learning_question(self, question: str) -> bool:
-        normalized = " ".join(question.casefold().split())
-        if not normalized:
+    def enqueue_learning_question(self, question: str, category: str = "recruiters") -> bool:
+        if category not in {"unknown", "friends", "recruiters", "realtors"}:
+            raise ValueError("Invalid learning question category")
+        question_key = " ".join(question.casefold().split())
+        if not question_key:
             return False
+        normalized = f"{category}:{question_key}"
         now = utc_now()
         cursor = self.connection.execute(
             """INSERT OR IGNORE INTO learning_questions
-               (question, normalized_question, status, created_at, updated_at)
-               VALUES (?, ?, 'queued', ?, ?)""",
-            (question.strip(), normalized, now, now),
+               (question, normalized_question, category, status, created_at, updated_at)
+               VALUES (?, ?, ?, 'queued', ?, ?)""",
+            (question.strip(), normalized, category, now, now),
         )
         self.connection.commit()
         return cursor.rowcount == 1
@@ -204,7 +224,7 @@ class Store:
                 self.connection.commit()
                 return None
             row = self.connection.execute(
-                "SELECT id, question FROM learning_questions WHERE status = 'queued' ORDER BY id LIMIT 1"
+                "SELECT id, question, category FROM learning_questions WHERE status = 'queued' ORDER BY id LIMIT 1"
             ).fetchone()
             if row is None:
                 self.connection.commit()
@@ -235,7 +255,8 @@ class Store:
 
     def awaiting_learning_question(self) -> sqlite3.Row | None:
         return self.connection.execute(
-            "SELECT id, question, channel_message_id FROM learning_questions WHERE status = 'awaiting' ORDER BY id LIMIT 1"
+            "SELECT id, question, category, channel_message_id FROM learning_questions "
+            "WHERE status = 'awaiting' ORDER BY id LIMIT 1"
         ).fetchone()
 
     def is_learning_question_message(self, message_id: int) -> bool:

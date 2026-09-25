@@ -20,6 +20,7 @@ class Settings:
     recruiter_answers_file: Path
     learning_bot_token: str
     log_level: str = "INFO"
+    category_answers_dir: Path = Path("/home/admin/messages-runtime/category-answers")
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -89,4 +90,10 @@ class Settings:
             ),
             learning_bot_token=os.getenv("LEARNING_BOT_TOKEN", "").strip(),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            category_answers_dir=Path(
+                os.getenv(
+                    "CATEGORY_ANSWERS_DIR",
+                    "/home/admin/messages-runtime/category-answers",
+                )
+            ),
         )
