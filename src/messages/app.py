@@ -981,11 +981,10 @@ async def run() -> None:
     learning_channel_can_post = False
     try:
         learning_channel = await client.get_entity(LEARNING_CHANNEL_USERNAME)
-        permissions = await client.get_permissions(learning_channel, me.id)
-        admin_rights = getattr(permissions, "admin_rights", None)
+        permissions = await client.get_permissions(learning_channel, me)
         learning_channel_can_post = bool(
             getattr(permissions, "is_creator", False)
-            or getattr(admin_rights, "post_messages", False)
+            or getattr(permissions, "post_messages", False)
         )
         logger.info(
             "Learning channel resolved for account %s; posting is %s",
@@ -993,7 +992,11 @@ async def run() -> None:
             "available" if learning_channel_can_post else "unavailable",
         )
     except Exception as exc:
-        logger.warning("Could not access learning channel (%s)", type(exc).__name__)
+        logger.warning(
+            "Could not access learning channel (%s: %s)",
+            type(exc).__name__,
+            str(exc)[:200],
+        )
 
     async def publish_next_learning_question() -> None:
         if learning_channel is None or not learning_channel_can_post:
