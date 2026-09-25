@@ -76,6 +76,98 @@ def resolve_automatic_category(current: str, detected: str) -> str:
     return "unknown"
 
 
+def recruiter_keyword_fallback(message: str, answers: list[dict[str, str]]) -> dict[str, Any] | None:
+    """Build a conservative recruiter reply when the model is unavailable."""
+    lines: list[str] = []
+    reply_in_english = not re.search(r"[а-яёіїєґ]", message, re.IGNORECASE)
+    for item in answers:
+        question = item.get("question", "").casefold()
+        answer = item.get("answer", "").strip()
+        if not answer or question.startswith("complete candidate profile"):
+            continue
+        if any(term in question for term in ("salary", "compensation", "зарплат", "вилка")):
+            lines.append(
+                f"Salary expectation: {answer}." if reply_in_english
+                else f"По зарплате: {answer}."
+            )
+        elif any(term in question for term in (
+            "notice", "available", "date available", "start", "joining", "приступ",
+            "доступност", "срок",
+        )):
+            lines.append(
+                f"I can join the project {answer}." if reply_in_english
+                else f"Приступить к проекту могу {answer}."
+            )
+        elif "aws commercial experience" in question:
+            lines.append(
+                "I have over 20 years of overall backend production experience. AWS is listed "
+                "among my backend technologies, but my profile does not specify AWS-specific "
+                "years, services, or responsibilities, so I can't answer those details accurately."
+                if reply_in_english else
+                "У меня более 20 лет общего опыта в backend-разработке на production. "
+                "AWS указан среди моих backend-технологий, но профиль не содержит данных "
+                "о стаже именно с AWS, конкретных сервисах или моих задачах с ним. "
+                "Поэтому точнее ответить на эти детали не могу."
+            )
+    if not lines:
+        return None
+    return {
+        "reply": "\n".join(lines),
+        "should_reply": True,
+        "should_react": False,
+        "reaction_emoji": "",
+        "web_search": False,
+        "web_search_query": "",
+        "start": None,
+        "calendar_action": "none",
+    }
+
+
+def clearly_recruiting_without_model(message: str, answers: list[dict[str, str]]) -> bool:
+    """Recognize only clear hiring questions when AI category detection is unavailable."""
+    if re.search(
+        r"\b(?:recruit(?:er|ing|ment)?|vacanc\w*|job\s+opening|hiring|interview|resume|cv|"
+        r"ваканс\w*|рекрут\w*|співбесід\w*|собеседован\w*|резюм\w*|найм\w*)\b",
+        message,
+        re.IGNORECASE,
+    ):
+        return True
+    fields = set()
+    for item in answers:
+        question = item.get("question", "").casefold()
+        if any(term in question for term in ("salary", "compensation", "зарплат", "вилка")):
+            fields.add("salary")
+        if any(term in question for term in ("notice", "available", "joining", "приступ", "срок")):
+            fields.add("availability")
+        if "aws commercial experience" in question:
+            fields.add("aws")
+    return len(fields) >= 2
+
+
+def no_model_recruiter_fallback(
+    message: str,
+    category: str,
+    auto_detect_category: bool,
+    prepared_answers: list[dict[str, str]],
+    recruiter_answers: RecruiterAnswers,
+) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    """Use keyword answers only for a known or unmistakable recruiter question."""
+    if category == "realtors":
+        return None, prepared_answers
+    answers = prepared_answers
+    fallback_category = category
+    if category != "recruiters" and auto_detect_category:
+        answers = recruiter_answers.for_recruiter_message(message)
+        if clearly_recruiting_without_model(message, answers):
+            fallback_category = "recruiters"
+    if fallback_category != "recruiters":
+        return None, prepared_answers
+    plan = recruiter_keyword_fallback(message, answers)
+    if plan:
+        plan["detected_category"] = fallback_category
+    return plan, answers
+
+
 RU_PRESENCE_CHECK = re.compile(
     r"(?:\bau\b|\bты\s+(?:(?:еще|ещё)\s+)?(?:тут|здесь)\b|"
     r"\bя\s+(?:(?:(?:все|всё)\s+)?(?:еще|ещё)\s+)?(?:тут|здесь)\b"
@@ -1283,23 +1375,41 @@ async def run() -> None:
                         previous_reply_examples = []
                         logger.warning("Could not search past replies (%s)", type(exc).__name__)
                 prepared_answers = (
-                    recruiter_answers.match(event.raw_text) if category == "recruiters" else []
+                    recruiter_answers.for_recruiter_message(event.raw_text)
+                    if category == "recruiters" else []
                 )
-                plan = await responder.plan(
-                    model=model,
-                    category=category,
-                    history=context,
-                    current_message=event.raw_text,
-                    now=now,
-                    style_profile=style_profile(),
-                    previous_reply_examples=previous_reply_examples,
-                    recent_outgoing_replies=recent_outgoing_replies,
-                    opening_history=opening,
-                    auto_detect_category=auto_detect_category,
-                    prepared_answers=prepared_answers,
-                    pending_meeting_duration=pending_meeting_context,
-                    personal_context=personal_context,
-                )
+                try:
+                    plan = await responder.plan(
+                        model=model,
+                        category=category,
+                        history=context,
+                        current_message=event.raw_text,
+                        now=now,
+                        style_profile=style_profile(),
+                        previous_reply_examples=previous_reply_examples,
+                        recent_outgoing_replies=recent_outgoing_replies,
+                        opening_history=opening,
+                        auto_detect_category=auto_detect_category,
+                        prepared_answers=prepared_answers,
+                        pending_meeting_duration=pending_meeting_context,
+                        personal_context=personal_context,
+                    )
+                except Exception as exc:
+                    fallback, fallback_answers = no_model_recruiter_fallback(
+                        event.raw_text,
+                        category,
+                        auto_detect_category,
+                        prepared_answers,
+                        recruiter_answers,
+                    )
+                    if fallback is None:
+                        raise
+                    logger.warning(
+                        "LLM unavailable; using recruiter keyword fallback (%s)",
+                        type(exc).__name__,
+                    )
+                    plan = fallback
+                    prepared_answers = fallback_answers
                 detected_category = plan.pop("detected_category", category)
                 if auto_detect_category and detected_category == "realtors":
                     display_name = " ".join(
@@ -1337,24 +1447,41 @@ async def run() -> None:
                     if resolved_category != category:
                         category = resolved_category
                         prepared_answers = (
-                            recruiter_answers.match(event.raw_text)
+                            recruiter_answers.for_recruiter_message(event.raw_text)
                             if category == "recruiters" else []
                         )
-                        plan = await responder.plan(
-                            model=model,
-                            category=category,
-                            history=context,
-                            current_message=event.raw_text,
-                            now=now,
-                            style_profile=style_profile(),
-                            previous_reply_examples=previous_reply_examples,
-                            recent_outgoing_replies=recent_outgoing_replies,
-                            opening_history=opening,
-                            auto_detect_category=False,
-                            prepared_answers=prepared_answers,
-                            pending_meeting_duration=pending_meeting_context,
-                            personal_context=personal_context,
-                        )
+                        try:
+                            plan = await responder.plan(
+                                model=model,
+                                category=category,
+                                history=context,
+                                current_message=event.raw_text,
+                                now=now,
+                                style_profile=style_profile(),
+                                previous_reply_examples=previous_reply_examples,
+                                recent_outgoing_replies=recent_outgoing_replies,
+                                opening_history=opening,
+                                auto_detect_category=False,
+                                prepared_answers=prepared_answers,
+                                pending_meeting_duration=pending_meeting_context,
+                                personal_context=personal_context,
+                            )
+                        except Exception as exc:
+                            fallback, fallback_answers = no_model_recruiter_fallback(
+                                event.raw_text,
+                                category,
+                                False,
+                                prepared_answers,
+                                recruiter_answers,
+                            )
+                            if fallback is None:
+                                raise
+                            logger.warning(
+                                "LLM unavailable; using recruiter keyword fallback (%s)",
+                                type(exc).__name__,
+                            )
+                            plan = fallback
+                            prepared_answers = fallback_answers
                 plan.pop("detected_category", None)
                 web_search_requested = bool(plan.get("web_search"))
                 web_search_results: list[dict[str, str]] | None = []

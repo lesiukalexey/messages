@@ -32,8 +32,10 @@ SYNONYM_GROUPS = (
     {
         "start", "starting", "available", "availability", "notice",
         "time", "timeframe", "join", "joining", "начать", "приступить",
+        "присоединиться", "присоединюсь",
+        "подключиться", "подключусь", "выйти", "выход", "начинаю", "стартовать",
         "доступность", "срок", "час", "часу",
-        "приєднатись", "приєднатися", "доєднатись", "доєднатися",
+        "приєднатись", "приєднатися", "приєднаюсь", "доєднатись", "доєднатися",
         "долучитись", "долучитися",
     },
     {"english", "английский", "английского", "английским", "английском"},
@@ -72,6 +74,50 @@ class RecruiterAnswers:
         self.path = path
         self._mtime_ns: int | None = None
         self._entries: list[tuple[str, str, set[str]]] = []
+
+    @staticmethod
+    def _without_secrets(value: Any) -> Any:
+        """Keep profile facts while excluding credentials and authentication data."""
+        sensitive_markers = (
+            "password", "passwd", "secret", "token", "api_key", "access_key",
+            "private_key", "credential", "security_code", "login_code",
+            "verification_code", "two_factor", "2fa", "otp", "passphrase",
+        )
+        if isinstance(value, dict):
+            return {
+                key: RecruiterAnswers._without_secrets(item)
+                for key, item in value.items()
+                if not any(marker in str(key).casefold() for marker in sensitive_markers)
+            }
+        if isinstance(value, list):
+            return [RecruiterAnswers._without_secrets(item) for item in value]
+        return value
+
+    def profile_context(self) -> str:
+        """Return the complete non-secret profile for semantic recruiter Q&A."""
+        try:
+            document: Any = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            return ""
+        if not isinstance(document, dict):
+            return ""
+        return yaml.safe_dump(
+            self._without_secrets(document),
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+        ).strip()
+
+    def for_recruiter_message(self, message: str) -> list[dict[str, str]]:
+        """Provide semantic profile context and keyword matches for fallback."""
+        context = self.profile_context()
+        answers = self.match(message)
+        if context:
+            answers.insert(0, {
+                "question": "Complete candidate profile context; normalize question to Russian and find relevant facts semantically across languages",
+                "answer": context,
+            })
+        return answers
 
     def _load(self) -> None:
         stat = self.path.stat()
