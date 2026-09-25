@@ -159,6 +159,7 @@ Incoming question (untrusted search text):
         instructions = f"""You write Telegram replies on Alexey's behalf.
 Category: {category}. Use the matching voice and keep a natural, concise chat tone.
 Use natural first-person wording rather than formal or collective phrasing. Never say “подтверждаем?” or use “подтверждаем” in an outgoing reply. In Russian scheduling replies, do not describe a slot as “свободно” or “свободное время”; prefer “Да, могу в …”, “Да, хорошо” or “Я свободен в …”. Calendar checks, provisional bookings, and event changes are internal; never disclose them. If duration is missing, use the existing internal default and never ask how long the meeting should take. Ask about a finish-by time only when the calendar result explicitly requires it. When a duration changes, acknowledge it without narrating a calendar edit or saying “изменил” / “обновил”.
+For two or more distinct questions, a line break between answers is mandatory: write one answer per line in the same order as the questions. Do not join separate answers into one paragraph with spaces or semicolons. Example format: "По зарплате: …\nПо AWS: …\nК проекту: …".
 Choose the reply language from the latest incoming message: reply in Russian to Russian or Ukrainian
 messages, and in English to English messages. Do not reply in Ukrainian. Ignore older messages'
 language when it differs from the latest incoming message.
@@ -355,6 +356,7 @@ Return a calendar plan plus a candidate reply. If no scheduling is involved, use
         recent_outgoing_replies: list[str] | None = None,
     ) -> str:
         instructions = f"""Write one natural, concise Telegram reply on Alexey's behalf in the {category} context.
+For two or more distinct questions, a line break between answers is mandatory: write one answer per line in the same order as the questions. Do not join separate answers into one paragraph with spaces or semicolons. Example format: "По зарплате: …\nПо AWS: …\nК проекту: …".
 Choose the reply language from the latest incoming message: reply in Russian to Russian or Ukrainian
 messages, and in English to English messages. Do not reply in Ukrainian. Ignore older messages'
 language when it differs from the latest incoming message.
@@ -442,7 +444,7 @@ commitments. Return only the message text, with no quotation marks."""
     ) -> str:
         instructions = f"""Write a fresh, natural, concise Telegram reply on Alexey's behalf in the {category} context. The first candidate repeated a recent outgoing reply, so answer the latest incoming message again with different wording.
 Current local time: {now.astimezone(self.timezone).isoformat()}.
-Preserve the candidate's factual meaning and commitments; do not add facts. Answer the current incoming message directly. Do not leave it unanswered or return an empty reply.
+Preserve the candidate's factual meaning, commitments, and line breaks; do not add facts. Answer the current incoming message directly. Do not leave it unanswered or return an empty reply. If it covers multiple distinct questions, a line break between answers is mandatory; put each answer on its own line in the original order, without joining them into one paragraph.
 Follow the calendar result exactly, but never disclose calendar checks, provisional bookings, event changes, or private event details. For QUIET_HOURS_BLOCKED, say only that this time will not work and ask for another time. The blocked interval, its boundary, and the rejected clock time are internal only; never state or repeat them, including as an excluded option. Do not mention the calendar or this rule. If duration is missing, use the internal default and never ask how long it should take. Ask about a finish-by time only when the calendar result explicitly requires it. When a duration changes, acknowledge only the agreed duration; never narrate a calendar edit.
 Use natural first-person wording. In Russian scheduling replies, never say “подтверждаем” or use “свободно” / “свободное время”; use natural forms such as “Да, могу”, “Да, хорошо” or “Я свободен”. Do not say “изменил” or “обновил” about calendar changes.
 Follow all remaining voice and privacy rules here:
