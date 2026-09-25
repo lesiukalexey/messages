@@ -260,7 +260,7 @@ class GoogleCalendar:
     ) -> str:
         if not 5 <= duration_minutes <= 720:
             raise ValueError("meeting duration is outside the allowed range")
-        if source != "djinni" or not source_key:
+        if source not in {"djinni", "linkedin"} or not source_key:
             raise ValueError("unsupported external calendar source")
         begins, ends = self.parse_interval(start, duration_minutes, self.timezone)
         event_id = "ex" + hashlib.sha256(

@@ -137,7 +137,11 @@ class ReplyAPI:
     def _new_store(self) -> Store:
         return Store(self.settings.database_path, "djinni-api")
 
-    async def handle(self, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    async def handle(
+        self, request: dict[str, Any], *, platform: str = "djinni"
+    ) -> tuple[int, dict[str, Any]]:
+        if platform not in {"djinni", "linkedin"}:
+            return 404, {"error": "not found", "retryable": False}
         try:
             event = _event_payload(request, self.settings)
         except PermissionError as exc:
@@ -164,7 +168,7 @@ class ReplyAPI:
         message_id = event["message_id"]
         try:
             state, prior = store.claim_integration_request(
-                "djinni", account_id, profile_id, thread_id, message_id, request_hash
+                platform, account_id, profile_id, thread_id, message_id, request_hash
             )
             if state == "replay" and prior:
                 return 200, json.loads(prior)
@@ -178,21 +182,21 @@ class ReplyAPI:
                     persona_id = answers.profile_persona_id()
                 except Exception as exc:
                     store.finish_integration_request(
-                        "djinni", account_id, profile_id, thread_id, message_id, "", failed=True
+                        platform, account_id, profile_id, thread_id, message_id, "", failed=True
                     )
                     store.audit(None, "external_profile_read_failed", type(exc).__name__)
                     logger.warning("Could not read an allowlisted profile (%s)", type(exc).__name__)
                     return 503, {"error": "profile is temporarily unavailable", "retryable": True}
                 if persona_id != self.settings.reply_api_persona_id.casefold():
                     store.finish_integration_request(
-                        "djinni", account_id, profile_id, thread_id, message_id, "", failed=True
+                        platform, account_id, profile_id, thread_id, message_id, "", failed=True
                     )
                     store.audit(None, "external_profile_rejected", "persona mismatch")
                     return 403, {"error": "profile persona is not allowed", "retryable": False}
-                response = await self._prepare_reply(event, answers, store)
+                response = await self._prepare_reply(event, answers, store, platform=platform)
             except Exception as exc:
                 store.finish_integration_request(
-                    "djinni", account_id, profile_id, thread_id, message_id, "", failed=True
+                    platform, account_id, profile_id, thread_id, message_id, "", failed=True
                 )
                 store.audit(None, "external_reply_failed", type(exc).__name__)
                 logger.warning("Recruiter reply request failed (%s)", type(exc).__name__)
@@ -200,7 +204,7 @@ class ReplyAPI:
 
             response_json = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
             store.finish_integration_request(
-                "djinni", account_id, profile_id, thread_id, message_id, response_json
+                platform, account_id, profile_id, thread_id, message_id, response_json
             )
             store.audit(
                 None,
@@ -216,6 +220,8 @@ class ReplyAPI:
         event: dict[str, Any],
         answers: RecruiterAnswers,
         store: Store,
+        *,
+        platform: str,
     ) -> dict[str, Any]:
         incoming = event["incoming_message"]
         prepared_answers = answers.for_recruiter_message(incoming)
@@ -234,12 +240,12 @@ class ReplyAPI:
             prepared_answers=prepared_answers,
             recent_outgoing_replies=event["recent_replies"],
             vacancy_context=event["vacancy_context"],
-            platform="djinni",
+            platform=platform,
         )
         learning_question = _safe_learning_question(plan.get("learn_question"))
         learning_requested = bool(learning_question)
         source_event_key = hashlib.sha256(
-            f"djinni:{event['profile_id']}:{event['thread_id']}:{event['message_id']}".encode()
+            f"{platform}:{event['profile_id']}:{event['thread_id']}:{event['message_id']}".encode()
         ).hexdigest()
         learning_queued = bool(
             learning_requested
@@ -247,7 +253,7 @@ class ReplyAPI:
                 learning_question,
                 category="recruiters",
                 profile_id=event["profile_id"],
-                source_platform="djinni",
+                source_platform=platform,
                 source_account_id=event["profile_id"],
                 source_event_key=source_event_key,
             )
@@ -286,7 +292,7 @@ class ReplyAPI:
                         ).hexdigest()
                         await asyncio.to_thread(
                             self.calendar.create_external,
-                            "djinni",
+                            platform,
                             source_key,
                             start,
                             duration,
@@ -311,7 +317,7 @@ class ReplyAPI:
                 style_profile=_style_profile(),
                 prepared_answers=prepared_answers,
                 vacancy_context=event["vacancy_context"],
-                platform="djinni",
+                platform=platform,
             )
         else:
             reply = str(plan.get("reply") or "").strip()
@@ -345,7 +351,12 @@ class ReplyRequestHandler(BaseHTTPRequestHandler):
     server: "ReplyHTTPServer"
 
     def do_POST(self) -> None:
-        if self.path != "/v1/djinni/replies":
+        routes = {
+            "/v1/djinni/replies": "djinni",
+            "/v1/linkedin/replies": "linkedin",
+        }
+        platform = routes.get(self.path)
+        if platform is None:
             self._send_json(404, {"error": "not found", "retryable": False})
             return
         authorization = self.headers.get("Authorization", "")
@@ -363,7 +374,9 @@ class ReplyRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(length))
-            status, result = asyncio.run(self.server.api.handle(payload))
+            status, result = asyncio.run(
+                self.server.api.handle(payload, platform=platform)
+            )
         except (UnicodeDecodeError, json.JSONDecodeError):
             status, result = 400, {"error": "invalid JSON body", "retryable": False}
         except Exception as exc:

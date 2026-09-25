@@ -116,7 +116,7 @@ Never put the token in Git, chat, or logs.
 ## Job Apply recruiter reply API
 
 Job Apply can request a prepared recruiter reply after it discovers a new Djinni
-message. This service does not poll Djinni or send messages there; Job Apply
+or LinkedIn message. This service does not poll either platform or send messages there; Job Apply
 owns browser authentication, delivery, and retry state. The API accepts only
 configured profile IDs whose YAML declares the configured Alexey persona. The
 default allowlist contains `lesiuk.alexey@gmail.com` and
@@ -139,7 +139,8 @@ save the answer to the selected profile YAML under the shared file lock.
 
 ### API contract v1
 
-`POST /v1/djinni/replies` accepts `Authorization: Bearer <token>` and JSON:
+`POST /v1/djinni/replies` and `POST /v1/linkedin/replies` accept
+`Authorization: Bearer <token>` and the same JSON schema:
 
 ```json
 {
