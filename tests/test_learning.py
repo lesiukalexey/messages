@@ -1,8 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+import asyncio
 
-from messages.learning import save_learned_answer
+from messages.learning import LearningBot, save_learned_answer
 from messages.recruiter_answers import RecruiterAnswers
 from messages.store import Store
 
@@ -43,6 +44,54 @@ class LearningAnswersTest(unittest.TestCase):
                 self.assertTrue(store.claim_learning_answer(question["id"]))
                 self.assertFalse(store.claim_learning_answer(question["id"]))
                 store.finish_learning_question(question["id"])
+                self.assertIsNone(store.claim_next_learning_question())
+            finally:
+                store.close()
+
+    def test_bot_sends_question_and_saves_owner_reply(self) -> None:
+        class FakeLearningBot(LearningBot):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)
+                self.sent: list[dict[str, object]] = []
+
+            async def _call(self, method: str, payload: dict[str, object]) -> object:
+                self.sent.append(payload)
+                return {"message_id": 100 + len(self.sent)}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "answers.yaml"
+            profile.write_text("values: {}\n", encoding="utf-8")
+            store = Store(root / "assistant.sqlite3", "personal")
+            try:
+                store.initialize()
+                store.register_learning_owner(123)
+                store.enqueue_learning_question("How many AWS years do I have?")
+                bot = FakeLearningBot("test-token", store, profile, root / "lock")
+                asyncio.run(bot.process_update({"message": {
+                    "from": {"id": 456},
+                    "chat": {"id": 456, "type": "private"},
+                    "text": "/start",
+                }}))
+                self.assertEqual(store.setting("learn_bot_owner_chat_id", ""), "")
+                asyncio.run(bot.process_update({"message": {
+                    "from": {"id": 123},
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "/start",
+                }}))
+                pending = store.awaiting_learning_question()
+                self.assertIsNotNone(pending)
+                assert pending is not None
+                question_message_id = int(pending["channel_message_id"])
+                self.assertEqual(bot.sent[-1]["text"], "How many AWS years do I have?")
+                asyncio.run(bot.process_update({"message": {
+                    "from": {"id": 123},
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "I have used AWS for four years.",
+                    "reply_to_message": {"message_id": question_message_id},
+                }}))
+                saved = RecruiterAnswers(profile).learned_answers_context()
+                self.assertEqual(saved[0]["answer"], "I have used AWS for four years.")
                 self.assertIsNone(store.claim_next_learning_question())
             finally:
                 store.close()

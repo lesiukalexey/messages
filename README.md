@@ -104,6 +104,15 @@ CODEX_MODELS=gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol
 CODEX_MODEL=gpt-5.6-luna
 ```
 
+To send unanswered questions to Alexey, set the BotFather token for
+`@learnDataBot` as `LEARNING_BOT_TOKEN` in
+`/home/admin/messages-runtime/messages.env` and keep that file owner-readable
+only (`chmod 600`). No channel-admin rights are needed. Alexey must send `/start`
+to `@learnDataBot` from one of the assistant's two owned Telegram accounts.
+Only the `personal` worker polls Bot API updates; it accepts replies from those
+registered account IDs and writes answers to the protected Job Apply YAML.
+Never put the token in Git, chat, or logs.
+
 Copy the derived style profile to
 `/home/admin/messages-runtime/profiles/communication-style.md` with permissions
 `600`. The worker reads chat history from the existing account-separated MySQL

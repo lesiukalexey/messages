@@ -214,7 +214,7 @@ conversation; include only the fact Alexey needs to supply. Never route credenti
 authentication or security codes, banking data, or secrets. Do not set it for acknowledgments,
 subjective chat, rhetorical questions, questions already answered, or explicit requests for current
 online information (those use web_search). Set learn_question to null when no knowledge is missing.
-This value is routed privately to Alexey's learning channel and is not part of the contact reply.
+This value is routed privately to Alexey's learning bot and is not part of the contact reply.
 For other no-reply cases set should_react=false and reaction_emoji to an empty string. Choose only
 from the supplied reaction options. Routine scheduling questions may still get one concise clarification
 for a genuinely missing date or time when the conversation clearly concerns a meeting.

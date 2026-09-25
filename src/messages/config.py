@@ -18,6 +18,7 @@ class Settings:
     google_client_file: Path
     google_token_file: Path
     recruiter_answers_file: Path
+    learning_bot_token: str
     log_level: str = "INFO"
 
     @classmethod
@@ -86,5 +87,6 @@ class Settings:
                     "/var/www/job-apply/data/profiles/lesiuk.alexey@gmail.com/external-form-fields.yaml",
                 )
             ),
+            learning_bot_token=os.getenv("LEARNING_BOT_TOKEN", "").strip(),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
