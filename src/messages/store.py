@@ -93,12 +93,29 @@ class Store:
                 question TEXT NOT NULL,
                 normalized_question TEXT NOT NULL UNIQUE,
                 category TEXT NOT NULL DEFAULT 'recruiters',
+                profile_id TEXT NOT NULL DEFAULT '',
+                source_platform TEXT NOT NULL DEFAULT 'telegram',
+                source_account_id TEXT NOT NULL DEFAULT '',
+                source_event_key TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL CHECK (
                     status IN ('queued', 'posting', 'awaiting', 'answering', 'answered')
                 ),
                 channel_message_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS integration_requests (
+                platform TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('processing', 'failed', 'complete')),
+                response_json TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (platform, account_id, profile_id, thread_id, message_id)
             );
             CREATE TABLE IF NOT EXISTS learning_owner_ids (
                 user_id INTEGER PRIMARY KEY,
@@ -118,6 +135,37 @@ class Store:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).casefold():
                     raise
+        if "profile_id" not in learning_columns:
+            self.connection.execute(
+                "ALTER TABLE learning_questions ADD COLUMN profile_id TEXT NOT NULL DEFAULT ''"
+            )
+        for name, declaration in (
+            ("source_platform", "TEXT NOT NULL DEFAULT 'telegram'"),
+            ("source_account_id", "TEXT NOT NULL DEFAULT ''"),
+            ("source_event_key", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in learning_columns:
+                self.connection.execute(
+                    f"ALTER TABLE learning_questions ADD COLUMN {name} {declaration}"
+                )
+        self.connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS learning_questions_source_event "
+            "ON learning_questions(source_event_key) WHERE source_event_key != ''"
+        )
+        integration_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(integration_requests)")
+        }
+        for name, declaration in (
+            ("platform", "TEXT NOT NULL DEFAULT 'djinni'"),
+            ("account_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in integration_columns:
+                self.connection.execute(
+                    f"ALTER TABLE integration_requests ADD COLUMN {name} {declaration}"
+                )
+        self.connection.execute(
+            "UPDATE integration_requests SET account_id = profile_id WHERE account_id = ''"
+        )
         self.connection.execute(
             "UPDATE learning_questions SET normalized_question = 'recruiters:' || normalized_question "
             "WHERE category = 'recruiters' AND normalized_question NOT LIKE 'recruiters:%'"
@@ -197,21 +245,45 @@ class Store:
             for row in self.connection.execute("SELECT user_id FROM learning_owner_ids")
         }
 
-    def enqueue_learning_question(self, question: str, category: str = "recruiters") -> bool:
+    def enqueue_learning_question(
+        self,
+        question: str,
+        category: str = "recruiters",
+        profile_id: str = "",
+        source_platform: str = "telegram",
+        source_account_id: str = "",
+        source_event_key: str = "",
+    ) -> bool:
         if category not in {"unknown", "friends", "recruiters", "realtors"}:
             raise ValueError("Invalid learning question category")
         question_key = " ".join(question.casefold().split())
         if not question_key:
             return False
-        normalized = f"{category}:{question_key}"
+        source_account_id = source_account_id or self.account_id
+        if profile_id or source_platform != "telegram":
+            normalized = (
+                f"{category}:{source_platform}:{source_account_id.casefold()}:"
+                f"{profile_id.casefold()}:{question_key}"
+            )
+        else:
+            normalized = f"{category}:{question_key}"
         now = utc_now()
         cursor = self.connection.execute(
             """INSERT OR IGNORE INTO learning_questions
-               (question, normalized_question, category, status, created_at, updated_at)
-               VALUES (?, ?, ?, 'queued', ?, ?)""",
-            (question.strip(), normalized, category, now, now),
+               (question, normalized_question, category, profile_id, source_platform,
+                source_account_id, source_event_key, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+            (
+                question.strip(), normalized, category, profile_id, source_platform,
+                source_account_id, source_event_key, now, now,
+            ),
         )
         self.connection.commit()
+        if cursor.rowcount == 0 and source_event_key:
+            return self.connection.execute(
+                "SELECT 1 FROM learning_questions WHERE source_event_key = ?",
+                (source_event_key,),
+            ).fetchone() is not None
         return cursor.rowcount == 1
 
     def claim_next_learning_question(self) -> sqlite3.Row | None:
@@ -224,7 +296,9 @@ class Store:
                 self.connection.commit()
                 return None
             row = self.connection.execute(
-                "SELECT id, question, category FROM learning_questions WHERE status = 'queued' ORDER BY id LIMIT 1"
+                "SELECT id, question, category, profile_id, source_platform, source_account_id "
+                "FROM learning_questions "
+                "WHERE status = 'queued' ORDER BY id LIMIT 1"
             ).fetchone()
             if row is None:
                 self.connection.commit()
@@ -255,7 +329,8 @@ class Store:
 
     def awaiting_learning_question(self) -> sqlite3.Row | None:
         return self.connection.execute(
-            "SELECT id, question, category, channel_message_id FROM learning_questions "
+            "SELECT id, question, category, profile_id, source_platform, source_account_id, "
+            "channel_message_id FROM learning_questions "
             "WHERE status = 'awaiting' ORDER BY id LIMIT 1"
         ).fetchone()
 
@@ -641,6 +716,85 @@ class Store:
             self.clear_pending_calendar_duration(account_id, peer_id)
             return None
         return row
+
+    def claim_integration_request(
+        self,
+        platform: str,
+        account_id: str,
+        profile_id: str,
+        thread_id: str,
+        message_id: str,
+        request_hash: str,
+    ) -> tuple[str, str | None]:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.connection.execute(
+                "SELECT request_hash, status, response_json, updated_at FROM integration_requests "
+                "WHERE platform = ? AND account_id = ? AND profile_id = ? "
+                "AND thread_id = ? AND message_id = ?",
+                (platform, account_id, profile_id, thread_id, message_id),
+            ).fetchone()
+            now = datetime.now(UTC)
+            if row is not None:
+                if row["request_hash"] != request_hash:
+                    self.connection.commit()
+                    return "conflict", None
+                if row["status"] == "complete":
+                    self.connection.commit()
+                    return "replay", row["response_json"]
+                updated_at = datetime.fromisoformat(row["updated_at"])
+                if row["status"] == "processing" and now - updated_at < timedelta(minutes=15):
+                    self.connection.commit()
+                    return "processing", None
+                self.connection.execute(
+                    "UPDATE integration_requests SET status = 'processing', response_json = '', "
+                    "updated_at = ? WHERE platform = ? AND account_id = ? AND profile_id = ? "
+                    "AND thread_id = ? AND message_id = ?",
+                    (now.isoformat(), platform, account_id, profile_id, thread_id, message_id),
+                )
+            else:
+                self.connection.execute(
+                    "INSERT INTO integration_requests "
+                    "(platform, account_id, profile_id, thread_id, message_id, request_hash, "
+                    "status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?)",
+                    (
+                        platform, account_id, profile_id, thread_id, message_id, request_hash,
+                        now.isoformat(), now.isoformat(),
+                    ),
+                )
+            self.connection.commit()
+            return "claimed", None
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def finish_integration_request(
+        self,
+        platform: str,
+        account_id: str,
+        profile_id: str,
+        thread_id: str,
+        message_id: str,
+        response_json: str,
+        *,
+        failed: bool = False,
+    ) -> None:
+        self.connection.execute(
+            "UPDATE integration_requests SET status = ?, response_json = ?, updated_at = ? "
+            "WHERE platform = ? AND account_id = ? AND profile_id = ? "
+            "AND thread_id = ? AND message_id = ?",
+            (
+                "failed" if failed else "complete",
+                "" if failed else response_json,
+                utc_now(),
+                platform,
+                account_id,
+                profile_id,
+                thread_id,
+                message_id,
+            ),
+        )
+        self.connection.commit()
 
     def set_pending_calendar_duration(
         self,

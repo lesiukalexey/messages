@@ -177,6 +177,7 @@ class LearningBot:
         profile_path: Path,
         lock_path: Path | None = None,
         category_profile_paths: dict[str, Path] | None = None,
+        profile_paths: dict[str, Path] | None = None,
     ) -> None:
         self.token = token
         self.store = store
@@ -186,6 +187,7 @@ class LearningBot:
             "recruiters": profile_path,
             **(category_profile_paths or {}),
         }
+        self.profile_paths = profile_paths or {}
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
         def send() -> Any:
@@ -209,11 +211,19 @@ class LearningBot:
         chat_id = self.store.setting("learn_bot_owner_chat_id", "")
         if not chat_id:
             return
-        try:
-            for question in _pending_profile_questions(self.profile_path, self.lock_path):
-                self.store.enqueue_learning_question(question, category="recruiters")
-        except Exception as exc:
-            logger.warning("Could not read profile learning questions (%s)", type(exc).__name__)
+        paths = self.profile_paths or {"": self.profile_path}
+        for profile_id, profile_path in paths.items():
+            try:
+                for question in _pending_profile_questions(profile_path, _profile_lock(profile_path)):
+                    self.store.enqueue_learning_question(
+                        question,
+                        category="recruiters",
+                        profile_id=profile_id,
+                        source_platform="job_apply",
+                        source_account_id=profile_id,
+                    )
+            except Exception as exc:
+                logger.warning("Could not read a profile's learning questions (%s)", type(exc).__name__)
         queued = self.store.claim_next_learning_question()
         if queued is None:
             return
@@ -272,7 +282,11 @@ class LearningBot:
         if not self.store.claim_learning_answer(question_id):
             return
         category = str(pending["category"])
-        profile_path = self.category_profile_paths.get(category)
+        profile_id = str(pending["profile_id"] or "")
+        if category == "recruiters" and profile_id:
+            profile_path = self.profile_paths.get(profile_id)
+        else:
+            profile_path = self.category_profile_paths.get(category)
         if profile_path is None:
             self.store.retry_learning_answer(question_id)
             logger.error("No answer file configured for learning question category %s", category)

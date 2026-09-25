@@ -113,6 +113,60 @@ Only the `personal` worker polls Bot API updates; it accepts replies from those
 registered account IDs and writes answers to the protected Job Apply YAML.
 Never put the token in Git, chat, or logs.
 
+## Job Apply recruiter reply API
+
+Job Apply can request a prepared recruiter reply after it discovers a new Djinni
+message. This service does not poll Djinni or send messages there; Job Apply
+owns browser authentication, delivery, and retry state. The API accepts only
+configured profile IDs whose YAML declares the configured Alexey persona. The
+default allowlist contains `lesiuk.alexey@gmail.com` and
+`lesuk.aleksey@gmail.com`; `values` remain profile-specific, while shareable
+learned answers are merged only for matching non-empty persona IDs.
+
+Set `REPLY_API_TOKEN` (at least 32 random characters), `REPLY_API_HOST`,
+`REPLY_API_PORT`, and, when needed, the JSON `JOB_APPLY_PROFILES` mapping in
+`/home/admin/messages-runtime/messages.env`. Give the same token to Job Apply
+through its protected runtime configuration; do not put it in Git or logs.
+The API binds to the private Raspberry Pi interface and requires a Bearer token.
+Keep port 8095 off public ingress.
+
+Install `deploy/messages-reply-api.service` as
+`/etc/systemd/system/messages-reply-api.service`, then run
+`sudo systemctl enable --now messages-reply-api.service`. The singleton service
+shares the protected assistant database with the Telegram workers. Those
+workers continue to deliver queued owner questions through `@learnDataBot` and
+save the answer to the selected profile YAML under the shared file lock.
+
+### API contract v1
+
+`POST /v1/djinni/replies` accepts `Authorization: Bearer <token>` and JSON:
+
+```json
+{
+  "profile_id": "lesiuk.alexey@gmail.com",
+  "persona_id": "alexey-lesiuk",
+  "thread_id": "thread-id",
+  "message_id": "message-id",
+  "recruiter_name": "Recruiter",
+  "vacancy_context": "Backend engineer role",
+  "history": [
+    {"speaker": "recruiter", "text": "Are you available for an interview?"},
+    {"speaker": "candidate", "text": "Yes, what time works?"}
+  ],
+  "incoming_message": "Could we meet tomorrow at 15:00?"
+}
+```
+
+History is bounded to 24 recruiter/candidate turns. Repeated profile/thread/
+message keys return the saved decision; reusing a key with different content is
+rejected. A successful response includes `version`, `outcome` (`reply`,
+`owner_attention`, or `no_reply`), `reply_text`,
+`learning_question_queued`, and `calendar_status`. Retryable service errors use
+HTTP 503 with `retryable: true`; Job Apply retains the message and uses its
+existing fallback notification. API logs and audit records do not include
+message text. Calendar events are created only after a confirmed agreement and
+a successful availability check; no event details are returned to Job Apply.
+
 Copy the derived style profile to
 `/home/admin/messages-runtime/profiles/communication-style.md` with permissions
 `600`. The worker reads chat history from the existing account-separated MySQL

@@ -249,6 +249,43 @@ class GoogleCalendar:
                 return event_id
             raise
 
+    def create_external(
+        self,
+        source: str,
+        source_key: str,
+        start: str,
+        duration_minutes: int,
+        title: str,
+        contact_name: str,
+    ) -> str:
+        if not 5 <= duration_minutes <= 720:
+            raise ValueError("meeting duration is outside the allowed range")
+        if source != "djinni" or not source_key:
+            raise ValueError("unsupported external calendar source")
+        begins, ends = self.parse_interval(start, duration_minutes, self.timezone)
+        event_id = "ex" + hashlib.sha256(
+            f"{source}:{source_key}:{begins.isoformat()}".encode()
+        ).hexdigest()
+        contact = " ".join(contact_name.split())[:120] or "Recruiter"
+        body = {
+            "id": event_id,
+            "summary": f"{contact} — {title.strip() or 'Interview'}"[:160],
+            "start": {"dateTime": begins.isoformat(), "timeZone": str(self.timezone)},
+            "end": {"dateTime": ends.isoformat(), "timeZone": str(self.timezone)},
+            "visibility": "private",
+            "transparency": "opaque",
+            "description": f"Agreed in {source.title()}. Contact: {contact}",
+        }
+        try:
+            result = self._service().events().insert(
+                calendarId="primary", body=body
+            ).execute()
+            return str(result["id"])
+        except Exception as exc:
+            if getattr(exc, "resp", None) is not None and getattr(exc.resp, "status", None) == 409:
+                return event_id
+            raise
+
 
 def authorize(client_file: Path, token_file: Path, port: int = 8765) -> None:
     from google_auth_oauthlib.flow import InstalledAppFlow

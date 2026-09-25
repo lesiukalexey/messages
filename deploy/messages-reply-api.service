@@ -1,0 +1,22 @@
+[Unit]
+Description=Private recruiter reply API for Job Apply
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/multi_messenger
+EnvironmentFile=-/home/admin/messages-runtime/messages.env
+ExecStart=/home/admin/messages-runtime/venv/bin/messages-reply-api
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/admin/messages-runtime /home/admin/.codex /var/www/job-apply/data/profiles/lesiuk.alexey@gmail.com/external-form-fields.yaml.lock /var/www/job-apply/data/profiles/lesuk.aleksey@gmail.com/external-form-fields.yaml.lock
+
+[Install]
+WantedBy=multi-user.target

@@ -4,7 +4,7 @@ import fcntl
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -98,8 +98,11 @@ def _same_answer_topic(left: str, right: str) -> bool:
 class RecruiterAnswers:
     """Select a few approved Job Apply facts relevant to one recruiter message."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, persona_profile_paths: Iterable[Path] | None = None) -> None:
         self.path = path
+        self.persona_profile_paths = tuple(
+            dict.fromkeys([path, *(persona_profile_paths or ())])
+        )
         self._mtime_ns: tuple[tuple[str, int], ...] | None = None
         self._entries: list[tuple[str, str, set[str]]] = []
 
@@ -113,9 +116,7 @@ class RecruiterAnswers:
         persona_id = str(primary.get("persona_id") or "").strip().casefold()
         paths = [self.path]
         if persona_id:
-            paths = sorted(set(self.path.parent.parent.glob(f"*/{self.path.name}")))
-            if self.path not in paths:
-                paths.append(self.path)
+            paths.extend(path for path in self.persona_profile_paths if path != self.path)
         documents: list[tuple[Path, dict[str, Any], int]] = []
         for path in paths:
             try:
@@ -129,6 +130,14 @@ class RecruiterAnswers:
             except (OSError, UnicodeError, yaml.YAMLError):
                 continue
         return documents
+
+    def profile_persona_id(self) -> str:
+        document = _read_profile_document(self.path)
+        return (
+            str(document.get("persona_id") or "").strip().casefold()
+            if isinstance(document, dict)
+            else ""
+        )
 
     @staticmethod
     def _persona_answers(
@@ -175,6 +184,7 @@ class RecruiterAnswers:
             "password", "passwd", "secret", "token", "api_key", "access_key",
             "private_key", "credential", "security_code", "login_code",
             "verification_code", "two_factor", "2fa", "otp", "passphrase",
+            "api_id", "api_hash", "phone_number", "session_key",
         )
         if isinstance(value, dict):
             return {

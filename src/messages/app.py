@@ -938,7 +938,10 @@ async def run() -> None:
     personal_context = personal_context_profile()
     if personal_context:
         logger.info("Personal context profile loaded (%s characters)", len(personal_context))
-    recruiter_answers = RecruiterAnswers(settings.recruiter_answers_file)
+    recruiter_answers = RecruiterAnswers(
+        settings.recruiter_answers_file,
+        persona_profile_paths=settings.job_apply_profiles.values(),
+    )
     friends_unknown_answers = CategoryAnswers(
         settings.category_answers_dir / "friends-unknown.yaml"
     )
@@ -1005,6 +1008,7 @@ async def run() -> None:
                 category: answer_file.path
                 for category, answer_file in category_answers.items()
             },
+            profile_paths=settings.job_apply_profiles,
         )
         if settings.learning_bot_token and settings.account_id == "personal"
         else None

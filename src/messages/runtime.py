@@ -20,9 +20,11 @@ def _read_env(path: Path, override: bool = False) -> None:
             os.environ[key] = value
 
 
-def load_environment() -> None:
+def load_environment(*, include_account: bool = True) -> None:
     _read_env(RUNTIME_ROOT / "messages.env")
     _read_env(Path(".env"))
+    if not include_account:
+        return
     account_id = os.getenv("TELEGRAM_ACCOUNT_ID", "personal").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", account_id):
         raise ValueError("TELEGRAM_ACCOUNT_ID has invalid characters")

@@ -21,6 +21,7 @@ dependencies = [
 messages = "messages.app:main"
 messages-export = "messages.exporter:main"
 messages-calendar-auth = "messages.calendar:main"
+messages-reply-api = "messages.reply_api:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
