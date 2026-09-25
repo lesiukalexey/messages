@@ -22,13 +22,20 @@ SYNONYM_GROUPS = (
     {
         "salary", "compensation", "pay", "wage", "remuneration", "зарплата",
         "зарплатная", "зарплатные", "зарплатных", "зарплатную", "зарплате",
-        "оклад", "компенсация", "доход",
+        "зарплату", "зарплаты", "зарплатой", "оклад", "компенсация", "доход",
+        "зп", "вилка", "вилки", "вилку",
     },
     {"expectation", "expectations", "expected", "ожидание", "ожидания"},
     {"experience", "experienced", "экспертиза", "опыт", "стаж"},
     {"year", "years", "год", "года", "лет"},
     {"location", "located", "based", "country", "город", "страна", "локация", "находиться", "находишься", "находитесь", "живу", "живешь", "живёшь", "проживаешь"},
-    {"start", "starting", "available", "availability", "notice", "начать", "приступить", "доступность", "срок"},
+    {
+        "start", "starting", "available", "availability", "notice",
+        "time", "timeframe", "join", "joining", "начать", "приступить",
+        "доступность", "срок", "час", "часу",
+        "приєднатись", "приєднатися", "доєднатись", "доєднатися",
+        "долучитись", "долучитися",
+    },
     {"english", "английский", "английского", "английским", "английском"},
     {"level", "proficiency", "fluent", "уровень", "владение"},
     {"build", "built", "building", "разработать", "создавать", "создал", "строить"},
@@ -73,22 +80,63 @@ class RecruiterAnswers:
         document: Any = yaml.safe_load(self.path.read_text(encoding="utf-8"))
         values = document.get("values", {}) if isinstance(document, dict) else {}
         entries: list[tuple[str, str, set[str]]] = []
-        if isinstance(values, dict):
-            for key, value in values.items():
-                if not isinstance(key, str) or not isinstance(value, (str, int, float)):
-                    continue
-                key_text = key.replace("_", " ")
-                if any(
-                    marker in key.casefold()
-                    for marker in ("privacy", "consent", "agree", "certify", "security_code", "i_confirm")
+        if not isinstance(values, dict):
+            values = {}
+
+        def field_answer(field: str, value: Any) -> Any:
+            if field != "salary_expectation":
+                return value
+            try:
+                amount = f"{int(float(value)):,}"
+            except (TypeError, ValueError):
+                amount = str(value)
+            currency = str(values.get("currency", "")).strip()
+            pay_period = str(values.get("pay_period", "")).strip().casefold()
+            period = {"monthly": "per month", "hourly": "per hour", "yearly": "per year"}.get(pay_period)
+            parts = [currency, amount, "gross"]
+            if period:
+                parts.append(period)
+            return " ".join(part for part in parts if part)
+
+        def add_entry(question: Any, answer_value: Any) -> None:
+            if not isinstance(question, str) or not isinstance(answer_value, (str, int, float)):
+                return
+            question_text = question.replace("_", " ").strip()
+            if any(
+                marker in question.casefold()
+                for marker in ("privacy", "consent", "agree", "certify", "security_code", "i_confirm")
+            ):
+                return
+            answer = str(answer_value).strip()
+            question_tokens = _tokens(question_text)
+            if answer and question_tokens:
+                entries.append((question_text, answer, question_tokens))
+
+        for key, value in values.items():
+            if key in {"currency", "pay_period", "date_available"}:
+                continue
+            add_entry(key, field_answer(key, value))
+
+        aliases = document.get("aliases", {}) if isinstance(document, dict) else {}
+        if isinstance(aliases, dict):
+            for question, target in aliases.items():
+                if (
+                    isinstance(target, str)
+                    and target in values
+                    and target not in {"currency", "pay_period", "date_available"}
+                ):
+                    add_entry(question, field_answer(target, values[target]))
+
+        learned_answers = document.get("learned_answers", {}) if isinstance(document, dict) else {}
+        if isinstance(learned_answers, dict):
+            for question, answer in learned_answers.items():
+                if (
+                    isinstance(question, str)
+                    and "salary" in question.casefold()
+                    and str(answer).strip() == str(values.get("salary_expectation", "")).strip()
                 ):
                     continue
-                answer = str(value).strip()
-                if not answer:
-                    continue
-                key_tokens = _tokens(key_text)
-                if key_tokens:
-                    entries.append((key_text, answer, key_tokens))
+                add_entry(question, answer)
         self._entries = entries
         self._mtime_ns = stat.st_mtime_ns
 
@@ -110,7 +158,9 @@ class RecruiterAnswers:
             if len(query_tokens) == 1:
                 if len(key_tokens) > 3:
                     continue
-            elif len(shared) < 2:
+            elif len(shared) < 2 and (
+                len(key_tokens) > 2 or not shared.intersection({"syn0", "syn5"})
+            ):
                 continue
             key_coverage = len(shared) / len(key_tokens)
             if query_coverage < 0.15 and key_coverage < 0.25:
@@ -118,7 +168,22 @@ class RecruiterAnswers:
             score = query_coverage * 0.75 + key_coverage * 0.25
             matches.append((score, len(shared), question, answer))
         matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return [
-            {"question": question, "answer": answer}
-            for _, _, question, answer in matches[:limit]
-        ]
+        selected: list[dict[str, str]] = []
+        seen_answers: set[str] = set()
+        for _, _, question, answer in matches:
+            if answer in seen_answers:
+                continue
+            selected.append({"question": question, "answer": answer})
+            seen_answers.add(answer)
+            if len(selected) >= limit:
+                break
+
+        if re.search(r"\baws\b|amazon\s+web\s+services", message, re.IGNORECASE):
+            aws_answer = (
+                "I have over 20 years of overall production backend experience. AWS is listed "
+                "among my backend technologies, but my profile does not specify AWS-specific "
+                "years, services, or responsibilities, so I cannot give those details accurately."
+            )
+            if aws_answer not in seen_answers and len(selected) < limit:
+                selected.append({"question": "AWS commercial experience", "answer": aws_answer})
+        return selected
