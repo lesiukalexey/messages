@@ -10,6 +10,14 @@ import yaml
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+|[а-яёіїєґ]+", re.IGNORECASE)
+PROFILE_SPECIFIC_QUESTION = re.compile(
+    r"\b(?:full name|first name|last name|email|e-mail|phone|linkedin|github|website|"
+    r"telegram|location|address|city|country|state|postal code|salary|compensation|pay|rate|"
+    r"application source|application motivation)\b|"
+    r"имя|фамил|телефон|почт|зарплат|компенсац|ставк|локац|адрес|город|страна|"
+    r"місто|заробіт|очікуван\w* оплат",
+    re.IGNORECASE,
+)
 STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "can", "could", "did", "do",
     "does", "for", "from", "have", "how", "i", "if", "in", "is", "it", "me",
@@ -78,13 +86,87 @@ def _tokens(text: str) -> set[str]:
     return result
 
 
+def _same_answer_topic(left: str, right: str) -> bool:
+    left_tokens = _tokens(left)
+    right_tokens = _tokens(right)
+    shared = len(left_tokens & right_tokens)
+    return left.casefold().strip() == right.casefold().strip() or (
+        shared >= 2 and shared / max(len(left_tokens), len(right_tokens)) >= 0.66
+    )
+
+
 class RecruiterAnswers:
     """Select a few approved Job Apply facts relevant to one recruiter message."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._mtime_ns: int | None = None
+        self._mtime_ns: tuple[tuple[str, int], ...] | None = None
         self._entries: list[tuple[str, str, set[str]]] = []
+
+    def _persona_documents(self) -> list[tuple[Path, dict[str, Any], int]]:
+        try:
+            primary = _read_profile_document(self.path)
+        except (OSError, UnicodeError, yaml.YAMLError):
+            return []
+        if not isinstance(primary, dict):
+            return []
+        persona_id = str(primary.get("persona_id") or "").strip().casefold()
+        paths = [self.path]
+        if persona_id:
+            paths = sorted(set(self.path.parent.parent.glob(f"*/{self.path.name}")))
+            if self.path not in paths:
+                paths.append(self.path)
+        documents: list[tuple[Path, dict[str, Any], int]] = []
+        for path in paths:
+            try:
+                document = primary if path == self.path else _read_profile_document(path)
+                if not isinstance(document, dict):
+                    continue
+                source_persona = str(document.get("persona_id") or "").strip().casefold()
+                if path != self.path and (not persona_id or source_persona != persona_id):
+                    continue
+                documents.append((path, document, path.stat().st_mtime_ns))
+            except (OSError, UnicodeError, yaml.YAMLError):
+                continue
+        return documents
+
+    @staticmethod
+    def _persona_answers(
+        documents: list[tuple[Path, dict[str, Any], int]], primary_path: Path
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        learned: dict[str, str] = {}
+        owners: dict[str, str] = {}
+        for path, document, _ in documents:
+            for field, destination in (
+                ("learned_answers", learned),
+                ("owner_learned_answers", owners),
+            ):
+                answers = document.get(field, {})
+                if not isinstance(answers, dict):
+                    continue
+                for question, answer in answers.items():
+                    if not isinstance(question, str) or not isinstance(answer, str):
+                        continue
+                    if path != primary_path and PROFILE_SPECIFIC_QUESTION.search(question):
+                        continue
+                    key = question.strip()
+                    value = answer.strip()
+                    if not key or not value:
+                        continue
+                    if field == "owner_learned_answers":
+                        for previous in list(owners):
+                            if _same_answer_topic(previous, key):
+                                owners.pop(previous)
+                        destination[key] = value
+                    else:
+                        destination[key] = value
+        learned = {
+            question: answer
+            for question, answer in learned.items()
+            if not any(_same_answer_topic(question, owner) for owner in owners)
+        }
+        learned.update(owners)
+        return learned, owners
 
     @staticmethod
     def _without_secrets(value: Any) -> Any:
@@ -112,6 +194,12 @@ class RecruiterAnswers:
             return ""
         if not isinstance(document, dict):
             return ""
+        documents = self._persona_documents()
+        learned, owners = self._persona_answers(documents, self.path)
+        if learned:
+            document["learned_answers"] = learned
+        if owners:
+            document["owner_learned_answers"] = owners
         return yaml.safe_dump(
             self._without_secrets(document),
             allow_unicode=True,
@@ -156,11 +244,12 @@ class RecruiterAnswers:
         return pairs
 
     def _load(self) -> None:
-        stat = self.path.stat()
-        if self._mtime_ns == stat.st_mtime_ns:
+        documents = self._persona_documents()
+        source_mtimes = tuple((str(path), mtime) for path, _, mtime in documents)
+        if self._mtime_ns == source_mtimes:
             return
-        document: Any = _read_profile_document(self.path)
-        values = document.get("values", {}) if isinstance(document, dict) else {}
+        primary = next((document for path, document, _ in documents if path == self.path), {})
+        values = primary.get("values", {}) if isinstance(primary, dict) else {}
         entries: list[tuple[str, str, set[str]]] = []
         if not isinstance(values, dict):
             values = {}
@@ -199,7 +288,7 @@ class RecruiterAnswers:
                 continue
             add_entry(key, field_answer(key, value))
 
-        aliases = document.get("aliases", {}) if isinstance(document, dict) else {}
+        aliases = primary.get("aliases", {}) if isinstance(primary, dict) else {}
         if isinstance(aliases, dict):
             for question, target in aliases.items():
                 if (
@@ -209,7 +298,7 @@ class RecruiterAnswers:
                 ):
                     add_entry(question, field_answer(target, values[target]))
 
-        learned_answers = document.get("learned_answers", {}) if isinstance(document, dict) else {}
+        learned_answers, _ = self._persona_answers(documents, self.path)
         if isinstance(learned_answers, dict):
             for question, answer in learned_answers.items():
                 if (
@@ -220,7 +309,7 @@ class RecruiterAnswers:
                     continue
                 add_entry(question, answer)
         self._entries = entries
-        self._mtime_ns = stat.st_mtime_ns
+        self._mtime_ns = source_mtimes
 
     def match(self, message: str, limit: int = 4) -> list[dict[str, str]]:
         try:

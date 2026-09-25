@@ -19,6 +19,7 @@ from telethon import TelegramClient, events, functions, types, utils
 from .calendar import GoogleCalendar
 from .config import Settings
 from .llm import Responder
+from .language import check_reply_language
 from .learning import LearningBot
 from .runtime import load_environment
 from .recruiter_answers import CategoryAnswers, RecruiterAnswers
@@ -2100,6 +2101,58 @@ async def run() -> None:
                             "sent original candidate to avoid silence",
                         )
                 reply = occasionally_introduce_typo(reply)
+                language_check = check_reply_language(reply, event.raw_text)
+                if not language_check.passed:
+                    try:
+                        corrected_reply = await responder.rewrite_reply_language(
+                            model=model,
+                            incoming_message=event.raw_text,
+                            candidate_reply=reply,
+                            target_language=language_check.expected,
+                        )
+                    except Exception as exc:
+                        corrected_reply = ""
+                        logger.warning(
+                            "Could not correct reply language (%s)", type(exc).__name__
+                        )
+                    corrected_check = check_reply_language(corrected_reply, event.raw_text)
+                    if corrected_check.passed:
+                        reply = corrected_reply.strip()
+                        language_check = corrected_check
+                    else:
+                        store.message_state(
+                            settings.account_id, peer_id, event.message.id, "skipped"
+                        )
+                        store.audit(
+                            peer_id,
+                            "reply_checklist",
+                            json.dumps(
+                                {
+                                    "incoming_message_id": event.message.id,
+                                    "language": corrected_check.checklist,
+                                    "passed": False,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                        store.audit(
+                            peer_id,
+                            "skipped",
+                            "reply did not pass the Russian/English language check",
+                        )
+                        return
+                store.audit(
+                    peer_id,
+                    "reply_checklist",
+                    json.dumps(
+                        {
+                            "incoming_message_id": event.message.id,
+                            "language": language_check.checklist,
+                            "passed": True,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
                 if not reply:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", "candidate reply became empty before send")
@@ -2112,6 +2165,7 @@ async def run() -> None:
                             "incoming_message_id": event.message.id,
                             "category": category,
                             "model": model,
+                            "language_checklist": language_check.checklist,
                             "calendar_action": action,
                             "web_search": web_search_requested,
                             "web_search_result_count": len(web_search_results or []),
