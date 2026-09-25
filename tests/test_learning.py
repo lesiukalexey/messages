@@ -43,6 +43,8 @@ class LearningAnswersTest(unittest.TestCase):
         self.assertIn("learn_question", plan)
         self.assertIn("substantive choice, preference, boundary", responder.prompt)
         self.assertIn("even when you can", responder.prompt)
+        self.assertIn("omit that part completely", responder.prompt)
+        self.assertIn("first-person voice", responder.prompt)
 
     def test_answer_is_saved_and_available_to_future_model_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

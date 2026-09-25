@@ -119,14 +119,9 @@ def recruiter_keyword_fallback(message: str, answers: list[dict[str, str]]) -> d
             )
         elif "aws commercial experience" in question:
             lines.append(
-                "I have over 20 years of overall backend production experience. AWS is listed "
-                "among my backend technologies, but my profile does not specify AWS-specific "
-                "years, services, or responsibilities, so I can't answer those details accurately."
+                "AWS is part of my backend stack."
                 if reply_in_english else
-                "У меня более 20 лет общего опыта в backend-разработке на production. "
-                "AWS указан среди моих backend-технологий, но профиль не содержит данных "
-                "о стаже именно с AWS, конкретных сервисах или моих задачах с ним. "
-                "Поэтому точнее ответить на эти детали не могу."
+                "AWS входит в мой backend-стек."
             )
     if not lines:
         return None
