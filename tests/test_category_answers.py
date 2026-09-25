@@ -14,29 +14,29 @@ class CategoryAnswersTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            friends = CategoryAnswers(root / "friends.yaml")
-            unknown = CategoryAnswers(root / "unknown.yaml")
+            friends_unknown = CategoryAnswers(root / "friends-unknown.yaml")
             realtors = CategoryAnswers(root / "realtors.yaml")
-            for source in (friends, unknown, realtors):
+            for source in (friends_unknown, realtors):
                 source.ensure_file()
-            self.assertEqual((root / "friends.yaml").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((root / "friends-unknown.yaml").stat().st_mode & 0o777, 0o600)
             self.assertEqual((root.stat().st_mode & 0o777), 0o700)
 
-            friends.path.write_text(
+            friends_unknown.path.write_text(
                 "learned_answers:\n  What do I like?: Hiking\n", encoding="utf-8"
             )
-            unknown.path.write_text(
-                "learned_answers:\n  Which timezone?: EET\n", encoding="utf-8"
-            )
-            sources = {"friends": friends, "unknown": unknown, "realtors": realtors}
+            sources = {
+                "friends": friends_unknown,
+                "unknown": friends_unknown,
+                "realtors": realtors,
+            }
 
             self.assertEqual(
                 answers_for_category("friends", "What do I like?", ForbiddenRecruiterAnswers(), sources),
                 [{"question": "What do I like?", "answer": "Hiking"}],
             )
             self.assertEqual(
-                answers_for_category("unknown", "Which timezone?", ForbiddenRecruiterAnswers(), sources),
-                [{"question": "Which timezone?", "answer": "EET"}],
+                answers_for_category("unknown", "What do I like?", ForbiddenRecruiterAnswers(), sources),
+                [{"question": "What do I like?", "answer": "Hiking"}],
             )
             self.assertEqual(
                 answers_for_category("realtors", "question", ForbiddenRecruiterAnswers(), sources),

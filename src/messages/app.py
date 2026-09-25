@@ -938,9 +938,13 @@ async def run() -> None:
     if personal_context:
         logger.info("Personal context profile loaded (%s characters)", len(personal_context))
     recruiter_answers = RecruiterAnswers(settings.recruiter_answers_file)
+    friends_unknown_answers = CategoryAnswers(
+        settings.category_answers_dir / "friends-unknown.yaml"
+    )
     category_answers = {
-        category: CategoryAnswers(settings.category_answers_dir / f"{category}.yaml")
-        for category in ("unknown", "friends", "realtors")
+        "unknown": friends_unknown_answers,
+        "friends": friends_unknown_answers,
+        "realtors": CategoryAnswers(settings.category_answers_dir / "realtors.yaml"),
     }
     for answer_file in category_answers.values():
         answer_file.ensure_file()

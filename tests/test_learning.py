@@ -147,19 +147,19 @@ class LearningAnswersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             profile = root / "answers.yaml"
-            friends_profile = root / "friends.yaml"
+            shared_profile = root / "friends-unknown.yaml"
             profile.write_text("values: {}\n", encoding="utf-8")
-            friends_profile.write_text("learned_answers: {}\n", encoding="utf-8")
+            shared_profile.write_text("learned_answers: {}\n", encoding="utf-8")
             store = Store(root / "assistant.sqlite3", "personal")
             try:
                 store.initialize()
                 store.register_learning_owner(123)
                 store.enqueue_learning_question(
-                    "How many AWS years do I have?", category="friends"
+                    "How many AWS years do I have?", category="unknown"
                 )
                 bot = FakeLearningBot(
                     "test-token", store, profile, root / "lock",
-                    category_profile_paths={"friends": friends_profile},
+                    category_profile_paths={"friends": shared_profile, "unknown": shared_profile},
                 )
                 asyncio.run(bot.process_update({"message": {
                     "from": {"id": 456},
@@ -183,7 +183,7 @@ class LearningAnswersTest(unittest.TestCase):
                     "text": "I have used AWS for four years.",
                     "reply_to_message": {"message_id": question_message_id},
                 }}))
-                saved = RecruiterAnswers(friends_profile).learned_answers_context()
+                saved = RecruiterAnswers(shared_profile).learned_answers_context()
                 self.assertEqual(saved[0]["answer"], "I have used AWS for four years.")
                 self.assertEqual(RecruiterAnswers(profile).learned_answers_context(), [])
                 self.assertIsNone(store.claim_next_learning_question())
