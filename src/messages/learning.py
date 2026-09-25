@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import fcntl
 import asyncio
+import fcntl
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
@@ -12,54 +13,170 @@ from urllib.request import Request, urlopen
 import yaml
 
 
-LOCK_PATH = Path("/home/admin/messages-runtime/learned-answers.lock")
 BOT_USERNAME = "learnDataBot"
 logger = logging.getLogger(__name__)
+_PRIVATE_QUESTION = re.compile(
+    r"password|passwd|secret|token|credential|security code|verification code|"
+    r"one.time password|\botp\b|\b2fa\b|bank account",
+    re.I,
+)
+_QUESTION_STOP_WORDS = frozenset({
+    "a", "an", "and", "are", "do", "for", "have", "how", "i", "in",
+    "is", "of", "or", "the", "to", "what", "with", "you", "your",
+    "у", "в", "на", "и", "или", "что", "как", "какой", "какая", "какие",
+    "ли", "есть", "мне", "ты", "вы", "ваш", "мой", "моя", "мои",
+})
+
+
+def _profile_lock(path: Path) -> Path:
+    return path.with_name(path.name + ".lock")
+
+
+def _read_profile(path: Path, lock_path: Path) -> dict[str, Any]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a", encoding="utf-8") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(document, dict):
+        raise ValueError("The profile YAML root must be a mapping")
+    return document
+
+
+def _write_profile_contents(path: Path, document: dict[str, Any]) -> None:
+    rendered = yaml.safe_dump(
+        document,
+        allow_unicode=True,
+        sort_keys=False,
+        width=100,
+        default_flow_style=False,
+    )
+    with path.open("r+", encoding="utf-8") as profile:
+        profile.seek(0)
+        profile.write(rendered)
+        profile.truncate()
+        profile.flush()
+        os.fsync(profile.fileno())
+
+
+def _question_key(question: str) -> str:
+    return " ".join(question.casefold().split())
+
+
+def _question_terms(question: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+|[а-яёіїєґ]+", question.casefold())
+        if len(token) > 1 and token not in _QUESTION_STOP_WORDS
+    }
+
+
+def _same_question_topic(left: str, right: str) -> bool:
+    if _question_key(left) == _question_key(right):
+        return True
+    left_terms = _question_terms(left)
+    right_terms = _question_terms(right)
+    shared = len(left_terms & right_terms)
+    return shared >= 2 and shared / max(len(left_terms), len(right_terms)) >= 0.66
+
+
+def _memory_conflicts_with_owner(item: dict[str, Any], question: str, answer: str) -> bool:
+    if str(item.get("answer") or "").strip() == answer:
+        return False
+    variants = item.get("variants", [])
+    candidates = [str(item.get("question") or "")]
+    if isinstance(variants, list):
+        candidates.extend(value for value in variants if isinstance(value, str))
+    return any(_same_question_topic(candidate, question) for candidate in candidates)
+
+
+def _pending_profile_questions(path: Path, lock_path: Path) -> list[str]:
+    document = _read_profile(path, lock_path)
+    pending = document.get("pending_learning_questions", [])
+    if not isinstance(pending, list):
+        return []
+    return [
+        question.strip()[:500]
+        for question in pending
+        if isinstance(question, str)
+        and question.strip()
+        and not _PRIVATE_QUESTION.search(question)
+    ]
 
 
 def save_learned_answer(
-    path: Path, question: str, answer: str, lock_path: Path = LOCK_PATH
+    path: Path, question: str, answer: str, lock_path: Path | None = None
 ) -> None:
     question = " ".join(question.split())[:500]
     answer = answer.strip()[:5000]
     if not question or not answer:
         raise ValueError("A question and answer are required")
 
+    lock_path = lock_path or _profile_lock(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_path.parent.chmod(0o700)
     with lock_path.open("a", encoding="utf-8") as lock:
         os.chmod(lock_path, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        with path.open("r+", encoding="utf-8") as profile:
-            document = yaml.safe_load(profile) or {}
-            if not isinstance(document, dict):
-                raise ValueError("The profile YAML root must be a mapping")
-            learned = document.setdefault("learned_answers", {})
-            if not isinstance(learned, dict):
-                raise ValueError("learned_answers must be a YAML mapping")
-            learned[question] = answer
-            rendered = yaml.safe_dump(
-                document,
-                allow_unicode=True,
-                sort_keys=False,
-                width=100,
-                default_flow_style=False,
-            )
-            profile.seek(0)
-            profile.write(rendered)
-            profile.truncate()
-            profile.flush()
-            os.fsync(profile.fileno())
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(document, dict):
+            raise ValueError("The profile YAML root must be a mapping")
+        learned = document.setdefault("learned_answers", {})
+        if not isinstance(learned, dict):
+            raise ValueError("learned_answers must be a YAML mapping")
+        owner_answers = document.setdefault("owner_learned_answers", {})
+        if not isinstance(owner_answers, dict):
+            raise ValueError("owner_learned_answers must be a YAML mapping")
+        prior_owner_questions = [
+            key for key in owner_answers if isinstance(key, str)
+        ]
+        for known_question in list(learned):
+            if not isinstance(known_question, str):
+                continue
+            if any(
+                _same_question_topic(known_question, owner_question)
+                for owner_question in prior_owner_questions
+            ):
+                continue
+            if _same_question_topic(known_question, question):
+                learned.pop(known_question, None)
+        learned[question] = answer
+        owner_answers[question] = answer
+        memory = document.get("ai_memory", [])
+        if isinstance(memory, list):
+            document["ai_memory"] = [
+                item
+                for item in memory
+                if not isinstance(item, dict)
+                or not _memory_conflicts_with_owner(item, question, answer)
+            ]
+        included = document.get("ai_memory_included", {})
+        if isinstance(included, dict):
+            document["ai_memory_included"] = {
+                known_question: known_answer
+                for known_question, known_answer in included.items()
+                if not isinstance(known_question, str)
+                or known_answer == answer
+                or not _same_question_topic(known_question, question)
+            }
+        pending = document.get("pending_learning_questions", [])
+        if isinstance(pending, list):
+            answered_key = _question_key(question)
+            document["pending_learning_questions"] = [
+                item
+                for item in pending
+                if not isinstance(item, str) or _question_key(item) != answered_key
+            ]
+        _write_profile_contents(path, document)
 
 
 class LearningBot:
     def __init__(
-        self, token: str, store: Any, profile_path: Path, lock_path: Path = LOCK_PATH
+        self, token: str, store: Any, profile_path: Path, lock_path: Path | None = None
     ) -> None:
         self.token = token
         self.store = store
         self.profile_path = profile_path
-        self.lock_path = lock_path
+        self.lock_path = lock_path or _profile_lock(profile_path)
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
         def send() -> Any:
@@ -83,6 +200,11 @@ class LearningBot:
         chat_id = self.store.setting("learn_bot_owner_chat_id", "")
         if not chat_id:
             return
+        try:
+            for question in _pending_profile_questions(self.profile_path, self.lock_path):
+                self.store.enqueue_learning_question(question)
+        except Exception as exc:
+            logger.warning("Could not read profile learning questions (%s)", type(exc).__name__)
         queued = self.store.claim_next_learning_question()
         if queued is None:
             return

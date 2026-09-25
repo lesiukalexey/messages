@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,15 @@ SYNONYM_GROUPS = (
     {"team", "people", "management", "руководство", "управление", "команда", "людьми"},
     {"remote", "relocate", "relocation", "переезд", "удаленно", "удалённо"},
 )
+def _read_profile_document(path: Path) -> Any:
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a", encoding="utf-8") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
 CANONICAL: dict[str, str] = {}
 for group_index, group in enumerate(SYNONYM_GROUPS):
     for token in group:
@@ -96,7 +107,7 @@ class RecruiterAnswers:
     def profile_context(self) -> str:
         """Return the complete non-secret profile for semantic recruiter Q&A."""
         try:
-            document: Any = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+            document: Any = _read_profile_document(self.path)
         except (OSError, UnicodeError, yaml.YAMLError):
             return ""
         if not isinstance(document, dict):
@@ -122,7 +133,7 @@ class RecruiterAnswers:
     def learned_answers_context(self) -> list[dict[str, str]]:
         """Share only owner-authored learned Q&A outside recruiter conversations."""
         try:
-            document: Any = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+            document: Any = _read_profile_document(self.path)
         except (OSError, UnicodeError, yaml.YAMLError):
             return []
         learned = document.get("learned_answers", {}) if isinstance(document, dict) else {}
@@ -148,7 +159,7 @@ class RecruiterAnswers:
         stat = self.path.stat()
         if self._mtime_ns == stat.st_mtime_ns:
             return
-        document: Any = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        document: Any = _read_profile_document(self.path)
         values = document.get("values", {}) if isinstance(document, dict) else {}
         entries: list[tuple[str, str, set[str]]] = []
         if not isinstance(values, dict):
