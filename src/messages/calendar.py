@@ -59,6 +59,46 @@ class GoogleCalendar:
             raise RuntimeError("Google Calendar could not check availability")
         return not bool(calendar.get("busy")), f"{begins.isoformat()}/{ends.isoformat()}"
 
+    def events_starting_between(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        start = start.astimezone(self.timezone)
+        end = end.astimezone(self.timezone)
+        if end <= start:
+            raise ValueError("calendar event query end must be after start")
+        service = self._service()
+        events: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while True:
+            response = service.events().list(
+                calendarId="primary",
+                timeMin=start.isoformat(),
+                timeMax=end.isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=2500,
+                pageToken=page_token,
+            ).execute()
+            events.extend(
+                event
+                for event in response.get("items", [])
+                if event.get("status") != "cancelled"
+            )
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return events
+
+    def event_start(self, event: dict[str, Any]) -> datetime | None:
+        start = event.get("start", {})
+        raw = start.get("dateTime")
+        if raw:
+            begins = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if begins.tzinfo is None:
+                return begins.replace(tzinfo=self.timezone)
+            return begins.astimezone(self.timezone)
+        raw_date = start.get("date")
+        if raw_date:
+            return datetime.combine(date.fromisoformat(raw_date), time.min, self.timezone)
+        return None
+
     def update_duration(
         self,
         event_id: str,

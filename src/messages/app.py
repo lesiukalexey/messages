@@ -24,6 +24,7 @@ from .learning import LearningBot
 from .runtime import load_environment
 from .recruiter_answers import CategoryAnswers, RecruiterAnswers
 from .store import Store
+from .telegram_calls import place_short_call
 from .web_search import search_web
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
@@ -2237,6 +2238,7 @@ async def run() -> None:
 
     poller: asyncio.Task[None] | None = None
     learning_poller: asyncio.Task[None] | None = None
+    calendar_call_poller: asyncio.Task[None] | None = None
     try:
         async def poll_bio() -> None:
             while True:
@@ -2248,6 +2250,89 @@ async def run() -> None:
         poller = asyncio.create_task(poll_bio())
         if learning_bot is not None:
             learning_poller = asyncio.create_task(learning_bot.run_forever())
+        if (
+            settings.account_id == "personal"
+            and (me.username or "").casefold() == "alexskyer"
+            and settings.call_reminder_username
+        ):
+            logger.info(
+                "Calendar call reminders enabled for @%s",
+                settings.call_reminder_username,
+            )
+
+            async def poll_calendar_call_reminders() -> None:
+                calendar_query_ready = False
+                while True:
+                    now = datetime.now(UTC)
+                    window_start = now + timedelta(minutes=5)
+                    window_end = now + timedelta(minutes=6, seconds=30)
+                    try:
+                        upcoming = await asyncio.to_thread(
+                            calendar.events_starting_between,
+                            window_start,
+                            window_end,
+                        )
+                        if not calendar_query_ready:
+                            logger.info("Calendar event query for call reminders is ready")
+                            calendar_query_ready = True
+                        for event in upcoming:
+                            event_id = event.get("id")
+                            starts_at = calendar.event_start(event)
+                            if not event_id or starts_at is None:
+                                continue
+                            starts_at = starts_at.astimezone(UTC)
+                            start_value = starts_at.isoformat()
+                            due_at = starts_at - timedelta(minutes=6)
+                            if not timedelta(0) <= now - due_at <= timedelta(minutes=1):
+                                continue
+                            if not store.claim_calendar_call_reminder(event_id, start_value):
+                                continue
+                            try:
+                                await place_short_call(
+                                    client,
+                                    settings.call_reminder_username,
+                                    duration_seconds=1.0,
+                                )
+                            except Exception as exc:
+                                store.finish_calendar_call_reminder(
+                                    event_id, start_value, "failed"
+                                )
+                                store.audit(
+                                    None,
+                                    "calendar_call_reminder_failed",
+                                    f"event_id={event_id}; error={type(exc).__name__}",
+                                )
+                                logger.warning(
+                                    "Calendar call reminder failed for one event (%s)",
+                                    type(exc).__name__,
+                                )
+                            else:
+                                store.finish_calendar_call_reminder(
+                                    event_id, start_value, "sent"
+                                )
+                                store.audit(
+                                    None,
+                                    "calendar_call_reminder_sent",
+                                    f"event_id={event_id}; start={start_value}; "
+                                    f"recipient=@{settings.call_reminder_username}",
+                                )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not check calendar call reminders (%s)",
+                            type(exc).__name__,
+                        )
+                    await asyncio.sleep(15)
+
+            calendar_call_poller = asyncio.create_task(poll_calendar_call_reminders())
+        elif settings.account_id == "personal":
+            if (me.username or "").casefold() != "alexskyer":
+                logger.warning(
+                    "Calendar call reminders are disabled because this is not @AlexSkyer"
+                )
+            else:
+                logger.info(
+                    "Calendar call reminders are disabled until a recipient is configured"
+                )
         await refresh_quiet_hours_status(force=True)
         logger.info(
             "Telegram assistant started for account %s; bio switch is %s",
@@ -2266,6 +2351,12 @@ async def run() -> None:
             learning_poller.cancel()
             try:
                 await learning_poller
+            except asyncio.CancelledError:
+                pass
+        if calendar_call_poller:
+            calendar_call_poller.cancel()
+            try:
+                await calendar_call_poller
             except asyncio.CancelledError:
                 pass
         history.close()

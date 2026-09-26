@@ -67,6 +67,14 @@ class Store:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (source_account_id, peer_id, source_message_id)
             );
+            CREATE TABLE IF NOT EXISTS calendar_call_reminders (
+                account_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                start_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('claimed', 'sent', 'failed')),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, event_id, start_at)
+            );
             CREATE TABLE IF NOT EXISTS pending_calendar_durations (
                 account_id TEXT NOT NULL,
                 peer_id INTEGER NOT NULL,
@@ -698,6 +706,29 @@ class Store:
                (source_account_id, peer_id, source_message_id, event_id, created_at)
                VALUES (?, ?, ?, ?, ?)""",
             (account_id, peer_id, message_id, event_id, utc_now()),
+        )
+        self.connection.commit()
+
+    def claim_calendar_call_reminder(self, event_id: str, start_at: str) -> bool:
+        cursor = self.connection.execute(
+            """INSERT OR IGNORE INTO calendar_call_reminders
+               (account_id, event_id, start_at, status, updated_at)
+               VALUES (?, ?, ?, 'claimed', ?)""",
+            (self.account_id, event_id, start_at, utc_now()),
+        )
+        self.connection.commit()
+        return cursor.rowcount == 1
+
+    def finish_calendar_call_reminder(
+        self, event_id: str, start_at: str, status: str
+    ) -> None:
+        if status not in {"sent", "failed"}:
+            raise ValueError("invalid calendar call reminder status")
+        self.connection.execute(
+            """UPDATE calendar_call_reminders
+               SET status = ?, updated_at = ?
+               WHERE account_id = ? AND event_id = ? AND start_at = ?""",
+            (status, utc_now(), self.account_id, event_id, start_at),
         )
         self.connection.commit()
 

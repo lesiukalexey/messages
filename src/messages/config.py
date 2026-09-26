@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import json
 import ipaddress
 import os
+import re
 from pathlib import Path
 
 
@@ -26,6 +27,7 @@ class Settings:
     reply_api_host: str = "192.168.31.46"
     reply_api_port: int = 8095
     reply_api_persona_id: str = "alexey-lesiuk"
+    call_reminder_username: str = ""
     log_level: str = "INFO"
     category_answers_dir: Path = Path("/home/admin/messages-runtime/category-answers")
 
@@ -106,6 +108,9 @@ class Settings:
         reply_api_port = int(os.getenv("REPLY_API_PORT", "8095"))
         if not 1 <= reply_api_port <= 65535:
             raise ValueError("REPLY_API_PORT must be between 1 and 65535")
+        call_reminder_username = os.getenv("TELEGRAM_CALL_REMINDER_USERNAME", "").strip().removeprefix("@").strip()
+        if call_reminder_username and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", call_reminder_username):
+            raise ValueError("TELEGRAM_CALL_REMINDER_USERNAME must be a valid Telegram username")
 
         return cls(
             api_id=int(api_id) if api_id else 0,
@@ -151,6 +156,7 @@ class Settings:
             reply_api_host=reply_api_host,
             reply_api_port=reply_api_port,
             reply_api_persona_id=os.getenv("REPLY_API_PERSONA_ID", "alexey-lesiuk").strip(),
+            call_reminder_username=call_reminder_username,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             category_answers_dir=Path(
                 os.getenv(
