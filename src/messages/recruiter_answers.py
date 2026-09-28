@@ -253,6 +253,12 @@ class RecruiterAnswers:
         ][-30:]
         return pairs
 
+    def has_owner_answer_for_question(self, question: str) -> bool:
+        """Check whether a directly matching owner-authored answer is saved."""
+        documents = self._persona_documents()
+        _, owners = self._persona_answers(documents, self.path)
+        return any(_same_answer_topic(question, saved) for saved in owners)
+
     def _load(self) -> None:
         documents = self._persona_documents()
         source_mtimes = tuple((str(path), mtime) for path, _, mtime in documents)

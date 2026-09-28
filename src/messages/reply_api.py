@@ -25,6 +25,20 @@ logger = logging.getLogger(__name__)
 MAX_BODY_BYTES = 96_000
 MAX_HISTORY_TURNS = 24
 MAX_TURN_CHARS = 4_000
+WORK_FORMAT_LEARNING_QUESTION = (
+    "Какой формат работы мне подходит: только удалённый или также гибридный/офисный в Киеве?"
+)
+WORK_FORMAT_RE = re.compile(
+    r"\b(?:office|offices|in[- ]office|on[- ]?site|onsite|hybrid|remote)\b|"
+    r"офис\w*|офіс\w*|гибрид\w*|гібрид\w*|удал[её]н\w*|віддален\w*|дистанційн\w*",
+    re.IGNORECASE,
+)
+WORK_FORMAT_CHOICE_RE = re.compile(
+    r"\b(?:ready|willing|open to|comfortable|acceptable|suitable|consider)\b|"
+    r"готов\w*|актуальн\w*|розгляда\w*|прийнятн\w*|підход\w*|"
+    r"чи\s+був\s+би|підкажіть|скажіть",
+    re.IGNORECASE,
+)
 
 
 def _style_profile() -> str:
@@ -53,6 +67,19 @@ def _safe_learning_question(value: Any) -> str:
     ):
         return ""
     return question[:500]
+
+
+def _work_format_learning_question(
+    incoming_message: str, answers: RecruiterAnswers
+) -> str:
+    if not (
+        WORK_FORMAT_RE.search(incoming_message)
+        and WORK_FORMAT_CHOICE_RE.search(incoming_message)
+    ):
+        return ""
+    if answers.has_owner_answer_for_question(WORK_FORMAT_LEARNING_QUESTION):
+        return ""
+    return WORK_FORMAT_LEARNING_QUESTION
 
 
 def _bounded_text(value: Any, name: str, limit: int, *, required: bool = False) -> str:
@@ -243,6 +270,8 @@ class ReplyAPI:
             platform=platform,
         )
         learning_question = _safe_learning_question(plan.get("learn_question"))
+        if not learning_question:
+            learning_question = _work_format_learning_question(incoming, answers)
         learning_requested = bool(learning_question)
         source_event_key = hashlib.sha256(
             f"{platform}:{event['profile_id']}:{event['thread_id']}:{event['message_id']}".encode()
