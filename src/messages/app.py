@@ -1996,16 +1996,26 @@ async def run() -> None:
                             else "I can't answer that accurately."
                         )
                     store.audit(peer_id, "no_reply_overridden", "direct question")
+                meeting_booked = (
+                    action == "create"
+                    and calendar_result.startswith("FREE; calendar event successfully created")
+                )
+                if (
+                    meeting_booked
+                    and plan.get("confirmed_agreement")
+                    and not is_direct_question(event.raw_text)
+                ):
+                    plan["should_reply"] = False
+                    plan["should_react"] = True
+                    plan["reaction_emoji"] = "👍"
+
                 text_reply_required = (
                     web_search_requested
                     or duration_followup_reply is not None
                     or availability_reply is not None
                     or calendar_boundary_reply is not None
                     or action in ("check", "duration_update")
-                    or (
-                        action == "create"
-                        and calendar_result != "FREE; calendar event successfully created."
-                    )
+                    or (action == "create" and not meeting_booked)
                 )
                 if not plan.get("should_reply", True) and not text_reply_required:
                     if not plan.get("should_react"):

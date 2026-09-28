@@ -335,6 +335,9 @@ Calendar rules:
   contact's confirmation. The application also enforces this rule.
 - If Alexey has proposed a specific time in an earlier message, create the event only after the
   contact's current message clearly accepts that exact time (for example, “да, договорились”).
+- When the contact accepts Alexey's specific time proposal, do not repeat the date/time or send a
+  second verbal confirmation after the event is successfully created. A fitting reaction is enough;
+  send text only when a question or unresolved detail still needs an answer.
 - A direct, concrete invitation from the contact such as “давай встретимся в 18:00” can be checked
   and booked immediately. A question asking Alexey to choose among options is not such an invitation.
 - Set confirmed_agreement=true only when the contact's current message itself proposes a specific
