@@ -189,6 +189,18 @@ To refresh account history for response context, use:
 messages-export --account personal
 ```
 
+To print the latest exported messages for one contact, select the Telegram
+account explicitly:
+
+```bash
+messages-history --account personal --username a_oleksiy --limit 30
+```
+
+The username may include `@`; the default limit is 30 and the maximum is 500.
+This command reads only the selected account's exported database rows and does
+not contact Telegram. Message text is printed to the terminal, so use it only
+in a private shell.
+
 The exporter stores text and message metadata only. It skips media files,
 groups, channels, bots, deleted users, and Saved Messages.
 
