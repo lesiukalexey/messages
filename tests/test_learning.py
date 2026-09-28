@@ -5,6 +5,8 @@ from pathlib import Path
 import asyncio
 from datetime import datetime, timezone
 
+import yaml
+
 from messages.config import Settings
 from messages.llm import Responder
 from messages.learning import LearningBot, save_learned_answer
@@ -41,9 +43,10 @@ class LearningAnswersTest(unittest.TestCase):
             try:
                 store.initialize()
                 migrated = store.connection.execute(
-                    "SELECT category, normalized_question FROM learning_questions"
+                    "SELECT category, normalized_question, dismissed FROM learning_questions"
                 ).fetchone()
                 self.assertEqual(migrated["category"], "recruiters")
+                self.assertEqual(migrated["dismissed"], 0)
                 self.assertTrue(migrated["normalized_question"].startswith("recruiters:"))
                 self.assertTrue(store.enqueue_learning_question(
                     "How is the recruiter profile used?", category="friends"
@@ -187,6 +190,74 @@ class LearningAnswersTest(unittest.TestCase):
                 self.assertEqual(saved[0]["answer"], "I have used AWS for four years.")
                 self.assertEqual(RecruiterAnswers(profile).learned_answers_context(), [])
                 self.assertIsNone(store.claim_next_learning_question())
+            finally:
+                store.close()
+
+    def test_space_or_dot_dismisses_question_without_saving_answer(self) -> None:
+        class FakeLearningBot(LearningBot):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)
+                self.sent: list[dict[str, object]] = []
+
+            async def _call(self, method: str, payload: dict[str, object]) -> object:
+                self.sent.append(payload)
+                return {"message_id": 100 + len(self.sent)}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "answers.yaml"
+            profile.write_text(
+                "pending_learning_questions:\n  - Job Apply question?\n"
+                "learned_answers: {}\n",
+                encoding="utf-8",
+            )
+            store = Store(root / "assistant.sqlite3", "personal")
+            try:
+                store.initialize()
+                store.register_learning_owner(123)
+                bot = FakeLearningBot(
+                    "test-token", store, profile, profile_paths={"owner": profile}
+                )
+                asyncio.run(bot.process_update({"message": {
+                    "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+                    "text": "/start",
+                }}))
+                first = store.awaiting_learning_question()
+                assert first is not None
+                store.enqueue_learning_question("Second question?")
+                store.enqueue_learning_question("Third question?")
+
+                for marker in (" ", "."):
+                    current = store.awaiting_learning_question()
+                    assert current is not None
+                    asyncio.run(bot.process_update({"message": {
+                        "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+                        "text": marker,
+                        "reply_to_message": {"message_id": current["channel_message_id"]},
+                    }}))
+                    outcome = store.connection.execute(
+                        "SELECT status, dismissed FROM learning_questions WHERE id = ?", (current["id"],)
+                    ).fetchone()
+                    self.assertEqual((outcome["status"], outcome["dismissed"]), ("answered", 1))
+                    self.assertEqual(bot.sent[-2]["text"], "Вопрос снят.")
+
+                self.assertEqual(yaml.safe_load(profile.read_text())["pending_learning_questions"], [])
+                third = store.awaiting_learning_question()
+                assert third is not None
+                self.assertEqual(third["question"], "Third question?")
+                asyncio.run(bot.process_update({"message": {
+                    "from": {"id": 123}, "chat": {"id": 123, "type": "private"},
+                    "text": "A real answer.",
+                }}))
+                self.assertEqual(store.connection.execute(
+                    "SELECT status FROM learning_questions WHERE id = ?", (third["id"],)
+                ).fetchone()["status"], "answered")
+                self.assertEqual(yaml.safe_load(profile.read_text())["learned_answers"], {
+                    "Third question?": "A real answer."
+                })
+                self.assertIsNone(store.awaiting_learning_question())
+                asyncio.run(bot.publish_next_question())
+                self.assertIsNone(store.awaiting_learning_question())
             finally:
                 store.close()
 

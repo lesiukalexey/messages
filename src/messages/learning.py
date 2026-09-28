@@ -169,6 +169,30 @@ def save_learned_answer(
         _write_profile_contents(path, document)
 
 
+def dismiss_pending_profile_question(
+    path: Path, question: str, lock_path: Path | None = None
+) -> None:
+    lock_path = lock_path or _profile_lock(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a", encoding="utf-8") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(document, dict):
+            raise ValueError("The profile YAML root must be a mapping")
+        pending = document.get("pending_learning_questions")
+        if not isinstance(pending, list):
+            return
+        question_key = _question_key(question)
+        remaining = [
+            item for item in pending
+            if not isinstance(item, str) or _question_key(item) != question_key
+        ]
+        if len(remaining) != len(pending):
+            document["pending_learning_questions"] = remaining
+            _write_profile_contents(path, document)
+
+
 class LearningBot:
     def __init__(
         self,
@@ -252,11 +276,11 @@ class LearningBot:
             or sender_id not in self.store.learning_owner_ids()
             or chat_id != sender_id
             or not isinstance(text, str)
-            or not text.strip()
+            or not text
         ):
             return
 
-        if text.strip().split(maxsplit=1)[0].split("@", maxsplit=1)[0] == "/start":
+        if text.strip() and text.strip().split(maxsplit=1)[0].split("@", maxsplit=1)[0] == "/start":
             self.store.set_setting("learn_bot_owner_chat_id", str(chat_id))
             await self._send_message(
                 chat_id,
@@ -280,6 +304,21 @@ class LearningBot:
             return
         question_id = int(pending["id"])
         if not self.store.claim_learning_answer(question_id):
+            return
+        if not answer or answer == ".":
+            try:
+                if pending["source_platform"] == "job_apply":
+                    profile_path = self.profile_paths.get(str(pending["profile_id"] or ""))
+                    if profile_path is None:
+                        raise ValueError("No profile configured for dismissed Job Apply question")
+                    dismiss_pending_profile_question(profile_path, pending["question"])
+            except Exception:
+                self.store.retry_learning_answer(question_id)
+                raise
+            self.store.dismiss_learning_question(question_id)
+            logger.info("Dismissed an owner question from the learning bot")
+            await self._send_message(chat_id, "Вопрос снят.")
+            await self.publish_next_question()
             return
         category = str(pending["category"])
         profile_id = str(pending["profile_id"] or "")

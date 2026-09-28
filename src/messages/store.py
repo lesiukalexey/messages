@@ -108,6 +108,7 @@ class Store:
                 status TEXT NOT NULL CHECK (
                     status IN ('queued', 'posting', 'awaiting', 'answering', 'answered')
                 ),
+                dismissed INTEGER NOT NULL DEFAULT 0,
                 channel_message_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -146,6 +147,10 @@ class Store:
         if "profile_id" not in learning_columns:
             self.connection.execute(
                 "ALTER TABLE learning_questions ADD COLUMN profile_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "dismissed" not in learning_columns:
+            self.connection.execute(
+                "ALTER TABLE learning_questions ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0"
             )
         for name, declaration in (
             ("source_platform", "TEXT NOT NULL DEFAULT 'telegram'"),
@@ -366,6 +371,14 @@ class Store:
     def finish_learning_question(self, question_id: int) -> None:
         self.connection.execute(
             "UPDATE learning_questions SET status = 'answered', updated_at = ? "
+            "WHERE id = ? AND status = 'answering'",
+            (utc_now(), question_id),
+        )
+        self.connection.commit()
+
+    def dismiss_learning_question(self, question_id: int) -> None:
+        self.connection.execute(
+            "UPDATE learning_questions SET status = 'answered', dismissed = 1, updated_at = ? "
             "WHERE id = ? AND status = 'answering'",
             (utc_now(), question_id),
         )
