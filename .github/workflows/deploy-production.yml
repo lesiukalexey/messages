@@ -1,0 +1,43 @@
+name: Deploy production to Raspberry Pi
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-multi-messenger-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, ARM64, multi-messenger]
+    timeout-minutes: 20
+    steps:
+      - name: Pull and deploy pushed main
+        env:
+          PUSHED_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          cd /home/admin/multi_messenger
+          [[ $(git branch --show-current) == main ]]
+          git diff --quiet HEAD --
+          git diff --cached --quiet --
+          previous_sha=$(git rev-parse HEAD)
+          git fetch --quiet origin main
+          git merge-base --is-ancestor "$PUSHED_SHA" origin/main
+          git merge-base --is-ancestor HEAD origin/main
+          git pull --ff-only --quiet origin main
+          [[ $(git rev-parse HEAD) == "$(git rev-parse origin/main)" ]]
+
+          if git diff --name-only "$previous_sha"..HEAD | grep -Eq '^(pyproject\.toml|src/)'; then
+            /home/admin/messages-runtime/venv/bin/pip install --disable-pip-version-check --no-input -e /home/admin/multi_messenger
+            sudo -n systemctl restart messages@personal.service messages@personal2.service messages-reply-api.service
+          fi
+
+          for service in messages@personal.service messages@personal2.service messages-reply-api.service; do
+            systemctl is-active --quiet "$service"
+          done
+          echo "Production now runs $(git rev-parse --short HEAD)"

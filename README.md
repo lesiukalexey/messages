@@ -1,5 +1,12 @@
 # Messages
 
+Development uses the local Git checkout at `/var/www/multi_messenger`. The Raspberry Pi checkout
+at `/home/admin/multi_messenger` is production only and is updated by
+`.github/workflows/deploy-production.yml` after a push to `main`. A repository-scoped GitHub Actions
+runner on the Pi fast-forwards the checkout, reinstalls the editable package when Python sources
+change, and restarts the services. Keep runtime configuration and data in
+`/home/admin/messages-runtime`; never edit application source directly on the Pi.
+
 Personal Telegram assistant running through an authorized Telethon user session.
 It replies autonomously to eligible one-to-one conversations while their category
 is `unknown`, `friends`, or `recruiters`. Realtor contacts are excluded.
