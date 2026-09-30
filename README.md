@@ -90,9 +90,19 @@ directly from Telegram so dates such as “today” carry across turns.
    in a browser and complete consent. The refresh token is saved outside Git
    with permissions `600`.
 
-The OAuth request uses the free/busy and owned-event scopes. The provider token
-is not required for ordinary Telegram replies; meeting times cannot be confirmed
-until Calendar is connected and a free/busy check succeeds.
+The OAuth request uses `calendar.events.freebusy` and `calendar.events.owned`.
+The free/busy scope checks availability without exposing event details. Google
+classifies `calendar.events.owned` as sensitive: it permits viewing, creating,
+changing, and deleting events on calendars the authorizing user owns, not only
+events created by this assistant. The assistant uses event details to match an
+existing contact meeting and avoid duplicate bookings; it creates a private
+event only after clear agreement. The broader `calendar.events.readonly` scope
+is not requested. Keep the Google Auth Platform Data Access list aligned with
+these two scopes and provide a scope-use justification and demo video for
+verification.
+
+The provider token is not required for ordinary Telegram replies; meeting times
+cannot be confirmed until Calendar is connected and a free/busy check succeeds.
 Read-only Calendar tokens used by other local tools do not provide these scopes;
 they cannot authorize free/busy checks or event creation for this assistant.
 
