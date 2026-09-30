@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import unicodedata
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -98,6 +100,63 @@ class GoogleCalendar:
         if raw_date:
             return datetime.combine(date.fromisoformat(raw_date), time.min, self.timezone)
         return None
+
+    @staticmethod
+    def _normalized_identity_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+        return " ".join(re.findall(r"[^\W_]+", normalized, flags=re.UNICODE))
+
+    @classmethod
+    def event_matches_contact(
+        cls,
+        event: dict[str, Any],
+        telegram_username: str,
+        contact_name: str,
+    ) -> bool:
+        """Match only an explicit Telegram username or the contact's full name."""
+        event_text = " ".join(
+            str(event.get(field) or "") for field in ("summary", "description")
+        )
+        normalized_event = f" {cls._normalized_identity_text(event_text)} "
+
+        username = telegram_username.strip().removeprefix("@").casefold()
+        if username and re.fullmatch(r"[a-z0-9_]{1,32}", username):
+            if f" {username} " in normalized_event:
+                return True
+
+        name_parts = cls._normalized_identity_text(contact_name).split()
+        if len(name_parts) >= 2:
+            full_name = f" {' '.join(name_parts)} "
+            if full_name in normalized_event:
+                return True
+        elif len(name_parts) == 1 and len(name_parts[0]) >= 10:
+            if f" {name_parts[0]} " in normalized_event:
+                return True
+        return False
+
+    def has_existing_contact_meeting(
+        self,
+        start: str,
+        telegram_username: str,
+        contact_name: str,
+        known_event_ids: set[str] | None = None,
+    ) -> bool:
+        """Match a same-contact event by account-scoped record or explicit identity."""
+        begins, _ = self.parse_interval(start, 5, self.timezone)
+        known_event_ids = known_event_ids or set()
+        # Calendar list lower bounds can be exclusive; widen the query while keeping
+        # the identity and exact-start comparisons below strict.
+        events = self.events_starting_between(
+            begins - timedelta(minutes=1), begins + timedelta(minutes=1)
+        )
+        return any(
+            self.event_start(event) == begins
+            and (
+                str(event.get("id") or "") in known_event_ids
+                or self.event_matches_contact(event, telegram_username, contact_name)
+            )
+            for event in events
+        )
 
     def update_duration(
         self,

@@ -711,6 +711,14 @@ class Store:
         ).fetchone()
         return row["event_id"] if row else None
 
+    def calendar_event_ids_for_contact(self, account_id: str, peer_id: int) -> set[str]:
+        rows = self.connection.execute(
+            """SELECT event_id FROM calendar_events
+               WHERE source_account_id = ? AND peer_id = ?""",
+            (account_id, peer_id),
+        ).fetchall()
+        return {str(row["event_id"]) for row in rows if row["event_id"]}
+
     def record_calendar_event(
         self, account_id: str, peer_id: int, message_id: int, event_id: str
     ) -> None:

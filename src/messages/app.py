@@ -19,7 +19,7 @@ from telethon import TelegramClient, events, functions, types, utils
 from .calendar import GoogleCalendar
 from .config import Settings
 from .llm import Responder
-from .language import check_reply_language
+from .language import check_reply_language, expected_reply_language
 from .learning import LearningBot
 from .runtime import load_environment
 from .recruiter_answers import CategoryAnswers, RecruiterAnswers
@@ -910,6 +910,17 @@ def safe_availability_reply(
     if russian:
         return "Не могу точно сказать насчёт этого времени. Давай выберем другой вариант?"
     return "I couldn't check my calendar availability. Could we try again later?"
+
+
+def existing_contact_meeting_reply(current_message: str, start: str, timezone_name: str) -> str:
+    zone = ZoneInfo(timezone_name)
+    proposed_start = datetime.fromisoformat(start)
+    if proposed_start.tzinfo is None:
+        proposed_start = proposed_start.replace(tzinfo=zone)
+    time_text = proposed_start.astimezone(zone).strftime("%H:%M")
+    if expected_reply_language(current_message) == "Russian":
+        return f"Да, у нас встреча на {time_text}."
+    return f"Yes, we already have a meeting at {time_text}."
 
 
 def _format_contact(row: Any) -> str:
@@ -1849,14 +1860,41 @@ async def run() -> None:
                         )
                         store.audit(peer_id, "calendar_availability_failed", "authorization missing")
                     else:
+                        existing_contact_meeting = False
                         finish_by_confirmation = (
                             latest_assistant_asked_finish_by(context)
                             and clear_yes_answer(event.raw_text)
                             and bool(plan.get("confirmed_agreement") or plan.get("assistant_accepts_meeting"))
                         )
                         try:
+                            existing_contact_meeting = await asyncio.to_thread(
+                                calendar.has_existing_contact_meeting,
+                                start,
+                                sender.username or "",
+                                " ".join(
+                                    part for part in (sender.first_name, sender.last_name)
+                                    if part
+                                ).strip(),
+                                store.calendar_event_ids_for_contact(
+                                    settings.account_id, peer_id
+                                ),
+                            )
+                            if existing_contact_meeting:
+                                calendar_result = (
+                                    "EXISTING_CONTACT_MEETING; the exact proposed start already has an event "
+                                    "whose identity matches this Telegram contact. Confirm the existing meeting; "
+                                    "do not check it as busy, create a duplicate, or reveal event details."
+                                )
+                                availability_reply = existing_contact_meeting_reply(
+                                    event.raw_text, start, settings.timezone
+                                )
+                                store.audit(
+                                    peer_id,
+                                    "calendar_existing_contact_meeting",
+                                    "same Telegram identity and exact start",
+                                )
                             next_busy = None
-                            if action == "create":
+                            if action == "create" and not existing_contact_meeting:
                                 next_busy = await asyncio.to_thread(calendar.next_busy_start, start)
                             proposed_start = datetime.fromisoformat(start).astimezone(
                                 ZoneInfo(settings.timezone)
@@ -1875,7 +1913,9 @@ async def run() -> None:
                                 and available_minutes is not None
                                 and available_minutes < duration
                             )
-                            if needs_finish_by_confirmation:
+                            if existing_contact_meeting:
+                                is_free, interval = True, ""
+                            elif needs_finish_by_confirmation:
                                 time_text = boundary.strftime("%H:%M")
                                 calendar_result = (
                                     "FINISH_BY_CONFIRMATION_REQUIRED; do not create the meeting yet. "
@@ -1921,7 +1961,9 @@ async def run() -> None:
                                 type(exc).__name__,
                             )
                             is_free, interval = False, ""
-                        if calendar_result.startswith(("AVAILABILITY_UNKNOWN", "FINISH_BY_CONFIRMATION_REQUIRED")):
+                        if existing_contact_meeting:
+                            pass
+                        elif calendar_result.startswith(("AVAILABILITY_UNKNOWN", "FINISH_BY_CONFIRMATION_REQUIRED")):
                             pass
                         elif not is_free:
                             calendar_result = "BUSY; the proposed time is unavailable and no event was created."
