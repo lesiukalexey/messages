@@ -1045,14 +1045,14 @@ async def run() -> None:
     locks: dict[int, asyncio.Lock] = {}
     assistant_send_markers: dict[tuple[int, str], datetime] = {}
 
-    async def acknowledge_answered_message(event: events.NewMessage.Event) -> None:
+    async def mark_incoming_message_read(event: events.NewMessage.Event) -> None:
         try:
             await client.send_read_acknowledge(
                 await event.get_input_chat(), max_id=event.message.id
             )
         except Exception as exc:
             logger.warning(
-                "Could not mark answered incoming private message as read (%s)",
+                "Could not mark incoming private message as read (%s)",
                 type(exc).__name__,
             )
 
@@ -1079,7 +1079,6 @@ async def run() -> None:
             msg_id=event.message.id,
             reaction=[types.ReactionEmoji(emoticon=emoji)],
         ))
-        await acknowledge_answered_message(event)
         store.message_state(settings.account_id, peer_id, event.message.id, "sent")
         store.audit(
             peer_id,
@@ -1385,12 +1384,27 @@ async def run() -> None:
         category = category or "unknown"
 
         async with locks.setdefault(peer_id, asyncio.Lock()):
+            typing_action = None
+            typing_action_active = False
             try:
                 block_reason = await reply_policy_block(peer_id, force=True)
                 if block_reason:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", block_reason)
                     return
+                await mark_incoming_message_read(event)
+                try:
+                    typing_action = client.action(peer_id, "typing")
+                    await typing_action.__aenter__()
+                except Exception as exc:
+                    logger.warning(
+                        "Could not show Telegram typing status (%s)",
+                        type(exc).__name__,
+                    )
+                    typing_action = None
+                else:
+                    typing_action_active = True
+                    await asyncio.sleep(0)
                 session_started_at = store.record_incoming_session(
                     settings.account_id, peer_id, event.message.date
                 )
@@ -2203,7 +2217,6 @@ async def run() -> None:
                     return
                 mark_assistant_send(peer_id, reply)
                 sent = await event.respond(reply)
-                await acknowledge_answered_message(event)
                 store.message_state(settings.account_id, peer_id, event.message.id, "sent")
                 store.audit(
                     peer_id,
@@ -2230,6 +2243,15 @@ async def run() -> None:
                     f"{type(exc).__name__}: {str(exc)[:300]}",
                 )
                 logger.exception("Could not answer incoming Telegram message")
+            finally:
+                if typing_action is not None and typing_action_active:
+                    try:
+                        await typing_action.__aexit__(None, None, None)
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not stop Telegram typing status (%s)",
+                            type(exc).__name__,
+                        )
 
     await client.catch_up()
     for peer_id, message_id in interrupted_messages:
