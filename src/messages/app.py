@@ -1010,6 +1010,9 @@ async def run() -> None:
                 for category, answer_file in category_answers.items()
             },
             profile_paths=settings.job_apply_profiles,
+            translate_to_english=lambda text: responder.translate_to_english(
+                store.setting("model", settings.default_model), text
+            ),
         )
         if settings.learning_bot_token and settings.account_id == "personal"
         else None

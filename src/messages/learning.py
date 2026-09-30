@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
 from urllib.request import Request, urlopen
 
 import yaml
@@ -29,7 +31,15 @@ _QUESTION_STOP_WORDS = frozenset({
 
 
 def _profile_lock(path: Path) -> Path:
-    return path.with_name(path.name + ".lock")
+    profile_key = hashlib.sha256(path.parent.name.casefold().encode("utf-8")).hexdigest()
+    if path.parent.parent.name == "profiles":
+        default_state_dir = path.parent.parent.parent / "message-state"
+    else:
+        return path.with_name(path.name + ".lock")
+    state_dir = Path(os.getenv("JOB_MESSAGE_STATE_DIR", str(default_state_dir)))
+    lock_path = state_dir / "profile-locks" / f"{profile_key}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return lock_path
 
 
 def _read_profile(path: Path, lock_path: Path) -> dict[str, Any]:
@@ -102,6 +112,29 @@ def _pending_profile_questions(path: Path, lock_path: Path) -> list[str]:
         and question.strip()
         and not _PRIVATE_QUESTION.search(question)
     ]
+
+
+def _replace_pending_questions(
+    path: Path, replacements: dict[str, str], lock_path: Path
+) -> None:
+    if not replacements:
+        return
+    with lock_path.open("a", encoding="utf-8") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(document, dict):
+            raise ValueError("The profile YAML root must be a mapping")
+        pending = document.get("pending_learning_questions", [])
+        if not isinstance(pending, list):
+            return
+        updated = [
+            replacements.get(item, item) if isinstance(item, str) else item
+            for item in pending
+        ]
+        if updated != pending:
+            document["pending_learning_questions"] = updated
+            _write_profile_contents(path, document)
 
 
 def save_learned_answer(
@@ -202,6 +235,7 @@ class LearningBot:
         lock_path: Path | None = None,
         category_profile_paths: dict[str, Path] | None = None,
         profile_paths: dict[str, Path] | None = None,
+        translate_to_english: Callable[[str], Awaitable[str]] | None = None,
     ) -> None:
         self.token = token
         self.store = store
@@ -212,6 +246,9 @@ class LearningBot:
             **(category_profile_paths or {}),
         }
         self.profile_paths = profile_paths or {}
+        self.translate_to_english = translate_to_english
+        self._translated_questions: dict[str, str] = {}
+        self._translation_retry_at: dict[str, float] = {}
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
         def send() -> Any:
@@ -238,7 +275,36 @@ class LearningBot:
         paths = self.profile_paths or {"": self.profile_path}
         for profile_id, profile_path in paths.items():
             try:
-                for question in _pending_profile_questions(profile_path, _profile_lock(profile_path)):
+                lock_path = _profile_lock(profile_path)
+                questions = _pending_profile_questions(profile_path, lock_path)
+                replacements: dict[str, str] = {}
+                failed_translations: set[str] = set()
+                if self.translate_to_english is not None:
+                    for question in questions:
+                        if question in self._translated_questions:
+                            cached = self._translated_questions[question]
+                            if cached != question:
+                                replacements[question] = cached
+                            continue
+                        if time.monotonic() < self._translation_retry_at.get(question, 0):
+                            failed_translations.add(question)
+                            continue
+                        try:
+                            english = await self.translate_to_english(question)
+                            self._translated_questions[question] = english
+                            if english and english != question:
+                                replacements[question] = english
+                        except Exception as exc:
+                            self._translation_retry_at[question] = time.monotonic() + 60
+                            logger.warning(
+                                "Could not translate a pending profile question (%s)",
+                                type(exc).__name__,
+                            )
+                            failed_translations.add(question)
+                    _replace_pending_questions(profile_path, replacements, lock_path)
+                for question in _pending_profile_questions(profile_path, lock_path):
+                    if question in failed_translations:
+                        continue
                     self.store.enqueue_learning_question(
                         question,
                         category="recruiters",
@@ -319,6 +385,17 @@ class LearningBot:
             logger.info("Dismissed an owner question from the learning bot")
             await self._send_message(chat_id, "Вопрос снят.")
             await self.publish_next_question()
+            return
+        try:
+            if (
+                pending.get("source_platform") == "job_apply"
+                and self.translate_to_english is not None
+            ):
+                answer = await self.translate_to_english(answer)
+        except Exception as exc:
+            self.store.retry_learning_answer(question_id)
+            logger.warning("Could not translate a learning-bot answer (%s)", type(exc).__name__)
+            await self._send_message(chat_id, "Не удалось перевести ответ. Отправь его ещё раз, пожалуйста.")
             return
         category = str(pending["category"])
         profile_id = str(pending["profile_id"] or "")
