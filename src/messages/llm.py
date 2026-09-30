@@ -529,9 +529,16 @@ commitments. Return only the message text, with no quotation marks."""
         incoming_message: str,
         candidate_reply: str,
         target_language: str,
+        retry_with_alternative_wording: bool = False,
     ) -> str:
         language = "English" if target_language == "English" else "Russian"
-        instructions = f"""Rewrite the candidate reply in {language} only. If the input message is Ukrainian, the reply must still be Russian. Preserve every supported fact, commitment, uncertainty, and line break exactly; do not add, remove, soften, or strengthen claims. Translate Ukrainian wording into natural Russian when required. Keep first-person voice and preserve technical names such as GPT, Claude, Grok, AWS, MySQL, and MongoDB. Do not explain the correction and do not mention language rules. Return only the rewritten reply, without quotes or a checklist."""
+        retry_instruction = (
+            "The previous rewrite did not pass a language check. Start from the intended meaning and produce a clearly different, natural alternative; do not repeat the previous wording."
+            if retry_with_alternative_wording
+            else ""
+        )
+        instructions = f"""{retry_instruction}
+Rewrite the candidate reply in {language} only. If the input message is Ukrainian, the reply must still be Russian. Preserve every supported fact, commitment, uncertainty, and line break exactly; do not add, remove, soften, or strengthen claims. Translate Ukrainian wording into natural Russian when required. Keep first-person voice and preserve technical names such as GPT, Claude, Grok, AWS, MySQL, and MongoDB. Do not explain the correction and do not mention language rules. Return only the rewritten reply, without quotes or a checklist."""
         payload = {
             "incoming_message": incoming_message,
             "candidate_reply": candidate_reply,

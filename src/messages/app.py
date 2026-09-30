@@ -67,7 +67,7 @@ ACKNOWLEDGEMENTS = {
     "ok": "👍", "okay": "👍", "sure": "👍", "gotit": "👍",
     "thanks": "🙏", "great": "🔥", "awesome": "🔥",
 }
-REACTION_EMOJIS = {"👍", "🔥", "❤️", "🙏", "😂", "🙂"}
+REACTION_EMOJIS = {"👍", "🔥", "❤️", "🙏", "😂", "🙂", "🤷"}
 
 
 def resolve_automatic_category(current: str, detected: str) -> str:
@@ -2129,8 +2129,15 @@ async def run() -> None:
                     reply = plan["reply"]
                 reply = reply.strip()
                 if not reply:
-                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "skipped", "responder returned an empty required reply")
+                    store.audit(peer_id, "reply_empty_fallback", "reacted with 🤷")
+                    await react_to_incoming(
+                        event,
+                        peer_id,
+                        sender,
+                        category,
+                        session_started_at,
+                        "🤷",
+                    )
                     return
                 if reply in REACTION_EMOJIS:
                     await react_to_incoming(
@@ -2190,13 +2197,31 @@ async def run() -> None:
                             "Could not correct reply language (%s)", type(exc).__name__
                         )
                     corrected_check = check_reply_language(corrected_reply, event.raw_text)
+                    if not corrected_check.passed:
+                        try:
+                            alternative_reply = await responder.rewrite_reply_language(
+                                model=model,
+                                incoming_message=event.raw_text,
+                                candidate_reply=corrected_reply.strip() or reply,
+                                target_language=language_check.expected,
+                                retry_with_alternative_wording=True,
+                            )
+                        except Exception as exc:
+                            alternative_reply = ""
+                            logger.warning(
+                                "Could not generate an alternative language correction (%s)",
+                                type(exc).__name__,
+                            )
+                        alternative_check = check_reply_language(
+                            alternative_reply, event.raw_text
+                        )
+                        if alternative_check.passed:
+                            corrected_reply = alternative_reply
+                            corrected_check = alternative_check
                     if corrected_check.passed:
                         reply = corrected_reply.strip()
                         language_check = corrected_check
                     else:
-                        store.message_state(
-                            settings.account_id, peer_id, event.message.id, "skipped"
-                        )
                         store.audit(
                             peer_id,
                             "reply_checklist",
@@ -2209,10 +2234,13 @@ async def run() -> None:
                                 ensure_ascii=False,
                             ),
                         )
-                        store.audit(
+                        await react_to_incoming(
+                            event,
                             peer_id,
-                            "skipped",
-                            "reply did not pass the Russian/English language check",
+                            sender,
+                            category,
+                            session_started_at,
+                            "🤷",
                         )
                         return
                 store.audit(
