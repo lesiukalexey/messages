@@ -62,10 +62,10 @@ Supported bio models mirror the `list1` choices in Job Apply: `gpt-6-luna`,
 the supported values. With no directive, the saved `/model` choice is used.
 
 Codex choices run through `codex exec`; OpenCode choices run through the
-configured OpenCode CLI using the matching provider login. The worker reads
-only that provider's API key from the local OpenCode credential database and
-places it in a private, temporary config. OpenCode tool use is disabled for
-replies, and temporary config/session storage is removed when the request ends.
+configured OpenCode CLI using its saved Console login. The worker creates a
+private temporary copy of the OpenCode credential database, then uses the
+built-in read-only `plan` agent from an empty temporary workspace. The temporary
+home, credential copy, and session storage are removed when the request ends.
 The selected model receives the current message and bounded same-chat context
 to produce the reply.
 
@@ -77,6 +77,11 @@ Manual choices stay fixed.
 Automatically classified friends can be promoted to recruiters if later
 messages make the hiring context clear. The categories are separate in
 `/contacts` and receive different model context.
+
+An eligible incoming private text or caption that ends with an ASCII comma
+(ignoring trailing whitespace) receives no text reply; the assistant reacts to
+that message with 🙈. Quiet hours, contact exclusions, and Telegram reply gates
+still apply.
 
 ## Calendar
 

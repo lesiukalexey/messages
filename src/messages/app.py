@@ -73,7 +73,7 @@ ACKNOWLEDGEMENTS = {
     "ok": "👍", "okay": "👍", "sure": "👍", "gotit": "👍",
     "thanks": "🙏", "great": "🔥", "awesome": "🔥",
 }
-REACTION_EMOJIS = {"👍", "🔥", "❤️", "🙏", "😂", "🙂", "🤷"}
+REACTION_EMOJIS = {"👍", "🔥", "❤️", "🙏", "😂", "🙂", "🤷", "🙈"}
 
 
 def resolve_automatic_category(current: str, detected: str) -> str:
@@ -83,6 +83,11 @@ def resolve_automatic_category(current: str, detected: str) -> str:
     if current == "friends" or detected == "friends":
         return "friends"
     return "unknown"
+
+
+def ends_with_comma(message: str) -> bool:
+    """Check whether an incoming text or caption ends in an ASCII comma."""
+    return message.rstrip().endswith(",")
 
 
 def sanitize_learning_question(value: Any) -> str:
@@ -1101,6 +1106,7 @@ async def run() -> None:
         category: str,
         session_started_at: str,
         emoji: str,
+        notify_on_success: bool = True,
     ) -> bool:
         block_reason = await reply_policy_block(peer_id, force=True)
         if block_reason:
@@ -1123,7 +1129,8 @@ async def run() -> None:
                 ensure_ascii=False,
             ),
         )
-        await notify_conversation_started(peer_id, sender, category, session_started_at)
+        if notify_on_success:
+            await notify_conversation_started(peer_id, sender, category, session_started_at)
         return True
 
     async def send_control(text: str) -> None:
@@ -1153,6 +1160,7 @@ async def run() -> None:
                 "Realtors and real estate rental/sale conversations never receive automatic replies.\n"
                 "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/ordinary text = ON.\n"
                 "Bio model override: `model=MODEL_ID effort=EFFORT` (e.g. `model=gpt-6-luna effort=low`).\n"
+                "Eligible incoming private text or caption ending in a comma gets no text reply and a 🙈 reaction.\n"
                 "List1 models: gpt-6-luna; opencode/muse-spark-1.3-contributor-free; "
                 "opencode/big-pickle; opencode/mimo-v2.6-flash-free; "
                 "opencode/nemotron-3.5-lightning-free; opencode/ling-3.0-flash-fin-free.\n"
@@ -1444,6 +1452,21 @@ async def run() -> None:
                 if block_reason:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", block_reason)
+                    return
+                if ends_with_comma(event.raw_text):
+                    await mark_incoming_message_read(event)
+                    session_started_at = store.record_incoming_session(
+                        settings.account_id, peer_id, event.message.date
+                    )
+                    await react_to_incoming(
+                        event,
+                        peer_id,
+                        sender,
+                        category,
+                        session_started_at,
+                        "🙈",
+                        notify_on_success=False,
+                    )
                     return
                 await mark_incoming_message_read(event)
                 try:
