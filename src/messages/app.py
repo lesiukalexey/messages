@@ -826,6 +826,20 @@ def availability_question(message: str) -> bool:
     )
 
 
+def same_day_feasibility_followup(message: str) -> bool:
+    """Recognize a day-wide feasibility question after a concrete time was discussed."""
+    day = r"(?:сегодня|завтра|today|tomorrow)"
+    unavailable = (
+        r"(?:не\s+(?:получ\w*|выйд\w*|подход\w*)|никак|невозмож\w*|"
+        r"can't\s+(?:make\s+it|meet)|cannot\s+(?:make\s+it|meet)|"
+        r"not\s+(?:possible|work|available))"
+    )
+    return bool(
+        re.search(rf"\b{day}\b.{{0,45}}\b{unavailable}", message, re.IGNORECASE)
+        or re.search(rf"\b{unavailable}\b.{{0,45}}\b{day}\b", message, re.IGNORECASE)
+    )
+
+
 
 
 def is_quiet_hours(value: datetime, timezone_name: str) -> bool:
@@ -1848,7 +1862,14 @@ async def run() -> None:
                     calendar_result = "The contact declined the finish-by time; ask for another meeting time."
                 target_day = (
                     established_availability_date(context, event.raw_text, now)
-                    if availability_question(event.raw_text) or day_only_invitation
+                    if (
+                        availability_question(event.raw_text)
+                        or day_only_invitation
+                        or (
+                            meeting_in_progress
+                            and same_day_feasibility_followup(event.raw_text)
+                        )
+                    )
                     else None
                 )
                 if target_day is not None:
