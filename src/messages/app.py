@@ -1035,7 +1035,9 @@ async def run() -> None:
     if interrupted_messages:
         logger.info("Recovered %s recent interrupted Telegram messages", len(interrupted_messages))
     history = History()
-    calendar = GoogleCalendar(settings.google_token_file, settings.timezone)
+    calendar = GoogleCalendar(
+        settings.google_token_file, settings.timezone, settings.google_calendar_ids
+    )
     responder = Responder(settings)
     personal_context = personal_context_profile()
     if personal_context:

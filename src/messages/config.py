@@ -24,6 +24,7 @@ class Settings:
     google_token_file: Path
     recruiter_answers_file: Path
     learning_bot_token: str
+    google_calendar_ids: tuple[str, ...] = ("primary",)
     opencode_binary: Path = Path("/home/admin/.opencode/bin/opencode")
     opencode_auth_file: Path = Path("/home/admin/.local/share/opencode/auth.json")
     opencode_data_database: Path = Path("/home/admin/.local/share/opencode/opencode.db")
@@ -128,6 +129,16 @@ class Settings:
         call_reminder_username = os.getenv("TELEGRAM_CALL_REMINDER_USERNAME", "").strip().removeprefix("@").strip()
         if call_reminder_username and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", call_reminder_username):
             raise ValueError("TELEGRAM_CALL_REMINDER_USERNAME must be a valid Telegram username")
+        google_calendar_ids = tuple(
+            dict.fromkeys(
+                ["primary"]
+                + [
+                    calendar_id.strip()
+                    for calendar_id in os.getenv("GOOGLE_CALENDAR_IDS", "").split(",")
+                    if calendar_id.strip()
+                ]
+            )
+        )
 
         return cls(
             api_id=int(api_id) if api_id else 0,
@@ -184,6 +195,7 @@ class Settings:
             recruiter_answers_file=recruiter_answers_file.resolve(),
             job_apply_profiles=job_apply_profiles,
             learning_bot_token=os.getenv("LEARNING_BOT_TOKEN", "").strip(),
+            google_calendar_ids=google_calendar_ids,
             reply_api_token=os.getenv("REPLY_API_TOKEN", "").strip(),
             reply_api_host=reply_api_host,
             reply_api_port=reply_api_port,

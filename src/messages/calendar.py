@@ -14,9 +14,12 @@ SCOPES = [FREEBUSY_SCOPE, EVENTS_SCOPE]
 
 
 class GoogleCalendar:
-    def __init__(self, token_file: Path, timezone: str) -> None:
+    def __init__(
+        self, token_file: Path, timezone: str, calendar_ids: tuple[str, ...] = ("primary",)
+    ) -> None:
         self.token_file = token_file
         self.timezone = ZoneInfo(timezone)
+        self.calendar_ids = tuple(dict.fromkeys(("primary", *calendar_ids)))
 
     @property
     def configured(self) -> bool:
@@ -45,21 +48,40 @@ class GoogleCalendar:
         end = parsed + timedelta(minutes=duration_minutes)
         return parsed, end
 
+    def _busy_intervals(
+        self, begins: datetime, ends: datetime, message: str
+    ) -> list[tuple[datetime, datetime]]:
+        response = self._service().freebusy().query(
+            body={
+                "timeMin": begins.isoformat(),
+                "timeMax": ends.isoformat(),
+                "timeZone": str(self.timezone),
+                "items": [{"id": calendar_id} for calendar_id in self.calendar_ids],
+            }
+        ).execute()
+        calendars = response.get("calendars", {})
+        intervals = []
+        for calendar_id in self.calendar_ids:
+            calendar = calendars.get(calendar_id)
+            if not calendar or calendar.get("errors"):
+                raise RuntimeError(message)
+            intervals.extend(
+                (
+                    datetime.fromisoformat(item["start"].replace("Z", "+00:00"))
+                    .astimezone(self.timezone),
+                    datetime.fromisoformat(item["end"].replace("Z", "+00:00"))
+                    .astimezone(self.timezone),
+                )
+                for item in calendar.get("busy", [])
+            )
+        return sorted(intervals)
+
     def check(self, start: str, duration_minutes: int) -> tuple[bool, str]:
         if not 5 <= duration_minutes <= 720:
             raise ValueError("meeting duration is outside the allowed range")
         begins, ends = self.parse_interval(start, duration_minutes, self.timezone)
-        body = {
-            "timeMin": begins.isoformat(),
-            "timeMax": ends.isoformat(),
-            "timeZone": str(self.timezone),
-            "items": [{"id": "primary"}],
-        }
-        response = self._service().freebusy().query(body=body).execute()
-        calendar = response.get("calendars", {}).get("primary", {})
-        if calendar.get("errors"):
-            raise RuntimeError("Google Calendar could not check availability")
-        return not bool(calendar.get("busy")), f"{begins.isoformat()}/{ends.isoformat()}"
+        busy = self._busy_intervals(begins, ends, "Google Calendar could not check availability")
+        return not bool(busy), f"{begins.isoformat()}/{ends.isoformat()}"
 
     def events_starting_between(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         start = start.astimezone(self.timezone)
@@ -182,23 +204,13 @@ class GoogleCalendar:
             return True, None
 
         if requested_end > current_end:
-            response = service.freebusy().query(
-                body={
-                    "timeMin": current_end.isoformat(),
-                    "timeMax": requested_end.isoformat(),
-                    "timeZone": str(self.timezone),
-                    "items": [{"id": "primary"}],
-                }
-            ).execute()
-            calendar = response.get("calendars", {}).get("primary", {})
-            if calendar.get("errors"):
-                raise RuntimeError("Google Calendar could not check the requested extension")
-            busy = calendar.get("busy", [])
+            busy = self._busy_intervals(
+                current_end,
+                requested_end,
+                "Google Calendar could not check the requested extension",
+            )
             if busy:
-                conflict_start = min(
-                    datetime.fromisoformat(item["start"].replace("Z", "+00:00"))
-                    for item in busy
-                ).astimezone(self.timezone)
+                conflict_start = min(start for start, _ in busy)
                 return False, conflict_start.isoformat()
 
         service.events().patch(
@@ -216,28 +228,9 @@ class GoogleCalendar:
         day_end = datetime.combine(begins.date() + timedelta(days=1), time.min, self.timezone)
         if begins >= day_end:
             return None
-        response = self._service().freebusy().query(
-            body={
-                "timeMin": begins.isoformat(),
-                "timeMax": day_end.isoformat(),
-                "timeZone": str(self.timezone),
-                "items": [{"id": "primary"}],
-            }
-        ).execute()
-        calendar = response.get("calendars", {}).get("primary", {})
-        if calendar.get("errors"):
-            raise RuntimeError("Google Calendar could not check same-day availability")
-        intervals = [
-            (
-                datetime.fromisoformat(item["start"].replace("Z", "+00:00")).astimezone(
-                    self.timezone
-                ),
-                datetime.fromisoformat(item["end"].replace("Z", "+00:00")).astimezone(
-                    self.timezone
-                ),
-            )
-            for item in calendar.get("busy", [])
-        ]
+        intervals = self._busy_intervals(
+            begins, day_end, "Google Calendar could not check same-day availability"
+        )
         if any(busy_start <= begins < busy_end for busy_start, busy_end in intervals):
             return None
         future = [busy_start for busy_start, _ in intervals if busy_start > begins]
@@ -267,27 +260,9 @@ class GoogleCalendar:
         if cursor < day_start:
             cursor = day_start
 
-        body = {
-            "timeMin": day_start.isoformat(),
-            "timeMax": day_end.isoformat(),
-            "timeZone": str(self.timezone),
-            "items": [{"id": "primary"}],
-        }
-        response = self._service().freebusy().query(body=body).execute()
-        calendar = response.get("calendars", {}).get("primary", {})
-        if calendar.get("errors"):
-            raise RuntimeError("Google Calendar could not check availability")
-        busy = [
-            (
-                datetime.fromisoformat(item["start"].replace("Z", "+00:00")).astimezone(
-                    self.timezone
-                ),
-                datetime.fromisoformat(item["end"].replace("Z", "+00:00")).astimezone(
-                    self.timezone
-                ),
-            )
-            for item in calendar.get("busy", [])
-        ]
+        busy = self._busy_intervals(
+            day_start, day_end, "Google Calendar could not check availability"
+        )
 
         slots: list[str] = []
         while cursor + timedelta(minutes=duration_minutes) <= day_end and len(slots) < limit:

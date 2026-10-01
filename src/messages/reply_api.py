@@ -153,7 +153,9 @@ class ReplyAPI:
             raise RuntimeError("REPLY_API_PERSONA_ID must be configured")
         self.settings = settings
         self.responder = Responder(settings)
-        self.calendar = GoogleCalendar(settings.google_token_file, settings.timezone)
+        self.calendar = GoogleCalendar(
+            settings.google_token_file, settings.timezone, settings.google_calendar_ids
+        )
         self.allowed_profiles = tuple(settings.job_apply_profiles.values())
         store = self._new_store()
         try:
