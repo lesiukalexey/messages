@@ -62,9 +62,10 @@ Supported bio models mirror the `list1` choices in Job Apply: `gpt-6-luna`,
 the supported values. With no directive, the saved `/model` choice is used.
 
 Codex choices run through `codex exec`; OpenCode choices run through the
-configured OpenCode CLI using its existing provider login. OpenCode tool use is
-disabled for replies. Each OpenCode request uses a temporary private config,
-credential copy, and session database that are removed when the request ends.
+configured OpenCode CLI using the matching provider login. The worker reads
+only that provider's API key from the local OpenCode credential database and
+places it in a private, temporary config. OpenCode tool use is disabled for
+replies, and temporary config/session storage is removed when the request ends.
 The selected model receives the current message and bounded same-chat context
 to produce the reply.
 
@@ -137,6 +138,7 @@ CODEX_MODELS=gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol
 CODEX_MODEL=gpt-5.6-luna
 OPENCODE_BINARY=/home/admin/.opencode/bin/opencode
 OPENCODE_AUTH_FILE=/home/admin/.local/share/opencode/auth.json
+OPENCODE_DATA_DATABASE=/home/admin/.local/share/opencode/opencode.db
 ```
 
 To send unanswered questions to Alexey, set the BotFather token for

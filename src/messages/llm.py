@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import shutil
 import tempfile
 from datetime import datetime
@@ -66,6 +67,7 @@ class Responder:
         self.codex_home = settings.codex_home
         self.opencode_binary = settings.opencode_binary
         self.opencode_auth_file = settings.opencode_auth_file
+        self.opencode_data_database = settings.opencode_data_database
         self.timezone = ZoneInfo(settings.timezone)
 
     async def translate_to_english(self, model: str, text: str, effort: str = "medium") -> str:
@@ -164,9 +166,16 @@ class Responder:
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 directory.chmod(0o700)
             config_path = config_dir / "opencode.json"
-            config_path.write_text(open_code_readonly_config(), encoding="utf-8")
+            api_key = self._opencode_provider_key(
+                self.opencode_data_database, model.split("/", 1)[0]
+            )
+            if api_key:
+                config_text = open_code_readonly_config(provider_api_key=api_key)
+            else:
+                config_text = open_code_readonly_config()
+            config_path.write_text(config_text, encoding="utf-8")
             config_path.chmod(0o600)
-            if self.opencode_auth_file.is_file():
+            if not api_key and self.opencode_auth_file.is_file():
                 auth_copy = auth_dir / "auth.json"
                 shutil.copyfile(self.opencode_auth_file, auth_copy)
                 auth_copy.chmod(0o600)
@@ -236,6 +245,24 @@ class Responder:
                 return result
             decoded = self._parse_json_response(result, schema)
             return json.dumps(decoded, ensure_ascii=False)
+
+    @staticmethod
+    def _opencode_provider_key(source_database: Path, provider: str) -> str | None:
+        """Read only the selected provider key from OpenCode's credential store."""
+        if not source_database.is_file():
+            return None
+        source_uri = source_database.resolve().as_uri() + "?mode=ro"
+        try:
+            with sqlite3.connect(source_uri, uri=True) as source:
+                row = source.execute(
+                    "SELECT value FROM credential "
+                    "WHERE integration_id = ? AND active = 1 AND value != '' "
+                    "ORDER BY time_updated DESC LIMIT 1",
+                    (provider,),
+                ).fetchone()
+        except sqlite3.Error:
+            return None
+        return row[0] if row and isinstance(row[0], str) else None
 
     @staticmethod
     def _parse_json_response(text: str, schema: dict[str, Any]) -> dict[str, Any]:

@@ -26,6 +26,7 @@ class Settings:
     learning_bot_token: str
     opencode_binary: Path = Path("/home/admin/.opencode/bin/opencode")
     opencode_auth_file: Path = Path("/home/admin/.local/share/opencode/auth.json")
+    opencode_data_database: Path = Path("/home/admin/.local/share/opencode/opencode.db")
     job_apply_profiles: dict[str, Path] = field(default_factory=dict)
     reply_api_token: str = ""
     reply_api_host: str = "192.168.31.46"
@@ -152,6 +153,15 @@ class Settings:
                     str(
                         Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local/share")))
                         / "opencode/auth.json"
+                    ),
+                )
+            ),
+            opencode_data_database=Path(
+                os.getenv(
+                    "OPENCODE_DATA_DATABASE",
+                    str(
+                        Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+                        / "opencode/opencode.db"
                     ),
                 )
             ),
