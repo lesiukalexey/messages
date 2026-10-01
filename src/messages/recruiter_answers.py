@@ -118,8 +118,21 @@ class RecruiterAnswers:
         try:
             document = _read_profile_document(self.common_answers_path)
             modified = self.common_answers_path.stat().st_mtime_ns
+            profile = _read_profile_document(self.path)
         except (OSError, UnicodeError, yaml.YAMLError):
             return {}, 0
+        selected_persona = (
+            str(profile.get("persona_id") or "").strip().casefold()
+            if isinstance(profile, dict)
+            else ""
+        )
+        shared_persona = (
+            str(document.get("persona_id") or "").strip().casefold()
+            if isinstance(document, dict)
+            else ""
+        )
+        if not selected_persona or selected_persona != shared_persona:
+            return {}, modified
         answers = document.get("learned_answers", {}) if isinstance(document, dict) else {}
         if not isinstance(answers, dict):
             return {}, modified
