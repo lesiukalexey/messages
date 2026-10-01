@@ -870,7 +870,7 @@ def same_day_feasibility_followup(message: str) -> bool:
 def is_quiet_hours(value: datetime, timezone_name: str) -> bool:
     zone = ZoneInfo(timezone_name)
     local = value.replace(tzinfo=zone) if value.tzinfo is None else value.astimezone(zone)
-    return local.hour < 9
+    return time(0, 30) <= local.time() < time(8, 0)
 
 def interval_overlaps_quiet_hours(
     start_at: str, duration_minutes: int, timezone_name: str
