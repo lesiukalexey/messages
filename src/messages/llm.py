@@ -6,15 +6,12 @@ import os
 import sqlite3
 import shutil
 import tempfile
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .model_selection import open_code_readonly_config
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
 
@@ -70,7 +67,6 @@ class Responder:
         self.opencode_binary = settings.opencode_binary
         self.opencode_auth_file = settings.opencode_auth_file
         self.opencode_data_database = settings.opencode_data_database
-        self.opencode_zen_api_key = settings.opencode_zen_api_key
         self.timezone = ZoneInfo(settings.timezone)
 
     async def translate_to_english(self, model: str, text: str, effort: str = "medium") -> str:
@@ -148,10 +144,6 @@ class Responder:
         timeout_seconds: int,
         effort: str,
     ) -> str:
-        if self.opencode_zen_api_key:
-            return await self._run_opencode_zen_api(
-                model, prompt, schema, timeout_seconds
-            )
         if not self.opencode_binary.is_file() or not os.access(self.opencode_binary, os.X_OK):
             raise RuntimeError("OpenCode CLI is not installed at OPENCODE_BINARY")
         RUNTIME_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -164,57 +156,58 @@ class Responder:
             )
         with tempfile.TemporaryDirectory(prefix="opencode-reply-", dir=RUNTIME_ROOT) as temp:
             temp_path = Path(temp)
-            data_home = temp_path / "data"
-            config_home = temp_path / "config"
-            temp_dir = temp_path / "tmp"
-            config_dir = config_home / "opencode"
-            auth_dir = data_home / "opencode"
-            for directory in (data_home, config_home, temp_dir, config_dir, auth_dir):
+            home = temp_path / "home"
+            work_dir = temp_path / "workspace"
+            data_dir = home / ".local/share/opencode"
+            config_dir = home / ".config/opencode"
+            temp_dir = home / "tmp"
+            cache_dir = home / ".cache"
+            for directory in (home, work_dir, data_dir, config_dir, temp_dir, cache_dir):
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 directory.chmod(0o700)
-            config_path = config_dir / "opencode.json"
-            api_key = self._opencode_provider_key(
-                self.opencode_data_database, model.split("/", 1)[0]
-            )
-            if api_key:
-                config_text = open_code_readonly_config(provider_api_key=api_key)
-            else:
-                config_text = open_code_readonly_config()
-            config_path.write_text(config_text, encoding="utf-8")
-            config_path.chmod(0o600)
-            if not api_key and self.opencode_auth_file.is_file():
-                auth_copy = auth_dir / "auth.json"
+            auth_database = data_dir / "opencode.db"
+            if self.opencode_data_database.is_file():
+                self._copy_opencode_auth_database(
+                    self.opencode_data_database, auth_database
+                )
+            elif self.opencode_auth_file.is_file():
+                auth_copy = data_dir / "auth.json"
                 shutil.copyfile(self.opencode_auth_file, auth_copy)
                 auth_copy.chmod(0o600)
+            else:
+                raise RuntimeError("OpenCode CLI credentials are not available")
 
             environment = os.environ.copy()
             environment.update(
                 {
-                    "HOME": str(temp_path),
-                    "XDG_DATA_HOME": str(data_home),
-                    "XDG_CONFIG_HOME": str(config_home),
+                    "HOME": str(home),
+                    "XDG_DATA_HOME": str(home / ".local/share"),
+                    "XDG_CONFIG_HOME": str(home / ".config"),
+                    "XDG_STATE_HOME": str(home / ".local/state"),
+                    "XDG_CACHE_HOME": str(cache_dir),
                     "TMPDIR": str(temp_dir),
                     "OPENCODE_CONFIG_DIR": str(config_dir),
-                    "OPENCODE_CONFIG": str(config_path),
                     "OPENCODE_AUTO_SHARE": "false",
                     "OPENCODE_DISABLE_AUTOUPDATE": "true",
                 }
             )
             for key in (
                 "OPENCODE_CONFIG_CONTENT",
+                "OPENCODE_CONFIG",
                 "OPENCODE_PERMISSION",
                 "OPENCODE_SERVER_URL",
                 "OPENCODE_SERVER_PASSWORD",
                 "OPENCODE_SERVER_USERNAME",
+                "OPENCODE_ZEN_API_KEY",
             ):
                 environment.pop(key, None)
             command = [
                 str(self.opencode_binary), "run", "--standalone", "--format", "json",
-                "--model", f"{model}#{effort}", "--agent", "messages",
+                "--model", f"{model}#{effort}", "--agent", "plan",
             ]
             process = await asyncio.create_subprocess_exec(
                 *command,
-                cwd=temp_path,
+                cwd=work_dir,
                 env=environment,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -253,94 +246,28 @@ class Responder:
             decoded = self._parse_json_response(result, schema)
             return json.dumps(decoded, ensure_ascii=False)
 
-    async def _run_opencode_zen_api(
-        self,
-        model: str,
-        prompt: str,
-        schema: dict[str, Any] | None,
-        timeout_seconds: int,
-    ) -> str:
-        model_id = model.removeprefix("opencode/")
-        if schema is not None:
-            prompt += (
-                "\n\nReturn only a JSON object conforming to this JSON Schema. "
-                "Do not use markdown fences or add text before or after the object.\n"
-                + json.dumps(schema, ensure_ascii=False)
-            )
-        is_responses_model = model_id == "muse-spark-1.3-contributor-free"
-        endpoint = (
-            "https://opencode.ai/zen/v1/responses"
-            if is_responses_model
-            else "https://opencode.ai/zen/v1/chat/completions"
-        )
-        payload = (
-            {"model": model_id, "input": prompt}
-            if is_responses_model
-            else {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
-        )
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.opencode_zen_api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-
-        def send() -> dict[str, Any]:
-            try:
-                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                    result = json.loads(response.read().decode("utf-8"))
-            except urllib.error.HTTPError as error:
-                raise RuntimeError(
-                    f"OpenCode Zen API returned HTTP {error.code}"
-                ) from None
-            except (urllib.error.URLError, TimeoutError) as error:
-                raise RuntimeError("OpenCode Zen API request failed") from error
-            if not isinstance(result, dict):
-                raise RuntimeError("OpenCode Zen API returned an invalid response")
-            return result
-
-        response = await asyncio.to_thread(send)
-        if is_responses_model:
-            result_text = response.get("output_text")
-            if not isinstance(result_text, str):
-                result_text = "\n".join(
-                    item.get("text", "")
-                    for output in response.get("output", [])
-                    if isinstance(output, dict)
-                    for item in output.get("content", [])
-                    if isinstance(item, dict) and isinstance(item.get("text"), str)
-                )
-        else:
-            choices = response.get("choices")
-            message = choices[0].get("message") if isinstance(choices, list) and choices else None
-            result_text = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(result_text, str) or not result_text.strip():
-            raise RuntimeError("OpenCode Zen API returned no text response")
-        if schema is None:
-            return result_text.strip()
-        decoded = self._parse_json_response(result_text, schema)
-        return json.dumps(decoded, ensure_ascii=False)
-
     @staticmethod
-    def _opencode_provider_key(source_database: Path, provider: str) -> str | None:
-        """Read only the selected provider key from OpenCode's credential store."""
-        if not source_database.is_file():
-            return None
-        source_uri = source_database.resolve().as_uri() + "?mode=ro"
+    def _copy_opencode_auth_database(source_path: Path, destination: Path) -> None:
+        """Copy OpenCode credentials into isolated temporary CLI storage."""
+        source_uri = source_path.resolve().as_uri() + "?mode=ro"
+        source = None
+        target = None
         try:
-            with sqlite3.connect(source_uri, uri=True) as source:
-                row = source.execute(
-                    "SELECT value FROM credential "
-                    "WHERE integration_id = ? AND active = 1 AND value != '' "
-                    "ORDER BY time_updated DESC LIMIT 1",
-                    (provider,),
-                ).fetchone()
-        except sqlite3.Error:
-            return None
-        return row[0] if row and isinstance(row[0], str) else None
+            source = sqlite3.connect(source_uri, uri=True)
+            target = sqlite3.connect(destination)
+            source.backup(target)
+            target.close()
+            target = None
+            source.close()
+            source = None
+            destination.chmod(0o600)
+        except sqlite3.Error as error:
+            if target is not None:
+                target.close()
+            if source is not None:
+                source.close()
+            destination.unlink(missing_ok=True)
+            raise RuntimeError("OpenCode CLI credentials could not be copied") from error
 
     @staticmethod
     def _parse_json_response(text: str, schema: dict[str, Any]) -> dict[str, Any]:

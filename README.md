@@ -140,22 +140,12 @@ CODEX_MODEL=gpt-5.6-luna
 OPENCODE_BINARY=/home/admin/.opencode/bin/opencode
 OPENCODE_AUTH_FILE=/home/admin/.local/share/opencode/auth.json
 OPENCODE_DATA_DATABASE=/home/admin/.local/share/opencode/opencode.db
-OPENCODE_ZEN_API_KEY=
 ```
 
-For direct OpenCode Zen API access, create an API key in the Zen console and
-set `OPENCODE_ZEN_API_KEY` in the shared runtime env file.
-The key takes precedence over CLI credentials for OpenCode model calls. Keep
-the file owner-readable only (`chmod 600`) and disable Zen auto-reload if you
-want to avoid balance top-ups. Zen's free model offers are temporary; review
-their per-model privacy terms before sending private conversation data.
-
-To enable the direct API key in the active local deployment, edit the file as
-the owning workstation user with
-`nano /media/alex/rootfs/home/admin/messages-runtime/messages.env`, then run
-`chmod 600 /media/alex/rootfs/home/admin/messages-runtime/messages.env`. Restart the
-`messages-personal` and `messages-personal2` Compose services so they load it. Never paste the key
-into chat, shell command arguments, or repository files.
+OpenCode models run through the installed OpenCode CLI using its saved Console
+credentials. Each request receives a private temporary copy of the OpenCode
+credential database and runs with OpenCode's built-in read-only `plan` agent
+from an empty temporary working directory. A separate Zen API key is not used.
 
 To send unanswered questions to Alexey, set the BotFather token for
 `@learnDataBot` as `LEARNING_BOT_TOKEN` in the shared runtime env file and keep

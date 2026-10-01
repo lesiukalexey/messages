@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import re
 
 
@@ -76,22 +75,3 @@ def model_efforts(model: str) -> tuple[str, ...]:
     if option:
         return option.efforts
     return EFFORTS_BY_BACKEND["opencode" if model.casefold().startswith("opencode/") else "codex"]
-
-
-def open_code_readonly_config(provider_api_key: str | None = None) -> str:
-    """Return a private config that disables all OpenCode tools for reply generation."""
-    config = {
-        "$schema": "https://opencode.ai/config.json",
-        "default_agent": "messages",
-        "agent": {
-            "messages": {
-                "mode": "primary",
-                "steps": 1,
-                "tools": {"*": False},
-                "permission": {"*": "deny"},
-            }
-        }
-    }
-    if provider_api_key:
-        config["provider"] = {"opencode": {"options": {"apiKey": provider_api_key}}}
-    return json.dumps(config)

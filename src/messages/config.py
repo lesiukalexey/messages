@@ -27,7 +27,6 @@ class Settings:
     opencode_binary: Path = Path("/home/admin/.opencode/bin/opencode")
     opencode_auth_file: Path = Path("/home/admin/.local/share/opencode/auth.json")
     opencode_data_database: Path = Path("/home/admin/.local/share/opencode/opencode.db")
-    opencode_zen_api_key: str = ""
     job_apply_profiles: dict[str, Path] = field(default_factory=dict)
     reply_api_token: str = ""
     reply_api_host: str = "192.168.31.46"
@@ -43,6 +42,13 @@ class Settings:
         api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
         if require_telegram and (not api_id or not api_hash):
             raise ValueError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
+        home = Path.home()
+        if home == Path("/"):
+            home = Path("/home/admin")
+        opencode_home = Path(os.getenv("OPENCODE_HOME", str(home)))
+        opencode_data_home = Path(
+            os.getenv("XDG_DATA_HOME", str(opencode_home / ".local/share"))
+        )
         account_id = os.getenv("TELEGRAM_ACCOUNT_ID", "personal").strip()
         if not account_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for char in account_id):
             raise ValueError("TELEGRAM_ACCOUNT_ID has invalid characters")
@@ -146,27 +152,20 @@ class Settings:
             ),
             codex_home=Path(os.getenv("CODEX_HOME", "/home/admin/.codex")),
             opencode_binary=Path(
-                os.getenv("OPENCODE_BINARY", str(Path.home() / ".opencode/bin/opencode"))
+                os.getenv("OPENCODE_BINARY", str(opencode_home / ".opencode/bin/opencode"))
             ),
             opencode_auth_file=Path(
                 os.getenv(
                     "OPENCODE_AUTH_FILE",
-                    str(
-                        Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local/share")))
-                        / "opencode/auth.json"
-                    ),
+                    str(opencode_data_home / "opencode/auth.json"),
                 )
             ),
             opencode_data_database=Path(
                 os.getenv(
                     "OPENCODE_DATA_DATABASE",
-                    str(
-                        Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local/share")))
-                        / "opencode/opencode.db"
-                    ),
+                    str(opencode_data_home / "opencode/opencode.db"),
                 )
             ),
-            opencode_zen_api_key=os.getenv("OPENCODE_ZEN_API_KEY", "").strip(),
             model_options=options,
             default_model=default_model,
             timezone=os.getenv("TIME_ZONE", "Europe/Kyiv").strip(),

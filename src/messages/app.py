@@ -1156,7 +1156,7 @@ async def run() -> None:
                 "List1 models: gpt-6-luna; opencode/muse-spark-1.3-contributor-free; "
                 "opencode/big-pickle; opencode/mimo-v2.6-flash-free; "
                 "opencode/nemotron-3.5-lightning-free; opencode/ling-3.0-flash-fin-free.\n"
-                "OpenCode model replies run with tools disabled; each run uses temporary local session storage."
+                "OpenCode model replies use its read-only Plan agent in an isolated temporary workspace."
             )
         if command == "/model":
             if len(parts) == 1:
