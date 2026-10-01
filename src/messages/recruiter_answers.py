@@ -54,6 +54,7 @@ SYNONYM_GROUPS = (
     {"production", "продакшн", "продуктивный"},
     {"team", "people", "management", "руководство", "управление", "команда", "людьми"},
     {"remote", "relocate", "relocation", "переезд", "удаленно", "удалённо"},
+    {"resume", "cv", "curriculum", "vitae", "резюме", "резюмировать"},
 )
 def _read_profile_document(path: Path) -> Any:
     lock_path = path.with_name(path.name + ".lock")
@@ -414,7 +415,7 @@ class RecruiterAnswers:
                 if len(key_tokens) > 3:
                     continue
             elif len(shared) < 2 and (
-                len(key_tokens) > 2 or not shared.intersection({"syn0", "syn5"})
+                len(key_tokens) > 2 or not shared.intersection({"syn0", "syn5", "syn12"})
             ):
                 continue
             key_coverage = len(shared) / len(key_tokens)

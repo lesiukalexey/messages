@@ -134,7 +134,15 @@ def recruiter_keyword_fallback(message: str, answers: list[dict[str, str]]) -> d
         answer = item.get("answer", "").strip()
         if not answer or question.startswith("complete candidate profile"):
             continue
-        if any(term in question for term in ("salary", "compensation", "зарплат", "вилка")):
+        if (
+            any(term in question for term in ("resume", "cv", "curriculum vitae", "резюм"))
+            and answer.startswith(("https://", "http://"))
+        ):
+            lines.append(
+                f"Here is my CV: {answer}" if reply_in_english
+                else f"Вот ссылка на моё резюме: {answer}"
+            )
+        elif any(term in question for term in ("salary", "compensation", "зарплат", "вилка")):
             lines.append(
                 f"Salary expectation: {answer}." if reply_in_english
                 else f"По зарплате: {answer}."
