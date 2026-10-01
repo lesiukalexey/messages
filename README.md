@@ -1,11 +1,11 @@
 # Messages
 
-Development uses the local Git checkout at `/var/www/multi_messenger`. The Raspberry Pi checkout
-at `/home/admin/multi_messenger` is production only and is updated by
-`.github/workflows/deploy-production.yml` after a push to `main`. A repository-scoped GitHub Actions
-runner on the Pi fast-forwards the checkout, reinstalls the editable package when Python sources
-change, and restarts the services. Keep runtime configuration and data in
-`/home/admin/messages-runtime`; never edit application source directly on the Pi.
+Development uses the local Git checkout at `/var/www/multi_messenger`. The active local Docker
+runtime currently uses a separate checkout at `/media/alex/rootfs/home/admin/multi_messenger` and
+runtime data under `/media/alex/rootfs/home/admin/messages-runtime`, mounted into the containers as
+`/workspace` and `/home/admin/messages-runtime`. Confirm the SSD mount before local runtime work;
+the current Compose stack and its restart instructions are maintained in the workstation failover
+configuration under the private Home runtime directory.
 
 Personal Telegram assistant running through an authorized Telethon user session.
 It replies autonomously to eligible one-to-one conversations while their category
@@ -125,11 +125,12 @@ they cannot authorize free/busy checks or event creation for this assistant.
 
 ## Runtime configuration
 
-On Raspberry Pi, shared settings live in
-`/home/admin/messages-runtime/messages.env`; Telegram API credentials live in
-`/home/admin/messages-runtime/accounts/<account>.env`. The assistant reads the
-account settings selected by `TELEGRAM_ACCOUNT_ID` (default `personal`). Set
-these variables in protected runtime storage, never in Git:
+In the active local deployment, shared settings live in
+`/media/alex/rootfs/home/admin/messages-runtime/messages.env`; Telegram API
+credentials live in the matching `accounts/<account>.env` file. Containers see
+these under `/home/admin/messages-runtime`. The assistant reads the account
+settings selected by `TELEGRAM_ACCOUNT_ID` (default `personal`). Set these
+variables in protected runtime storage, never in Git:
 
 ```dotenv
 CODEX_BINARY=/home/admin/.codex/packages/standalone/current/bin/codex
@@ -143,21 +144,21 @@ OPENCODE_ZEN_API_KEY=
 ```
 
 For direct OpenCode Zen API access, create an API key in the Zen console and
-set `OPENCODE_ZEN_API_KEY` in `/home/admin/messages-runtime/messages.env`.
+set `OPENCODE_ZEN_API_KEY` in the shared runtime env file.
 The key takes precedence over CLI credentials for OpenCode model calls. Keep
 the file owner-readable only (`chmod 600`) and disable Zen auto-reload if you
 want to avoid balance top-ups. Zen's free model offers are temporary; review
 their per-model privacy terms before sending private conversation data.
 
-To enable the direct API key on the Raspberry Pi, add the variable with
-`sudoedit /home/admin/messages-runtime/messages.env`, then run
-`sudo chmod 600 /home/admin/messages-runtime/messages.env` and restart
-`messages@personal` and `messages@personal2`. Never paste the key into chat,
-shell command arguments, or repository files.
+To enable the direct API key in the active local deployment, add the variable with
+`sudoedit /media/alex/rootfs/home/admin/messages-runtime/messages.env`, then run
+`sudo chmod 600 /media/alex/rootfs/home/admin/messages-runtime/messages.env`. Restart the
+`messages-personal` and `messages-personal2` Compose services so they load it. Never paste the key
+into chat, shell command arguments, or repository files.
 
 To send unanswered questions to Alexey, set the BotFather token for
-`@learnDataBot` as `LEARNING_BOT_TOKEN` in
-`/home/admin/messages-runtime/messages.env` and keep that file owner-readable
+`@learnDataBot` as `LEARNING_BOT_TOKEN` in the shared runtime env file and keep
+that file owner-readable
 only (`chmod 600`). No channel-admin rights are needed. Alexey must send `/start`
 to `@learnDataBot` from one of the assistant's two owned Telegram accounts.
 Only the `personal` worker polls Bot API updates; it accepts replies from those
@@ -176,17 +177,15 @@ learned answers are merged only for matching non-empty persona IDs.
 
 Set `REPLY_API_TOKEN` (at least 32 random characters), `REPLY_API_HOST`,
 `REPLY_API_PORT`, and, when needed, the JSON `JOB_APPLY_PROFILES` mapping in
-`/home/admin/messages-runtime/messages.env`. Give the same token to Job Apply
+the shared runtime env file. Give the same token to Job Apply
 through its protected runtime configuration; do not put it in Git or logs.
-The API binds to the private Raspberry Pi interface and requires a Bearer token.
-Keep port 8095 off public ingress.
+The API binds to the private host interface and requires a Bearer token. Keep
+port 8095 off public ingress.
 
-Install `deploy/messages-reply-api.service` as
-`/etc/systemd/system/messages-reply-api.service`, then run
-`sudo systemctl enable --now messages-reply-api.service`. The singleton service
-shares the protected assistant database with the Telegram workers. Those
-workers continue to deliver queued owner questions through `@learnDataBot` and
-save the answer to the selected profile YAML under the shared file lock.
+The active local Compose service `messages-reply-api` shares the protected
+assistant database with the Telegram workers. Those workers continue to
+deliver queued owner questions through `@learnDataBot` and save the answer to
+the selected profile YAML under the shared file lock.
 
 ### API contract v1
 
@@ -225,12 +224,9 @@ Copy the derived style profile to
 export and keeps categories, model selection, idempotency state, and audit
 records in `/home/admin/messages-runtime/assistant.sqlite3`.
 
-Install/reinstall the package from the repository with
-`/home/admin/messages-runtime/venv/bin/pip install -e .`. Install
-`deploy/messages@.service` as `/etc/systemd/system/messages@.service`, then run
-`sudo systemctl enable --now messages@personal.service`. Add another account
-instance only when that Telegram account's bio and contact categories are
-configured independently.
+The active workstation runtime uses Docker Compose services `messages-personal` and
+`messages-personal2`. Restart them after updating mounted source or the protected environment
+file; add another account only when its bio and contact categories are configured independently.
 
 ## History export
 
