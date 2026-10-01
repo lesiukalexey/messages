@@ -17,7 +17,7 @@ The Telegram profile bio controls the assistant:
 
 - Bio equal to `free` (ignoring case and surrounding whitespace): OFF.
 - Empty bio or ordinary bio text: ON.
-- A valid `model=MODEL_ID effort=EFFORT` directive: ON and use that model and effort for this Telegram account.
+- A valid `model=MODEL_ID effort=EFFORT` directive: ON and use that model for this Telegram account.
 - An invalid `model=` directive: fail closed until it is corrected or removed.
 
 If the profile cannot be read, the worker fails closed. Groups, channels, bots,
@@ -58,8 +58,9 @@ model=opencode/big-pickle effort=medium
 Supported bio models are `gpt-6-luna`, `gpt-6-sol`,
 `opencode/muse-spark-1.3-contributor-free`, `opencode/big-pickle`,
 `opencode/mimo-v2.6-flash-free`, `opencode/nemotron-3.5-lightning-free`, and
-`opencode/ling-3.0-flash-fin-free`. Efforts are model-specific; `/model` lists
-the supported values. With no directive, the saved `/model` choice is used.
+`opencode/ling-3.0-flash-fin-free`. Codex models accept `low`, `medium`, `high`,
+or `xhigh`; OpenCode models require `effort=medium` in the directive and use
+the provider's default variant. With no directive, the saved `/model` choice is used.
 
 Codex choices run through `codex exec`; OpenCode choices run through the
 configured OpenCode CLI using its saved Console login. The worker creates a

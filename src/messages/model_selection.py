@@ -19,18 +19,18 @@ LIST1_MODEL_OPTIONS = (
         "opencode/muse-spark-1.3-contributor-free",
         "opencode",
         "medium",
-        ("low", "medium", "high"),
+        ("medium",),
     ),
-    ModelOption("opencode/big-pickle", "opencode", "medium", ("low", "medium", "high")),
-    ModelOption("opencode/mimo-v2.6-flash-free", "opencode", "medium", ("low", "medium", "high")),
-    ModelOption("opencode/nemotron-3.5-lightning-free", "opencode", "medium", ("low", "medium", "high")),
-    ModelOption("opencode/ling-3.0-flash-fin-free", "opencode", "medium", ("low", "medium", "high")),
+    ModelOption("opencode/big-pickle", "opencode", "medium", ("medium",)),
+    ModelOption("opencode/mimo-v2.6-flash-free", "opencode", "medium", ("medium",)),
+    ModelOption("opencode/nemotron-3.5-lightning-free", "opencode", "medium", ("medium",)),
+    ModelOption("opencode/ling-3.0-flash-fin-free", "opencode", "medium", ("medium",)),
 )
 
 LIST1_BY_MODEL = {option.model: option for option in LIST1_MODEL_OPTIONS}
 EFFORTS_BY_BACKEND = {
     "codex": ("low", "medium", "high", "xhigh"),
-    "opencode": ("low", "medium", "high"),
+    "opencode": ("medium",),
 }
 BIO_DIRECTIVE_PREFIX = "model="
 BIO_DIRECTIVE_RE = re.compile(

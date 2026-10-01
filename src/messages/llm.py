@@ -94,7 +94,7 @@ class Responder:
         timeout_seconds: int = 240, effort: str = "medium",
     ) -> str:
         if model.startswith("opencode/"):
-            return await self._run_opencode(model, prompt, schema, timeout_seconds, effort)
+            return await self._run_opencode(model, prompt, schema, timeout_seconds)
         if not self.binary.is_file() or not os.access(self.binary, os.X_OK):
             raise RuntimeError("Codex CLI is not installed at CODEX_BINARY")
         if not self.codex_home.is_dir():
@@ -142,7 +142,6 @@ class Responder:
         prompt: str,
         schema: dict[str, Any] | None,
         timeout_seconds: int,
-        effort: str,
     ) -> str:
         if not self.opencode_binary.is_file() or not os.access(self.opencode_binary, os.X_OK):
             raise RuntimeError("OpenCode CLI is not installed at OPENCODE_BINARY")
@@ -203,7 +202,9 @@ class Responder:
                 environment.pop(key, None)
             command = [
                 str(self.opencode_binary), "run", "--standalone", "--format", "json",
-                "--model", f"{model}#{effort}", "--agent", "plan",
+                # These OpenCode models reject explicit effort variants (for example,
+                # `#medium` returns "Variant unavailable"). Let the provider choose its default.
+                "--model", model, "--agent", "plan",
             ]
             process = await asyncio.create_subprocess_exec(
                 *command,
