@@ -98,13 +98,48 @@ def _same_answer_topic(left: str, right: str) -> bool:
 class RecruiterAnswers:
     """Select a few approved Job Apply facts relevant to one recruiter message."""
 
-    def __init__(self, path: Path, persona_profile_paths: Iterable[Path] | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        persona_profile_paths: Iterable[Path] | None = None,
+        common_answers_path: Path | None = None,
+    ) -> None:
         self.path = path
         self.persona_profile_paths = tuple(
             dict.fromkeys([path, *(persona_profile_paths or ())])
         )
+        self.common_answers_path = common_answers_path
         self._mtime_ns: tuple[tuple[str, int], ...] | None = None
         self._entries: list[tuple[str, str, set[str]]] = []
+
+    def _common_profile_answers(self) -> tuple[dict[str, str], int]:
+        if self.common_answers_path is None:
+            return {}, 0
+        try:
+            document = _read_profile_document(self.common_answers_path)
+            modified = self.common_answers_path.stat().st_mtime_ns
+        except (OSError, UnicodeError, yaml.YAMLError):
+            return {}, 0
+        answers = document.get("learned_answers", {}) if isinstance(document, dict) else {}
+        if not isinstance(answers, dict):
+            return {}, modified
+        return (
+            {
+                question.strip(): answer.strip()
+                for question, answer in answers.items()
+                if isinstance(question, str)
+                and isinstance(answer, str)
+                and question.strip()
+                and answer.strip()
+                and not any(
+                    marker in question.casefold()
+                    for marker in (
+                        "password", "secret", "token", "credential", "security code", "2fa",
+                    )
+                )
+            },
+            modified,
+        )
 
     def _persona_documents(self) -> list[tuple[Path, dict[str, Any], int]]:
         try:
@@ -206,6 +241,14 @@ class RecruiterAnswers:
             return ""
         documents = self._persona_documents()
         learned, owners = self._persona_answers(documents, self.path)
+        common_answers, _ = self._common_profile_answers()
+        for question, answer in common_answers.items():
+            if any(
+                _same_answer_topic(question, saved)
+                for saved in (*learned.keys(), *owners.keys())
+            ):
+                continue
+            learned[question] = answer
         if learned:
             document["learned_answers"] = learned
         if owners:
@@ -257,11 +300,17 @@ class RecruiterAnswers:
         """Check whether a directly matching owner-authored answer is saved."""
         documents = self._persona_documents()
         _, owners = self._persona_answers(documents, self.path)
-        return any(_same_answer_topic(question, saved) for saved in owners)
+        if any(_same_answer_topic(question, saved) for saved in owners):
+            return True
+        common_answers, _ = self._common_profile_answers()
+        return any(_same_answer_topic(question, saved) for saved in common_answers)
 
     def _load(self) -> None:
         documents = self._persona_documents()
         source_mtimes = tuple((str(path), mtime) for path, _, mtime in documents)
+        common_answers, common_mtime = self._common_profile_answers()
+        if self.common_answers_path is not None:
+            source_mtimes += ((str(self.common_answers_path), common_mtime),)
         if self._mtime_ns == source_mtimes:
             return
         primary = next((document for path, document, _ in documents if path == self.path), {})
@@ -315,6 +364,12 @@ class RecruiterAnswers:
                     add_entry(question, field_answer(target, values[target]))
 
         learned_answers, _ = self._persona_answers(documents, self.path)
+        for question, answer in common_answers.items():
+            if not any(
+                _same_answer_topic(question, saved)
+                for saved in learned_answers
+            ):
+                learned_answers[question] = answer
         if isinstance(learned_answers, dict):
             for question, answer in learned_answers.items():
                 if (

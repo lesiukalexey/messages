@@ -179,7 +179,11 @@ class ReplyAPI:
             return 400, {"error": str(exc), "retryable": False}
 
         profile_path: Path = event["profile_path"]
-        answers = RecruiterAnswers(profile_path, self.allowed_profiles)
+        answers = RecruiterAnswers(
+            profile_path,
+            self.allowed_profiles,
+            common_answers_path=self.settings.category_answers_dir / "recruiter-shared.yaml",
+        )
         normalized = {
             key: event[key]
             for key in (

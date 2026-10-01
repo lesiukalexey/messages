@@ -1045,6 +1045,7 @@ async def run() -> None:
     recruiter_answers = RecruiterAnswers(
         settings.recruiter_answers_file,
         persona_profile_paths=settings.job_apply_profiles.values(),
+        common_answers_path=settings.category_answers_dir / "recruiter-shared.yaml",
     )
     friends_unknown_answers = CategoryAnswers(
         settings.category_answers_dir / "friends-unknown.yaml"
