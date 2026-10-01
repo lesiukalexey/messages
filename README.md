@@ -150,9 +150,10 @@ the file owner-readable only (`chmod 600`) and disable Zen auto-reload if you
 want to avoid balance top-ups. Zen's free model offers are temporary; review
 their per-model privacy terms before sending private conversation data.
 
-To enable the direct API key in the active local deployment, add the variable with
-`sudoedit /media/alex/rootfs/home/admin/messages-runtime/messages.env`, then run
-`sudo chmod 600 /media/alex/rootfs/home/admin/messages-runtime/messages.env`. Restart the
+To enable the direct API key in the active local deployment, edit the file as
+the owning workstation user with
+`nano /media/alex/rootfs/home/admin/messages-runtime/messages.env`, then run
+`chmod 600 /media/alex/rootfs/home/admin/messages-runtime/messages.env`. Restart the
 `messages-personal` and `messages-personal2` Compose services so they load it. Never paste the key
 into chat, shell command arguments, or repository files.
 
