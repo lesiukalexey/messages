@@ -14,6 +14,7 @@ class ModelOption:
 
 LIST1_MODEL_OPTIONS = (
     ModelOption("gpt-6-luna", "codex", "low", ("low", "medium", "high", "xhigh")),
+    ModelOption("gpt-6-sol", "codex", "medium", ("low", "medium", "high", "xhigh")),
     ModelOption(
         "opencode/muse-spark-1.3-contributor-free",
         "opencode",

@@ -1235,7 +1235,7 @@ async def run() -> None:
                 "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/ordinary text = ON.\n"
                 "Bio model override: `model=MODEL_ID effort=EFFORT` (e.g. `model=gpt-6-luna effort=low`).\n"
                 "Eligible incoming private text or caption ending in a comma gets no text reply and a 🙈 reaction.\n"
-                "List1 models: gpt-6-luna; opencode/muse-spark-1.3-contributor-free; "
+                "List1 models: gpt-6-luna; gpt-6-sol; opencode/muse-spark-1.3-contributor-free; "
                 "opencode/big-pickle; opencode/mimo-v2.6-flash-free; "
                 "opencode/nemotron-3.5-lightning-free; opencode/ling-3.0-flash-fin-free.\n"
                 "OpenCode model replies use its read-only Plan agent in an isolated temporary workspace."
