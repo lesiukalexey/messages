@@ -1490,6 +1490,15 @@ async def run() -> None:
                         notify_on_success=False,
                     )
                     return
+                if random.random() < 0.3:
+                    await asyncio.sleep(random.uniform(1.0, 10.0))
+                    block_reason = await reply_policy_block(peer_id, force=True)
+                    if block_reason:
+                        store.message_state(
+                            settings.account_id, peer_id, event.message.id, "skipped"
+                        )
+                        store.audit(peer_id, "skipped", f"{block_reason} after reply pause")
+                        return
                 await mark_incoming_message_read(event)
                 try:
                     typing_action = client.action(peer_id, "typing")
@@ -2383,8 +2392,6 @@ async def run() -> None:
                 )
                 letter_count = sum(character.isalpha() for character in reply)
                 delay_seconds = max(1.0, letter_count / 10.0)
-                if random.random() < 0.3:
-                    delay_seconds += random.uniform(1.0, 10.0)
                 await asyncio.sleep(delay_seconds)
                 block_reason = await reply_policy_block(peer_id, force=True)
                 if block_reason:
