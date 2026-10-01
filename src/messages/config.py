@@ -27,6 +27,7 @@ class Settings:
     opencode_binary: Path = Path("/home/admin/.opencode/bin/opencode")
     opencode_auth_file: Path = Path("/home/admin/.local/share/opencode/auth.json")
     opencode_data_database: Path = Path("/home/admin/.local/share/opencode/opencode.db")
+    opencode_zen_api_key: str = ""
     job_apply_profiles: dict[str, Path] = field(default_factory=dict)
     reply_api_token: str = ""
     reply_api_host: str = "192.168.31.46"
@@ -165,6 +166,7 @@ class Settings:
                     ),
                 )
             ),
+            opencode_zen_api_key=os.getenv("OPENCODE_ZEN_API_KEY", "").strip(),
             model_options=options,
             default_model=default_model,
             timezone=os.getenv("TIME_ZONE", "Europe/Kyiv").strip(),

@@ -139,7 +139,21 @@ CODEX_MODEL=gpt-5.6-luna
 OPENCODE_BINARY=/home/admin/.opencode/bin/opencode
 OPENCODE_AUTH_FILE=/home/admin/.local/share/opencode/auth.json
 OPENCODE_DATA_DATABASE=/home/admin/.local/share/opencode/opencode.db
+OPENCODE_ZEN_API_KEY=
 ```
+
+For direct OpenCode Zen API access, create an API key in the Zen console and
+set `OPENCODE_ZEN_API_KEY` in `/home/admin/messages-runtime/messages.env`.
+The key takes precedence over CLI credentials for OpenCode model calls. Keep
+the file owner-readable only (`chmod 600`) and disable Zen auto-reload if you
+want to avoid balance top-ups. Zen's free model offers are temporary; review
+their per-model privacy terms before sending private conversation data.
+
+To enable the direct API key on the Raspberry Pi, add the variable with
+`sudoedit /home/admin/messages-runtime/messages.env`, then run
+`sudo chmod 600 /home/admin/messages-runtime/messages.env` and restart
+`messages@personal` and `messages@personal2`. Never paste the key into chat,
+shell command arguments, or repository files.
 
 To send unanswered questions to Alexey, set the BotFather token for
 `@learnDataBot` as `LEARNING_BOT_TOKEN` in

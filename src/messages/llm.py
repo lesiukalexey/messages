@@ -6,6 +6,8 @@ import os
 import sqlite3
 import shutil
 import tempfile
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -68,6 +70,7 @@ class Responder:
         self.opencode_binary = settings.opencode_binary
         self.opencode_auth_file = settings.opencode_auth_file
         self.opencode_data_database = settings.opencode_data_database
+        self.opencode_zen_api_key = settings.opencode_zen_api_key
         self.timezone = ZoneInfo(settings.timezone)
 
     async def translate_to_english(self, model: str, text: str, effort: str = "medium") -> str:
@@ -145,6 +148,10 @@ class Responder:
         timeout_seconds: int,
         effort: str,
     ) -> str:
+        if self.opencode_zen_api_key:
+            return await self._run_opencode_zen_api(
+                model, prompt, schema, timeout_seconds
+            )
         if not self.opencode_binary.is_file() or not os.access(self.opencode_binary, os.X_OK):
             raise RuntimeError("OpenCode CLI is not installed at OPENCODE_BINARY")
         RUNTIME_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -245,6 +252,77 @@ class Responder:
                 return result
             decoded = self._parse_json_response(result, schema)
             return json.dumps(decoded, ensure_ascii=False)
+
+    async def _run_opencode_zen_api(
+        self,
+        model: str,
+        prompt: str,
+        schema: dict[str, Any] | None,
+        timeout_seconds: int,
+    ) -> str:
+        model_id = model.removeprefix("opencode/")
+        if schema is not None:
+            prompt += (
+                "\n\nReturn only a JSON object conforming to this JSON Schema. "
+                "Do not use markdown fences or add text before or after the object.\n"
+                + json.dumps(schema, ensure_ascii=False)
+            )
+        is_responses_model = model_id == "muse-spark-1.3-contributor-free"
+        endpoint = (
+            "https://opencode.ai/zen/v1/responses"
+            if is_responses_model
+            else "https://opencode.ai/zen/v1/chat/completions"
+        )
+        payload = (
+            {"model": model_id, "input": prompt}
+            if is_responses_model
+            else {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
+        )
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.opencode_zen_api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        def send() -> dict[str, Any]:
+            try:
+                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as error:
+                raise RuntimeError(
+                    f"OpenCode Zen API returned HTTP {error.code}"
+                ) from None
+            except (urllib.error.URLError, TimeoutError) as error:
+                raise RuntimeError("OpenCode Zen API request failed") from error
+            if not isinstance(result, dict):
+                raise RuntimeError("OpenCode Zen API returned an invalid response")
+            return result
+
+        response = await asyncio.to_thread(send)
+        if is_responses_model:
+            result_text = response.get("output_text")
+            if not isinstance(result_text, str):
+                result_text = "\n".join(
+                    item.get("text", "")
+                    for output in response.get("output", [])
+                    if isinstance(output, dict)
+                    for item in output.get("content", [])
+                    if isinstance(item, dict) and isinstance(item.get("text"), str)
+                )
+        else:
+            choices = response.get("choices")
+            message = choices[0].get("message") if isinstance(choices, list) and choices else None
+            result_text = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(result_text, str) or not result_text.strip():
+            raise RuntimeError("OpenCode Zen API returned no text response")
+        if schema is None:
+            return result_text.strip()
+        decoded = self._parse_json_response(result_text, schema)
+        return json.dumps(decoded, ensure_ascii=False)
 
     @staticmethod
     def _opencode_provider_key(source_database: Path, provider: str) -> str | None:
