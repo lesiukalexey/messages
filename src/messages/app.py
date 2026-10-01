@@ -46,6 +46,23 @@ EXPLICIT_CLOCK = re.compile(
     r"\b(?:в|к|на|около)\s*(?:[01]?\d|2[0-3])(?:[-–][0-5]\d)?\b)",
     re.IGNORECASE,
 )
+EXPLICIT_CALENDAR_DATE = re.compile(
+    r"\b(?:сегодня|завтра|послезавтра|today|tomorrow|"
+    r"this\s+(?:morning|afternoon|evening)|"
+    r"понедельник\w*|понеділ\w*|monday|вторник\w*|вівтор\w*|tuesday|"
+    r"сред(?:а|у|е|ы|ой)|серед\w*|wednesday|четверг\w*|четвер\w*|thursday|"
+    r"пятниц\w*|п[’']ятниц\w*|friday|суббот\w*|субот\w*|saturday|"
+    r"воскресень\w*|неділ\w*|sunday)\b|"
+    r"\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|"
+    r"\b\d{1,2}\s+(?:январ\w*|феврал\w*|март\w*|апрел\w*|ма[яй]\w*|"
+    r"июн\w*|июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*|"
+    r"january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)\b|"
+    r"\b(?:январ\w*|феврал\w*|март\w*|апрел\w*|ма[яй]\w*|июн\w*|июл\w*|"
+    r"август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*|january|february|"
+    r"march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\b",
+    re.IGNORECASE,
+)
 REALTOR_MENTION = re.compile(
     r"\b(?:ри[эе]лтор\w*|маклер\w*|агент\s+по\s+(?:недвижим\w*|аренд\w*)|"
     r"realtor\w*|real\s+estate\s+(?:agent|broker))\b",
@@ -915,6 +932,39 @@ def established_availability_date(
                 delta += 7
             return now.date() + timedelta(days=delta)
     return None
+
+
+def align_meeting_start_to_context(
+    start: str,
+    history: list[dict[str, str]],
+    current_message: str,
+    now: datetime,
+    timezone_name: str,
+) -> tuple[str | None, str]:
+    """Keep a model-proposed clock time on the conversation's established day."""
+    if EXPLICIT_CALENDAR_DATE.search(current_message):
+        return start, "current_message_date"
+    contextual_day = established_availability_date(history, current_message, now)
+    if contextual_day is None:
+        return None, "unresolved"
+    try:
+        proposed_start = datetime.fromisoformat(start)
+    except (TypeError, ValueError):
+        return None, "unresolved"
+    zone = ZoneInfo(timezone_name)
+    local_start = (
+        proposed_start.replace(tzinfo=zone)
+        if proposed_start.tzinfo is None
+        else proposed_start.astimezone(zone)
+    )
+    if local_start.date() == contextual_day:
+        return start, "context_date_confirmed"
+    corrected = datetime.combine(
+        contextual_day,
+        local_start.timetz().replace(tzinfo=None),
+        zone,
+    ).isoformat()
+    return corrected, f"context_date_reused:{local_start.date().isoformat()}->{contextual_day.isoformat()}"
 
 
 def safe_availability_reply(
@@ -1840,6 +1890,31 @@ async def run() -> None:
                     context, event.raw_text
                 )
                 assistant_accepts = bool(plan.get("assistant_accepts_meeting"))
+                if start and meeting_in_progress:
+                    resolved_start, date_resolution = align_meeting_start_to_context(
+                        start,
+                        context,
+                        event.raw_text,
+                        now,
+                        settings.timezone,
+                    )
+                    if date_resolution == "unresolved":
+                        start = None
+                        plan["start"] = None
+                        plan["confirmed_agreement"] = False
+                        assistant_accepts = False
+                        if action in ("check", "create"):
+                            action = "check"
+                        store.audit(
+                            peer_id,
+                            "calendar_date_unresolved",
+                            "model date suppressed; no recent date anchor",
+                        )
+                    else:
+                        start = resolved_start
+                        plan["start"] = start
+                        if date_resolution.startswith("context_date_reused:"):
+                            store.audit(peer_id, "calendar_date_reused", date_resolution)
                 counterparty_choice_request = counterparty_asks_alexey_to_choose_time(
                     event.raw_text
                 )
