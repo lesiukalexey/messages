@@ -22,7 +22,7 @@ LIST1_MODEL_OPTIONS = (
         ("low", "medium", "high"),
     ),
     ModelOption("opencode/big-pickle", "opencode", "medium", ("low", "medium", "high")),
-    ModelOption("opencode/mimo-v2.5-free", "opencode", "medium", ("low", "medium", "high")),
+    ModelOption("opencode/mimo-v2.6-flash-free", "opencode", "medium", ("low", "medium", "high")),
     ModelOption("opencode/nemotron-3.5-lightning-free", "opencode", "medium", ("low", "medium", "high")),
     ModelOption("opencode/ling-3.0-flash-fin-free", "opencode", "medium", ("low", "medium", "high")),
 )

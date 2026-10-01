@@ -57,7 +57,7 @@ model=opencode/big-pickle effort=medium
 
 Supported bio models mirror the `list1` choices in Job Apply: `gpt-6-luna`,
 `opencode/muse-spark-1.3-contributor-free`, `opencode/big-pickle`,
-`opencode/mimo-v2.5-free`, `opencode/nemotron-3.5-lightning-free`, and
+`opencode/mimo-v2.6-flash-free`, `opencode/nemotron-3.5-lightning-free`, and
 `opencode/ling-3.0-flash-fin-free`. Efforts are model-specific; `/model` lists
 the supported values. With no directive, the saved `/model` choice is used.
 
