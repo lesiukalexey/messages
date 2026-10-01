@@ -37,7 +37,7 @@ RUNTIME_ROOT = Path("/home/admin/messages-runtime")
 NOTIFICATION_BOT_USERNAME = "@NotificationFastBot"
 DEFAULT_STYLE = "Write like a concise, practical, informal Telegram conversation."
 MEETING_SIGNAL = re.compile(
-    r"(встреч|встрет|пересеч|увид|выйд|заед|прид|кофе|обед|ужин|созвон|звон|"
+    r"(встреч|встрет|пересеч|увид|выйд|заед|прид|прогуля|погуля|пройтись|кофе|обед|ужин|созвон|звон|"
     r"meet|catch up|coffee|lunch|dinner|interview)",
     re.IGNORECASE,
 )
@@ -257,7 +257,15 @@ def day_only_meeting_invitation(text: str) -> bool:
         text,
         re.IGNORECASE,
     )
-    return bool(day and invitation and not EXPLICIT_CLOCK.search(text))
+    casual_outing = re.search(
+        r"\b(?:как\s+насч[её]т|что\s+насч[её]т|может|давай|давайте|можем|можно|"
+        r"хочешь|хотите|how\s+about|what\s+about|shall\s+we|let's|can\s+we)\b"
+        r".{0,80}\b(?:прогуля\w*|погуля\w*|гулять|пройтись|выйти|сходить|"
+        r"walk\w*|go\s+for\s+a\s+walk|grab\s+coffee|coffee|кофе)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(day and (invitation or casual_outing) and not EXPLICIT_CLOCK.search(text))
 
 
 def style_profile() -> str:
