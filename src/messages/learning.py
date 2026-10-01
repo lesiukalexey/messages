@@ -388,7 +388,7 @@ class LearningBot:
             return
         try:
             if (
-                pending.get("source_platform") == "job_apply"
+                pending["source_platform"] == "job_apply"
                 and self.translate_to_english is not None
             ):
                 answer = await self.translate_to_english(answer)
