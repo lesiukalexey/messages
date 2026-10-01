@@ -16,7 +16,9 @@ is `unknown`, `friends`, or `recruiters`. Realtor contacts are excluded.
 The Telegram profile bio controls the assistant:
 
 - Bio equal to `free` (ignoring case and surrounding whitespace): OFF.
-- Empty bio or any other bio: ON.
+- Empty bio or ordinary bio text: ON.
+- A valid `model=MODEL_ID effort=EFFORT` directive: ON and use that model and effort for this Telegram account.
+- An invalid `model=` directive: fail closed until it is corrected or removed.
 
 If the profile cannot be read, the worker fails closed. Groups, channels, bots,
 and Saved Messages are ignored. A new contact starts as `unknown`. The assistant
@@ -44,13 +46,27 @@ Send commands to **Saved Messages** from the same account running the assistant:
 /dialogs 2
 ```
 
-The selected model is stored in the protected assistant database. The choices
-come from `CODEX_MODELS`; add another model ID supported by the installed Codex
-CLI, restart the worker, and it appears in `/model`. The default is
-`gpt-5.6-luna`. The worker starts `codex exec` using the existing Codex CLI
-login for the `admin` account, as Job Apply does. Codex receives the incoming
-message and up to 23 recent messages from that same chat to produce the reply.
-No OpenAI API key is needed.
+The `/model` selection and effort are stored per Telegram account in the protected
+assistant database. A model directive in that account's bio overrides that
+fallback for all its eligible private chats. For example:
+
+```text
+model=gpt-6-luna effort=low
+model=opencode/big-pickle effort=medium
+```
+
+Supported bio models mirror the `list1` choices in Job Apply: `gpt-6-luna`,
+`opencode/muse-spark-1.3-contributor-free`, `opencode/big-pickle`,
+`opencode/mimo-v2.5-free`, `opencode/nemotron-3.5-lightning-free`, and
+`opencode/ling-3.0-flash-fin-free`. Efforts are model-specific; `/model` lists
+the supported values. With no directive, the saved `/model` choice is used.
+
+Codex choices run through `codex exec`; OpenCode choices run through the
+configured OpenCode CLI using its existing provider login. OpenCode tool use is
+disabled for replies. Each OpenCode request uses a temporary private config,
+credential copy, and session database that are removed when the request ends.
+The selected model receives the current message and bounded same-chat context
+to produce the reply.
 
 New contacts can receive replies while their category remains `unknown`. Clear
 recruiting or job opportunity conversations go to `recruiters`; clear personal
@@ -119,6 +135,8 @@ CODEX_BINARY=/home/admin/.codex/packages/standalone/current/bin/codex
 CODEX_HOME=/home/admin/.codex
 CODEX_MODELS=gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol
 CODEX_MODEL=gpt-5.6-luna
+OPENCODE_BINARY=/home/admin/.opencode/bin/opencode
+OPENCODE_AUTH_FILE=/home/admin/.local/share/opencode/auth.json
 ```
 
 To send unanswered questions to Alexey, set the BotFather token for

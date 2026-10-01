@@ -5,6 +5,8 @@ import os
 import re
 from pathlib import Path
 
+from .model_selection import LIST1_MODEL_OPTIONS
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -22,6 +24,8 @@ class Settings:
     google_token_file: Path
     recruiter_answers_file: Path
     learning_bot_token: str
+    opencode_binary: Path = Path("/home/admin/.opencode/bin/opencode")
+    opencode_auth_file: Path = Path("/home/admin/.local/share/opencode/auth.json")
     job_apply_profiles: dict[str, Path] = field(default_factory=dict)
     reply_api_token: str = ""
     reply_api_host: str = "192.168.31.46"
@@ -41,18 +45,23 @@ class Settings:
         if not account_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for char in account_id):
             raise ValueError("TELEGRAM_ACCOUNT_ID has invalid characters")
 
-        options = tuple(
+        codex_options = tuple(
             model.strip()
             for model in os.getenv(
                 "CODEX_MODELS", "gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol,gpt-6-luna"
             ).split(",")
             if model.strip()
         )
-        if not options:
+        if not codex_options:
             raise ValueError("CODEX_MODELS must contain at least one model")
-        default_model = os.getenv("CODEX_MODEL", options[0]).strip()
-        if default_model not in options:
-            options = (default_model, *options)
+        default_model = os.getenv("CODEX_MODEL", codex_options[0]).strip()
+        options = tuple(
+            dict.fromkeys(
+                [option.model for option in LIST1_MODEL_OPTIONS]
+                + list(codex_options)
+                + [default_model]
+            )
+        )
 
         recruiter_answers_file = Path(
             os.getenv(
@@ -134,6 +143,18 @@ class Settings:
                 )
             ),
             codex_home=Path(os.getenv("CODEX_HOME", "/home/admin/.codex")),
+            opencode_binary=Path(
+                os.getenv("OPENCODE_BINARY", str(Path.home() / ".opencode/bin/opencode"))
+            ),
+            opencode_auth_file=Path(
+                os.getenv(
+                    "OPENCODE_AUTH_FILE",
+                    str(
+                        Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+                        / "opencode/auth.json"
+                    ),
+                )
+            ),
             model_options=options,
             default_model=default_model,
             timezone=os.getenv("TIME_ZONE", "Europe/Kyiv").strip(),

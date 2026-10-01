@@ -19,6 +19,12 @@ from telethon import TelegramClient, events, functions, types, utils
 from .calendar import GoogleCalendar
 from .config import Settings
 from .llm import Responder
+from .model_selection import (
+    InvalidBioModelDirective,
+    model_default_effort,
+    model_efforts,
+    parse_bio_model_directive,
+)
 from .language import check_reply_language, expected_reply_language
 from .learning import LearningBot
 from .runtime import load_environment
@@ -429,6 +435,7 @@ class BioGate:
         self.me_id = me_id
         self.enabled = False
         self.bio = ""
+        self.model_override: tuple[str, str] | None = None
         self.error = "profile has not been read"
         self.dirty = True
         self.last_check = 0.0
@@ -451,6 +458,12 @@ class BioGate:
                 self.bio = (full.full_user.about or "").strip()
                 self.enabled = self.bio.casefold() != "free"
                 self.error = ""
+                self.model_override = None
+                try:
+                    self.model_override = parse_bio_model_directive(self.bio)
+                except InvalidBioModelDirective as exc:
+                    self.enabled = False
+                    self.error = f"invalid bio model directive: {exc}"
                 self.dirty = False
             except Exception as exc:
                 # An unreadable bio never leaves the previous ON state active.
@@ -1006,6 +1019,15 @@ async def run() -> None:
         logger.info("Marked %s existing private dialogs as friends where unlabeled", legacy_count)
     gate = BioGate(client, me.id)
     await gate.refresh(force=True)
+
+    def selected_model_settings() -> tuple[str, str, str]:
+        if gate.model_override is not None:
+            model, effort = gate.model_override
+            return model, effort, "bio"
+        model = store.setting("model", settings.default_model)
+        effort = store.setting("model_effort", model_default_effort(model))
+        return model, effort, "/model setting"
+
     manual_folder = DialogFilterGate(client, "Manual")
     await manual_folder.refresh(force=True)
     auto_folder = DialogFilterGate(client, "Auto")
@@ -1022,7 +1044,7 @@ async def run() -> None:
             },
             profile_paths=settings.job_apply_profiles,
             translate_to_english=lambda text: responder.translate_to_english(
-                store.setting("model", settings.default_model), text
+                selected_model_settings()[0], text, effort=selected_model_settings()[1]
             ),
         )
         if settings.learning_bot_token and settings.account_id == "personal"
@@ -1049,6 +1071,8 @@ async def run() -> None:
         auto_enabled = auto_folder.contains(peer_id)
         await gate.refresh(force=force)
         if gate.error:
+            if gate.error.startswith("invalid bio model directive"):
+                return gate.error
             return "global bio switch is unreadable"
         if not gate.enabled and not auto_enabled and not owner_opt_in:
             return "global bio switch is off and contact is not in Telegram Auto folder"
@@ -1110,15 +1134,15 @@ async def run() -> None:
         command = parts[0].split("@", 1)[0].casefold()
         if command in ("/start", "/help", "/settings"):
             enabled = await gate.refresh(force=True)
-            model = store.setting("model", settings.default_model)
+            model, effort, model_source = selected_model_settings()
             state = "ON" if enabled else "OFF"
             cal = "ready" if calendar.configured else "not authorized"
             return (
                 f"Assistant: {state} (bio: {gate.bio or '[empty]'})\n"
-                f"Model: {model}\nCalendar: {cal}\n\n"
+                f"Model: {model} (effort: {effort}; source: {model_source})\nCalendar: {cal}\n\n"
                 "Commands (send in Saved Messages):\n"
                 "/model — show or choose a model\n"
-                "/model MODEL_ID — switch model\n"
+                "/model MODEL_ID [EFFORT] — set fallback model and effort\n"
                 "/category @username unknown|friends|recruiters|realtors — override auto classification\n"
                 "/category remove @username — clear manual assignment\n"
                 "/contacts [unknown|friends|recruiters|realtors] — list assigned chats\n"
@@ -1127,21 +1151,39 @@ async def run() -> None:
                 "Chats in the Telegram folder 'Manual' are ignored unless you opt in by ending your message with a period; the bot removes the period.\n"
                 "A period opt-in also overrides bio `free` for that conversation, until your next message without a period or 30 minutes of inactivity. `Auto` still overrides `free`.\n"
                 "Realtors and real estate rental/sale conversations never receive automatic replies.\n"
-                "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/other = ON."
+                "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/ordinary text = ON.\n"
+                "Bio model override: `model=MODEL_ID effort=EFFORT` (e.g. `model=gpt-6-luna effort=low`).\n"
+                "List1 models: gpt-6-luna; opencode/muse-spark-1.3-contributor-free; "
+                "opencode/big-pickle; opencode/mimo-v2.5-free; "
+                "opencode/nemotron-3.5-lightning-free; opencode/ling-3.0-flash-fin-free.\n"
+                "OpenCode model replies run with tools disabled; each run uses temporary local session storage."
             )
         if command == "/model":
             if len(parts) == 1:
-                current = store.setting("model", settings.default_model)
-                choices = "\n".join(f"• {name}" for name in settings.model_options)
-                return f"Current model: {current}\nChoose with /model MODEL_ID\n{choices}"
-            if len(parts) != 2:
-                return "Use /model or /model MODEL_ID."
+                current, effort, model_source = selected_model_settings()
+                choices = "\n".join(
+                    f"• {name} ({model_default_effort(name)} default; "
+                    f"effort: {', '.join(model_efforts(name))})"
+                    for name in settings.model_options
+                )
+                return (
+                    f"Current model: {current} (effort: {effort}; source: {model_source})\n"
+                    "Use /model MODEL_ID [EFFORT] to set the account fallback.\n"
+                    "Bio override syntax: model=MODEL_ID effort=EFFORT\n"
+                    f"{choices}"
+                )
+            if len(parts) not in (2, 3):
+                return "Use /model or /model MODEL_ID [EFFORT]."
             model = parts[1]
             if model not in settings.model_options:
                 return "Unknown model. Send /model to see configured choices."
+            effort = parts[2].casefold() if len(parts) == 3 else model_default_effort(model)
+            if effort not in model_efforts(model):
+                return f"Unsupported effort for {model}. Choose: {', '.join(model_efforts(model))}."
             store.set_setting("model", model)
-            store.audit(None, "model_changed", model)
-            return f"Conversation model set to {model}."
+            store.set_setting("model_effort", effort)
+            store.audit(None, "model_changed", f"{model}; effort={effort}")
+            return f"Account fallback model set to {model} with {effort} effort. A valid model directive in bio takes precedence."
         if command == "/category":
             if len(parts) == 2 and parts[1].casefold() == "list":
                 return await contacts_text(None, store)
@@ -1444,7 +1486,7 @@ async def run() -> None:
                     if pending_duration else None
                 )
                 now = datetime.now(ZoneInfo(settings.timezone))
-                model = store.setting("model", settings.default_model)
+                model, effort, _model_source = selected_model_settings()
                 day_only_invitation = day_only_meeting_invitation(event.raw_text)
                 calendar_related = (
                     availability_question(event.raw_text)
@@ -1457,7 +1499,9 @@ async def run() -> None:
                     previous_reply_examples = []
                 else:
                     try:
-                        search_queries = await responder.expand_history_queries(model, event.raw_text)
+                        search_queries = await responder.expand_history_queries(
+                            model, event.raw_text, effort=effort
+                        )
                     except Exception as exc:
                         search_queries = []
                         logger.warning("Could not expand history search (%s)", type(exc).__name__)
@@ -1486,6 +1530,7 @@ async def run() -> None:
                         prepared_answers=prepared_answers,
                         pending_meeting_duration=pending_meeting_context,
                         personal_context=personal_context,
+                        effort=effort,
                     )
                 except Exception as exc:
                     fallback, fallback_answers = no_model_recruiter_fallback(
@@ -1557,6 +1602,7 @@ async def run() -> None:
                                 prepared_answers=prepared_answers,
                                 pending_meeting_duration=pending_meeting_context,
                                 personal_context=personal_context,
+                                effort=effort,
                             )
                         except Exception as exc:
                             fallback, fallback_answers = no_model_recruiter_fallback(
@@ -1724,6 +1770,7 @@ async def run() -> None:
                         prepared_answers=prepared_answers,
                         personal_context=personal_context,
                         web_search_results=web_search_results if web_search_requested else None,
+                        effort=effort,
                     )
                 start = None if duration_followup_reply is not None else plan.get("start")
                 action = (
@@ -2047,6 +2094,7 @@ async def run() -> None:
                             recent_outgoing_replies=recent_outgoing_replies,
                             prepared_answers=prepared_answers,
                             personal_context=personal_context,
+                            effort=effort,
                         )
                     if not str(plan.get("reply") or "").strip():
                         plan["reply"] = (
@@ -2103,6 +2151,7 @@ async def run() -> None:
                         prepared_answers=prepared_answers,
                         personal_context=personal_context,
                         web_search_results=web_search_results,
+                        effort=effort,
                     )
                 elif duration_followup_reply is not None:
                     reply = duration_followup_reply
@@ -2124,6 +2173,7 @@ async def run() -> None:
                         recent_outgoing_replies=recent_outgoing_replies,
                         prepared_answers=prepared_answers,
                         personal_context=personal_context,
+                        effort=effort,
                     )
                 else:
                     reply = plan["reply"]
@@ -2157,6 +2207,7 @@ async def run() -> None:
                             now=now,
                             style_profile=style_profile(),
                             calendar_result=calendar_result,
+                            effort=effort,
                         )
                         revised_reply = revised_reply.strip()
                     except Exception as exc:
@@ -2190,6 +2241,7 @@ async def run() -> None:
                             incoming_message=event.raw_text,
                             candidate_reply=reply,
                             target_language=language_check.expected,
+                            effort=effort,
                         )
                     except Exception as exc:
                         corrected_reply = ""
@@ -2205,6 +2257,7 @@ async def run() -> None:
                                 candidate_reply=corrected_reply.strip() or reply,
                                 target_language=language_check.expected,
                                 retry_with_alternative_wording=True,
+                                effort=effort,
                             )
                         except Exception as exc:
                             alternative_reply = ""
@@ -2267,6 +2320,7 @@ async def run() -> None:
                             "incoming_message_id": event.message.id,
                             "category": category,
                             "model": model,
+                            "effort": effort,
                             "language_checklist": language_check.checklist,
                             "calendar_action": action,
                             "web_search": web_search_requested,
@@ -2297,6 +2351,7 @@ async def run() -> None:
                             "sent_message_id": sent.id,
                             "category": category,
                             "model": model,
+                            "effort": effort,
                             "calendar_action": action,
                         },
                         ensure_ascii=False,
