@@ -495,8 +495,11 @@ class Store:
         )
 
     def setting(self, key: str, default: str) -> str:
+        return self.setting_for_account(self.account_id, key, default)
+
+    def setting_for_account(self, account_id: str, key: str, default: str) -> str:
         row = self.connection.execute(
-            "SELECT value FROM settings WHERE key = ?", (f"{self.account_id}:{key}",)
+            "SELECT value FROM settings WHERE key = ?", (f"{account_id}:{key}",)
         ).fetchone()
         return row["value"] if row else default
 

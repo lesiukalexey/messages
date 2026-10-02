@@ -20,6 +20,7 @@ from .calendar import GoogleCalendar
 from .config import Settings
 from .llm import Responder
 from .model_selection import (
+    BIO_MODEL_SELECTION_SETTING,
     InvalidBioModelDirective,
     model_default_effort,
     model_efforts,
@@ -474,9 +475,10 @@ def counterparty_asks_alexey_to_choose_time(message: str) -> bool:
 
 
 class BioGate:
-    def __init__(self, client: TelegramClient, me_id: int) -> None:
+    def __init__(self, client: TelegramClient, me_id: int, store: Store) -> None:
         self.client = client
         self.me_id = me_id
+        self.store = store
         self.enabled = False
         self.bio = ""
         self.model_override: tuple[str, str] | None = None
@@ -487,6 +489,23 @@ class BioGate:
 
     def invalidate(self) -> None:
         self.dirty = True
+
+    def _publish_model_selection(self, status: str) -> None:
+        state: dict[str, str] = {
+            "status": status,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        if status == "directive" and self.model_override is not None:
+            state["model"], state["effort"] = self.model_override
+        try:
+            self.store.set_setting(
+                BIO_MODEL_SELECTION_SETTING,
+                json.dumps(state, separators=(",", ":")),
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Could not publish Telegram model selection (%s)", type(exc).__name__
+            )
 
     async def refresh(self, force: bool = False) -> bool:
         now = asyncio.get_running_loop().time()
@@ -509,11 +528,15 @@ class BioGate:
                     self.enabled = False
                     self.error = f"invalid bio model directive: {exc}"
                 self.dirty = False
+                self._publish_model_selection(
+                    "invalid" if self.error else "directive" if self.model_override else "default"
+                )
             except Exception as exc:
                 # An unreadable bio never leaves the previous ON state active.
                 self.enabled = False
                 self.error = type(exc).__name__
                 self.dirty = True
+                self._publish_model_selection("unavailable")
                 logging.getLogger(__name__).warning("Could not read Telegram bio; assistant is off")
             finally:
                 self.last_check = now
@@ -1115,7 +1138,7 @@ async def run() -> None:
             legacy_count += 1
         store.set_setting("legacy_contacts_marked_friends_v1", "done")
         logger.info("Marked %s existing private dialogs as friends where unlabeled", legacy_count)
-    gate = BioGate(client, me.id)
+    gate = BioGate(client, me.id, store)
     await gate.refresh(force=True)
 
     def selected_model_settings() -> tuple[str, str, str]:

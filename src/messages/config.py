@@ -25,6 +25,7 @@ class Settings:
     recruiter_answers_file: Path
     learning_bot_token: str
     google_calendar_ids: tuple[str, ...] = ("primary",)
+    job_apply_telegram_accounts: dict[str, str] = field(default_factory=dict)
     opencode_binary: Path = Path("/home/admin/.opencode/bin/opencode")
     opencode_auth_file: Path = Path("/home/admin/.local/share/opencode/auth.json")
     opencode_data_database: Path = Path("/home/admin/.local/share/opencode/opencode.db")
@@ -115,6 +116,26 @@ class Settings:
         if recruiter_answers_file.resolve() not in job_apply_profiles.values():
             raise ValueError("RECRUITER_ANSWERS_FILE must refer to an allowlisted profile")
 
+        telegram_accounts_raw = os.getenv("JOB_APPLY_TELEGRAM_ACCOUNTS", "").strip()
+        if telegram_accounts_raw:
+            try:
+                telegram_accounts_value = json.loads(telegram_accounts_raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("JOB_APPLY_TELEGRAM_ACCOUNTS must be a JSON object") from exc
+            if not isinstance(telegram_accounts_value, dict) or any(
+                not isinstance(profile_id, str)
+                or profile_id not in job_apply_profiles
+                or not isinstance(account_id, str)
+                or account_id not in {"personal", "personal2"}
+                for profile_id, account_id in telegram_accounts_value.items()
+            ):
+                raise ValueError(
+                    "JOB_APPLY_TELEGRAM_ACCOUNTS must map allowlisted profiles to owned Telegram accounts"
+                )
+            job_apply_telegram_accounts = dict(telegram_accounts_value)
+        else:
+            job_apply_telegram_accounts = {}
+
         reply_api_host = os.getenv("REPLY_API_HOST", "192.168.31.46").strip()
         if reply_api_host != "localhost":
             try:
@@ -196,6 +217,7 @@ class Settings:
             job_apply_profiles=job_apply_profiles,
             learning_bot_token=os.getenv("LEARNING_BOT_TOKEN", "").strip(),
             google_calendar_ids=google_calendar_ids,
+            job_apply_telegram_accounts=job_apply_telegram_accounts,
             reply_api_token=os.getenv("REPLY_API_TOKEN", "").strip(),
             reply_api_host=reply_api_host,
             reply_api_port=reply_api_port,

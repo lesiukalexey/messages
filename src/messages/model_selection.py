@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+BIO_MODEL_SELECTION_SETTING = "bio_model_selection"
+
 
 @dataclass(frozen=True)
 class ModelOption:

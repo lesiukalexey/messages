@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,14 @@ from .calendar import GoogleCalendar
 from .config import Settings
 from .language import check_reply_language
 from .llm import Responder
+from .model_selection import (
+    BIO_MODEL_SELECTION_SETTING,
+    InvalidBioModelDirective,
+    LIST1_BY_MODEL,
+    model_default_effort,
+    model_efforts,
+    parse_bio_model_directive,
+)
 from .recruiter_answers import RecruiterAnswers
 from .runtime import load_environment
 from .store import Store
@@ -134,6 +142,7 @@ def _event_payload(payload: Any, settings: Settings) -> dict[str, Any]:
     return {
         "profile_id": profile_id,
         "profile_path": profile_path,
+        "telegram_account_id": settings.job_apply_telegram_accounts.get(profile_id, ""),
         "persona_id": persona_id,
         "thread_id": thread_id,
         "message_id": message_id,
@@ -226,6 +235,10 @@ class ReplyAPI:
                     )
                     store.audit(None, "external_profile_rejected", "persona mismatch")
                     return 403, {"error": "profile persona is not allowed", "retryable": False}
+                model, effort, model_source = self._model_for_profile(event, store)
+                event["model"] = model
+                event["effort"] = effort
+                event["model_source"] = model_source
                 response = await self._prepare_reply(event, answers, store, platform=platform)
             except Exception as exc:
                 store.finish_integration_request(
@@ -242,11 +255,62 @@ class ReplyAPI:
             store.audit(
                 None,
                 "external_reply_prepared",
-                f"profile={profile_id}; outcome={response['outcome']}; calendar={response['calendar_status']}",
+                f"profile={profile_id}; model={event['model']}; source={event['model_source']}; "
+                f"outcome={response['outcome']}; calendar={response['calendar_status']}",
             )
             return 200, response
         finally:
             store.close()
+
+    def _model_for_profile(
+        self, event: dict[str, Any], store: Store
+    ) -> tuple[str, str, str]:
+        fallback = self.settings.default_model
+        fallback_selection = (fallback, model_default_effort(fallback), "api_default")
+        account_id = event.get("telegram_account_id")
+        if not isinstance(account_id, str) or account_id not in {"personal", "personal2"}:
+            return fallback_selection
+
+        raw_state = store.setting_for_account(account_id, BIO_MODEL_SELECTION_SETTING, "")
+        if not raw_state:
+            return fallback_selection
+        try:
+            state = json.loads(raw_state)
+            updated_at = datetime.fromisoformat(state["updated_at"])
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=UTC)
+            age = datetime.now(UTC) - updated_at.astimezone(UTC)
+        except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return fallback_selection
+        if age < timedelta(0) or age > timedelta(seconds=60):
+            return fallback_selection
+        if state.get("status") == "invalid":
+            raise InvalidBioModelDirective(
+                "the selected Telegram profile has an invalid model directive"
+            )
+        if state.get("status") != "directive":
+            return fallback_selection
+        model = state.get("model")
+        effort = state.get("effort")
+        if not isinstance(model, str) or not isinstance(effort, str):
+            raise InvalidBioModelDirective(
+                "the selected Telegram profile model state is invalid"
+            )
+        try:
+            selected = parse_bio_model_directive(f"model={model} effort={effort}")
+        except InvalidBioModelDirective as exc:
+            raise InvalidBioModelDirective(
+                "the selected Telegram profile model state is invalid"
+            ) from exc
+        if selected is None or selected[0] not in LIST1_BY_MODEL:
+            raise InvalidBioModelDirective(
+                "the selected Telegram profile model state is invalid"
+            )
+        if selected[1] not in model_efforts(selected[0]):
+            raise InvalidBioModelDirective(
+                "the selected Telegram profile model state is invalid"
+            )
+        return selected[0], selected[1], "telegram_bio"
 
     async def _prepare_reply(
         self,
@@ -264,7 +328,7 @@ class ReplyAPI:
             raise RuntimeError("the selected recruiter profile could not be prepared")
         now = datetime.now(ZoneInfo(self.settings.timezone))
         plan = await self.responder.plan(
-            model=self.settings.default_model,
+            model=event["model"],
             category="recruiters",
             history=event["history"],
             current_message=incoming,
@@ -274,6 +338,7 @@ class ReplyAPI:
             recent_outgoing_replies=event["recent_replies"],
             vacancy_context=event["vacancy_context"],
             platform=platform,
+            effort=event["effort"],
         )
         learning_question = _safe_learning_question(plan.get("learn_question"))
         if not learning_question:
@@ -342,7 +407,7 @@ class ReplyAPI:
 
         if action in {"check", "create"}:
             reply = await self.responder.compose_with_calendar_result(
-                model=self.settings.default_model,
+                model=event["model"],
                 category="recruiters",
                 history=event["history"],
                 current_message=incoming,
@@ -353,6 +418,7 @@ class ReplyAPI:
                 prepared_answers=prepared_answers,
                 vacancy_context=event["vacancy_context"],
                 platform=platform,
+                effort=event["effort"],
             )
         else:
             reply = str(plan.get("reply") or "").strip()
@@ -362,10 +428,11 @@ class ReplyAPI:
             language = check_reply_language(reply, incoming)
             if not language.passed:
                 reply = await self.responder.rewrite_reply_language(
-                    self.settings.default_model,
+                    event["model"],
                     incoming,
                     reply,
                     language.expected,
+                    effort=event["effort"],
                 )
             if not check_reply_language(reply, incoming).passed:
                 reply = ""
