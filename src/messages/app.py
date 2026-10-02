@@ -229,6 +229,7 @@ def answers_for_category(
 
 RU_PRESENCE_CHECK = re.compile(
     r"(?:\bau\b|\bты\s+(?:(?:еще|ещё)\s+)?(?:тут|здесь)\b|"
+    r"\b(?:привет|здравствуй(?:те)?|алло|ау)[,\s!…-]*тут[\s?!.,…]*$|"
     r"\bя\s+(?:(?:(?:все|всё)\s+)?(?:еще|ещё)\s+)?(?:тут|здесь)\b"
     r".{0,40}\bа\s+ты\b|"
     r"\bжду\s+(?:твоего\s+)?ответа\b.{0,80}\bа\s+ты\b|"
@@ -635,8 +636,12 @@ class History:
         self._past_reply_cache: dict[str, list[dict[str, Any]]] = {}
         self._past_reply_cache_loaded_at: dict[str, datetime] = {}
 
+    def _cursor(self) -> Any:
+        self.connection.ping(reconnect=True)
+        return self.connection.cursor()
+
     def latest(self, account_id: str, peer_id: int, limit: int = 80) -> list[dict[str, str]]:
-        with self.connection.cursor() as cursor:
+        with self._cursor() as cursor:
             cursor.execute(
                 """SELECT text, outgoing, date FROM messages
                    WHERE account_id = %s AND dialog_id = %s AND text <> ''
@@ -655,7 +660,7 @@ class History:
         ]
 
     def opening(self, account_id: str, peer_id: int, limit: int = 12) -> list[dict[str, str]]:
-        with self.connection.cursor() as cursor:
+        with self._cursor() as cursor:
             cursor.execute(
                 """SELECT text, outgoing, date FROM messages
                    WHERE account_id = %s AND dialog_id = %s AND text <> ''
@@ -706,7 +711,7 @@ class History:
         )
         if cache_key not in self._past_reply_cache or cache_age > timedelta(minutes=10):
             placeholders = ", ".join(["%s"] * len(history_accounts))
-            with self.connection.cursor() as cursor:
+            with self._cursor() as cursor:
                 cursor.execute(
                     f"""SELECT account_id, dialog_id, message_id, text, outgoing FROM messages
                         WHERE account_id IN ({placeholders}) AND text <> ''
@@ -790,7 +795,7 @@ class History:
         return selected
 
     def dialogs(self, account_id: str, limit: int, offset: int) -> list[dict[str, Any]]:
-        with self.connection.cursor() as cursor:
+        with self._cursor() as cursor:
             cursor.execute(
                 """SELECT dialog_id, name, username FROM dialogs
                    WHERE account_id = %s AND kind = 'user'
@@ -1796,11 +1801,12 @@ async def run() -> None:
                     plan["should_react"] = True
                     plan["reaction_emoji"] = acknowledgement
                 presence_reply = direct_presence_reply(event.raw_text)
-                if presence_reply and not plan.get("should_reply", True):
+                if presence_reply:
+                    if not plan.get("should_reply", True):
+                        store.audit(peer_id, "no_reply_overridden", "direct presence check")
                     plan["should_reply"] = True
                     plan["should_react"] = False
                     plan["reply"] = presence_reply
-                    store.audit(peer_id, "no_reply_overridden", "direct presence check")
                 duration_followup_reply: str | None = None
                 duration_update_succeeded = False
                 pending_duration = store.pending_calendar_duration(settings.account_id, peer_id)
