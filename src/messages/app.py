@@ -1513,16 +1513,6 @@ async def run() -> None:
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
         peer_id = event.chat_id
-        if event.is_private and (
-            is_quiet_hours(datetime.now(UTC), settings.timezone)
-            or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
-        ):
-            if event.raw_text.strip() and store.claim_message(
-                settings.account_id, peer_id, event.message.id
-            ):
-                store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                store.audit(peer_id, "skipped", "night quiet hours")
-            return
         if not event.is_private:
             return
         sender = await event.get_sender()
@@ -1534,6 +1524,16 @@ async def run() -> None:
                 store.audit(peer_id, "skipped", "Telegram Game folder state is unavailable")
             return
         is_game_chat = game_folder.contains(peer_id)
+        if not is_game_chat and (
+            is_quiet_hours(datetime.now(UTC), settings.timezone)
+            or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
+        ):
+            if event.raw_text.strip() and store.claim_message(
+                settings.account_id, peer_id, event.message.id
+            ):
+                store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                store.audit(peer_id, "skipped", "night quiet hours")
+            return
         if not event.raw_text.strip() and not is_game_chat:
             return
         if not store.claim_message(settings.account_id, peer_id, event.message.id):
@@ -1720,6 +1720,36 @@ async def run() -> None:
                     await notify_conversation_started(
                         peer_id, sender, category, session_started_at
                     )
+                    try:
+                        question = await game_reply_algorithm.follow_up_question(
+                            event.raw_text or "", context, reply, generate_game_reply
+                        )
+                        if question:
+                            block_reason = await reply_policy_block(
+                                peer_id, force=True, require_game=True
+                            )
+                            if not block_reason:
+                                mark_assistant_send(peer_id, question)
+                                follow_up_sent = await event.respond(question)
+                                store.audit(
+                                    peer_id,
+                                    "sent",
+                                    json.dumps(
+                                        {
+                                            "incoming_message_id": event.message.id,
+                                            "sent_message_id": follow_up_sent.id,
+                                            "algorithm": game_source,
+                                            "follow_up_question": True,
+                                        }
+                                    ),
+                                )
+                    except Exception as exc:
+                        store.audit(
+                            peer_id,
+                            "follow_up_failed",
+                            type(exc).__name__,
+                        )
+                        logger.warning("Could not send Game follow-up question (%s)", type(exc).__name__)
                     return
                 try:
                     context = await live_chat_history(client, event)

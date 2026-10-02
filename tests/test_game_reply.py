@@ -81,6 +81,37 @@ class GameReplyTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    @unittest.skipUnless(
+        Path("/var/www/game/games/chat_with_role/src/reply_algorithm.py").exists(),
+        "Game source is mounted only in the active workspace",
+    )
+    async def test_separate_follow_up_question_uses_ten_percent_threshold(self) -> None:
+        algorithm = GameReplyAlgorithm(
+            Path("/var/www/game/games/chat_with_role/src/reply_algorithm.py")
+        )
+        module = algorithm._load()
+        prompts: list[str] = []
+
+        async def generate(prompt: str) -> str:
+            prompts.append(prompt)
+            return "А какой чай ты любишь?"
+
+        original_random = module.random.random
+        try:
+            module.random.random = lambda: 0.10
+            self.assertIsNone(
+                await algorithm.follow_up_question("Хочу чай", [], "Заварим)", generate)
+            )
+            self.assertEqual(prompts, [])
+            module.random.random = lambda: 0.09
+            question = await algorithm.follow_up_question(
+                "Хочу чай", [], "Заварим)", generate
+            )
+            self.assertEqual(question, "А какой чай ты любишь?")
+            self.assertEqual(len(prompts), 1)
+        finally:
+            module.random.random = original_random
+
 
 if __name__ == "__main__":
     unittest.main()

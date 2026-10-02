@@ -59,6 +59,8 @@ class GameReplyAlgorithm:
             raise GameReplyError("Game reply algorithm failed to load") from exc
         if not callable(getattr(module, "reply_to_message", None)):
             raise GameReplyError("Game reply algorithm has no reply_to_message function")
+        if not callable(getattr(module, "maybe_follow_up_question", None)):
+            raise GameReplyError("Game reply algorithm has no maybe_follow_up_question function")
         self._module = module
         self._mtime_ns = modified
         return module
@@ -84,3 +86,31 @@ class GameReplyAlgorithm:
         if not isinstance(result, str) or not result.strip() or len(result) > 4096:
             raise GameReplyError("Game reply algorithm returned an invalid reply")
         return result
+
+    async def follow_up_question(
+        self,
+        message: str,
+        history: list[dict[str, str]],
+        reply: str,
+        generate: Callable[[str], Awaitable[str]],
+    ) -> str | None:
+        try:
+            result = self._load().maybe_follow_up_question(
+                message, history, reply, generate
+            )
+            if inspect.isawaitable(result):
+                result = await result
+        except GameReplyError:
+            raise
+        except Exception as exc:
+            raise GameReplyError("Game follow-up question failed") from exc
+        if result is None:
+            return None
+        if (
+            not isinstance(result, str)
+            or not result.strip()
+            or len(result) > 4096
+            or not result.rstrip().endswith(("?", "？"))
+        ):
+            raise GameReplyError("Game follow-up question is invalid")
+        return result.strip()
