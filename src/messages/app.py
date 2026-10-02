@@ -63,23 +63,16 @@ EXPLICIT_CALENDAR_DATE = re.compile(
     r"march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\b",
     re.IGNORECASE,
 )
-REALTOR_MENTION = re.compile(
-    r"\b(?:ри[эе]лтор\w*|маклер\w*|агент\s+по\s+(?:недвижим\w*|аренд\w*)|"
-    r"realtor\w*|real\s+estate\s+(?:agent|broker))\b",
-    re.IGNORECASE,
-)
-PROPERTY_TERMS = (
-    r"(?:квартир\w*|апартамент\w*|жиль\w*|недвижим\w*|дом\w*|"
-    r"apartment\w*|flat\w*|house\w*|home\w*|property\w*|housing)"
-)
-PROPERTY_DEALS = (
-    r"(?:аренд\w*|сдач\w*|сдава\w*|сдам|сдаю|сдать|снять|сниму|продаж\w*|"
-    r"продат\w*|продаю|продам|куплю|покуп\w*|rent\w*|lease\w*|sell\w*|"
-    r"sale\w*|buy\w*|purchase\w*)"
-)
-PROPERTY_DEAL = re.compile(
-    rf"(?:\b{PROPERTY_TERMS}\b.{{0,100}}\b{PROPERTY_DEALS}\b|"
-    rf"\b{PROPERTY_DEALS}\b.{{0,100}}\b{PROPERTY_TERMS}\b)",
+NEW_CONTACT_REALTOR_SIGNAL = re.compile(
+    r"\b(?:"
+    r"квартир\w*|апартамент\w*|жиль\w*|недвижим\w*|дом\w*|будин\w*|"
+    r"house\w*|home\w*|оголошенн\w*|объявлен\w*|"
+    r"прода\w*|сда\w*|аренд\w*|сним\w*|куп\w*|продаж\w*|"
+    r"apartment\w*|flat\w*|housing|property|real\s+estate|"
+    r"sell\w*|sale\w*|rent\w*|lease\w*|buy\w*|purchase\w*|"
+    r"listing\w*|advert\w*|realtor\w*|маклер\w*|ри[эе]лтор\w*|"
+    r"нерухом\w*|оренд\w*|здає\w*|продає\w*|купити|продати"
+    r")\b",
     re.IGNORECASE,
 )
 ACKNOWLEDGEMENTS = {
@@ -404,12 +397,24 @@ def acknowledgement_reaction(message: str) -> str | None:
     return ACKNOWLEDGEMENTS.get(normalized)
 
 
-def real_estate_topic(message: str) -> str | None:
-    if REALTOR_MENTION.search(message):
-        return "realtor_or_real_estate_agent"
-    if PROPERTY_DEAL.search(message):
-        return "residential_property_rental_or_sale"
-    return None
+async def new_contact_realtor_topic(
+    client: TelegramClient, event: events.NewMessage.Event
+) -> tuple[str | None, bool]:
+    """Return a first-five-message realtor signal and whether the window is complete."""
+    incoming: list[str] = []
+    async for message in client.iter_messages(
+        await event.get_input_chat(), reverse=True, limit=1000
+    ):
+        if message.out:
+            continue
+        text = (message.message or "").strip()
+        incoming.append(text)
+        if len(incoming) == 5:
+            break
+    for text in incoming:
+        if NEW_CONTACT_REALTOR_SIGNAL.search(text):
+            return "residential_property_rental_or_sale", len(incoming) >= 5
+    return None, len(incoming) >= 5
 
 
 def latest_assistant_asked_question(history: list[dict[str, str]]) -> bool:
@@ -1240,7 +1245,7 @@ async def run() -> None:
                 "New chats remain unknown until their conversation shows a category.\n"
                 "Chats in the Telegram folder 'Manual' are ignored unless you opt in by ending your message with a period; the bot removes the period.\n"
                 "A period opt-in also overrides bio `free` for that conversation, until your next message without a period or 30 minutes of inactivity. `Auto` still overrides `free`.\n"
-                "Realtors and real estate rental/sale conversations never receive automatic replies.\n"
+                "New contacts become realtors only when one of their first five messages clearly mentions residential property, rent/sale, or a listing; those chats never receive automatic replies.\n"
                 "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/ordinary text = ON.\n"
                 "Bio model override: `model=MODEL_ID effort=EFFORT` (e.g. `model=gpt-6-luna effort=low`).\n"
                 "Eligible incoming private text or caption ending in a comma gets no text reply and a 🙈 reaction.\n"
@@ -1486,10 +1491,33 @@ async def run() -> None:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
             store.audit(peer_id, "skipped", "incoming message is older than 30 minutes")
             return
+        display_name = " ".join(
+            part for part in (sender.first_name, sender.last_name) if part
+        ).strip()
+        if store.create_new_contact_if_missing(
+            peer_id, sender.username or "", display_name
+        ):
+            store.audit(peer_id, "contact_auto_categorized", "unknown")
         current_category = store.contact_category(peer_id)
-        exclusion_reason = real_estate_topic(event.raw_text)
-        if current_category == "realtors" or exclusion_reason:
-            if exclusion_reason and current_category != "realtors":
+        if current_category == "realtors":
+            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+            store.audit(
+                peer_id,
+                "skipped",
+                "automatic messages are disabled for realtor contacts",
+            )
+            return
+        realtor_signal = None
+        if store.realtor_check_pending(peer_id):
+            try:
+                realtor_signal, opening_complete = await new_contact_realtor_topic(client, event)
+            except Exception as exc:
+                logger.warning(
+                    "Could not inspect a contact's opening messages for realtor classification (%s)",
+                    type(exc).__name__,
+                )
+                opening_complete = False
+            if realtor_signal:
                 display_name = " ".join(
                     part for part in (sender.first_name, sender.last_name) if part
                 ).strip()
@@ -1500,14 +1528,17 @@ async def run() -> None:
                     display_name,
                     source="automatic",
                 )
+                store.set_realtor_check_pending(peer_id, False)
                 store.audit(peer_id, "contact_auto_categorized", "realtors")
-            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-            store.audit(
-                peer_id,
-                "skipped",
-                "automatic messages are disabled for realtor contacts",
-            )
-            return
+                store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                store.audit(
+                    peer_id,
+                    "skipped",
+                    "automatic messages are disabled for realtor contacts",
+                )
+                return
+            if opening_complete:
+                store.set_realtor_check_pending(peer_id, False)
         if current_category is None:
             display_name = " ".join(
                 part for part in (sender.first_name, sender.last_name) if part
@@ -1665,24 +1696,8 @@ async def run() -> None:
                     prepared_answers = fallback_answers
                 detected_category = plan.pop("detected_category", category)
                 if auto_detect_category and detected_category == "realtors":
-                    display_name = " ".join(
-                        part for part in (sender.first_name, sender.last_name) if part
-                    ).strip()
-                    store.set_contact_category(
-                        peer_id,
-                        "realtors",
-                        sender.username or "",
-                        display_name,
-                        source="automatic",
-                    )
-                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                    store.audit(peer_id, "contact_auto_categorized", "realtors")
-                    store.audit(
-                        peer_id,
-                        "skipped",
-                        "automatic messages are disabled for realtor contacts",
-                    )
-                    return
+                    # Realtor labels come only from the deterministic first-five-message gate above.
+                    detected_category = "unknown"
                 if auto_detect_category:
                     resolved_category = resolve_automatic_category(category, detected_category)
                     if store.contact_category(peer_id) != resolved_category:

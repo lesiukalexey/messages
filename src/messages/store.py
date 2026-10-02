@@ -34,6 +34,7 @@ class Store:
                 category_source TEXT NOT NULL DEFAULT 'manual',
                 username TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '',
+                realtor_check_pending INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (account_id, peer_id)
             );
@@ -232,6 +233,7 @@ class Store:
                     category_source TEXT NOT NULL DEFAULT 'manual',
                     username TEXT NOT NULL DEFAULT '',
                     display_name TEXT NOT NULL DEFAULT '',
+                    realtor_check_pending INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (account_id, peer_id)
                 )"""
@@ -243,6 +245,14 @@ class Store:
                    FROM assistant_contacts_legacy"""
             )
             self.connection.execute("DROP TABLE assistant_contacts_legacy")
+        contact_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(assistant_contacts)")
+        }
+        if "realtor_check_pending" not in contact_columns:
+            self.connection.execute(
+                "ALTER TABLE assistant_contacts ADD COLUMN realtor_check_pending INTEGER NOT NULL DEFAULT 0"
+            )
         self.connection.commit()
 
     def register_learning_owner(self, user_id: int) -> None:
@@ -391,6 +401,35 @@ class Store:
         ).fetchone()
         return row["category"] if row else None
 
+    def create_new_contact_if_missing(
+        self, peer_id: int, username: str, display_name: str
+    ) -> bool:
+        cursor = self.connection.execute(
+            """INSERT OR IGNORE INTO assistant_contacts
+                   (account_id, peer_id, category, category_source, username,
+                    display_name, realtor_check_pending, updated_at)
+               VALUES (?, ?, 'unknown', 'automatic', ?, ?, 1, ?)""",
+            (self.account_id, peer_id, username, display_name, utc_now()),
+        )
+        self.connection.commit()
+        return cursor.rowcount == 1
+
+    def realtor_check_pending(self, peer_id: int) -> bool:
+        row = self.connection.execute(
+            "SELECT realtor_check_pending FROM assistant_contacts "
+            "WHERE account_id = ? AND peer_id = ?",
+            (self.account_id, peer_id),
+        ).fetchone()
+        return bool(row and row["realtor_check_pending"])
+
+    def set_realtor_check_pending(self, peer_id: int, pending: bool) -> None:
+        self.connection.execute(
+            "UPDATE assistant_contacts SET realtor_check_pending = ? "
+            "WHERE account_id = ? AND peer_id = ?",
+            (int(pending), self.account_id, peer_id),
+        )
+        self.connection.commit()
+
     def contact_category_source(self, peer_id: int) -> str | None:
         row = self.connection.execute(
             "SELECT category_source FROM assistant_contacts WHERE account_id = ? AND peer_id = ?",
@@ -415,6 +454,8 @@ class Store:
                ON CONFLICT(account_id, peer_id) DO UPDATE SET category=excluded.category,
                  category_source=excluded.category_source,
                  username=excluded.username, display_name=excluded.display_name,
+                 realtor_check_pending=CASE WHEN excluded.category_source='manual'
+                   THEN 0 ELSE assistant_contacts.realtor_check_pending END,
                  updated_at=excluded.updated_at""",
             (self.account_id, peer_id, category, source, username, display_name, utc_now()),
         )

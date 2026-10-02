@@ -22,8 +22,10 @@ The Telegram profile bio controls the assistant:
 
 If the profile cannot be read, the worker fails closed. Groups, channels, bots,
 and Saved Messages are ignored. A new contact starts as `unknown`. The assistant
-uses each new message and the conversation to assign `friends`, `recruiters`, or
-`realtors` only when the relationship becomes clear. Existing dialogs are treated
+uses each new message and the conversation to assign `friends` or `recruiters`
+when the relationship becomes clear. It assigns `realtors` only when a new
+contact's first five incoming messages contain clear property, rental/sale, or
+listing language in Russian, Ukrainian, or English. Existing dialogs are treated
 as friends unless they already have an explicit category.
 
 ## Settings in Telegram

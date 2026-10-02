@@ -23,7 +23,7 @@ PLAN_SCHEMA: dict[str, Any] = {
         "should_reply": {"type": "boolean"},
         "should_react": {"type": "boolean"},
         "reaction_emoji": {"type": "string", "enum": ["", "👍", "🔥", "❤️", "🙏", "😂", "🙂"]},
-        "detected_category": {"type": "string", "enum": ["unknown", "friends", "recruiters", "realtors"]},
+        "detected_category": {"type": "string", "enum": ["unknown", "friends", "recruiters"]},
         "web_search": {"type": "boolean"},
         "web_search_query": {"type": "string"},
         "meeting_in_progress": {"type": "boolean"},
@@ -467,8 +467,10 @@ to Alexey's learning bot and is not part of the contact reply.
 For other no-reply cases set should_react=false and reaction_emoji to an empty string. Choose only
 from the supplied reaction options. Routine scheduling questions may still get one concise clarification
 for a genuinely missing date or time when the conversation clearly concerns a meeting.
-Set detected_category to realtors when the contact is a realtor or the conversation is about
-renting, buying, or selling residential property. Such contacts are excluded from automatic replies.
+Never assign detected_category=realtors. Realtor classification is handled separately: only a new
+contact whose first five incoming messages contain an explicit residential property, rental/sale,
+or listing signal can receive that category. Messages after the first five and model inference alone
+must not classify a contact as a realtor.
 Otherwise set it to recruiters only when the conversation is about recruiting Alexey, such as a job
 opportunity, vacancy, interview, or hiring discussion. Set it to friends when the conversation gives
 clear evidence of a personal or social relationship with Alexey. A greeting, ordinary question, or
