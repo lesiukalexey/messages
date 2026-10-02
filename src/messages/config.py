@@ -34,6 +34,7 @@ class Settings:
     reply_api_host: str = "192.168.31.46"
     reply_api_port: int = 8095
     reply_api_persona_id: str = "alexey-lesiuk"
+    game_algorithm_path: Path = Path("/game/games/chat_with_role/src/reply_algorithm.py")
     call_reminder_username: str = ""
     log_level: str = "INFO"
     category_answers_dir: Path = Path("/home/admin/messages-runtime/category-answers")
@@ -222,6 +223,12 @@ class Settings:
             reply_api_host=reply_api_host,
             reply_api_port=reply_api_port,
             reply_api_persona_id=os.getenv("REPLY_API_PERSONA_ID", "alexey-lesiuk").strip(),
+            game_algorithm_path=Path(
+                os.getenv(
+                    "GAME_ALGORITHM_PATH",
+                    "/game/games/chat_with_role/src/reply_algorithm.py",
+                )
+            ),
             call_reminder_username=call_reminder_username,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             category_answers_dir=Path(

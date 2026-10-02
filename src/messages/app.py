@@ -18,6 +18,7 @@ from telethon import TelegramClient, events, functions, types, utils
 
 from .calendar import GoogleCalendar
 from .config import Settings
+from .game_reply import GameReplyAlgorithm
 from .llm import Responder
 from .model_selection import (
     BIO_MODEL_SELECTION_SETTING,
@@ -1153,6 +1154,9 @@ async def run() -> None:
     await manual_folder.refresh(force=True)
     auto_folder = DialogFilterGate(client, "Auto")
     await auto_folder.refresh(force=True)
+    game_folder = DialogFilterGate(client, "Game")
+    await game_folder.refresh(force=True)
+    game_reply_algorithm = GameReplyAlgorithm(settings.game_algorithm_path)
 
     learning_bot = (
         LearningBot(
@@ -1179,7 +1183,9 @@ async def run() -> None:
             return
         await learning_bot.publish_next_question()
 
-    async def reply_policy_block(peer_id: int, force: bool = True) -> str | None:
+    async def reply_policy_block(
+        peer_id: int, force: bool = True, require_game: bool = False
+    ) -> str | None:
         owner_opt_in = store.conversation_owner_opt_in_active(settings.account_id, peer_id)
         if store.conversation_control_mode(settings.account_id, peer_id) == "manual" and not owner_opt_in:
             return "conversation is being handled manually by Alexey"
@@ -1189,14 +1195,19 @@ async def run() -> None:
             return "contact is in Telegram Manual folder"
         if not await auto_folder.refresh(force=force):
             return "Telegram Auto folder state is unavailable"
-        auto_enabled = auto_folder.contains(peer_id)
+        if not await game_folder.refresh(force=force):
+            return "Telegram Game folder state is unavailable"
+        game_enabled = game_folder.contains(peer_id)
+        if require_game and not game_enabled:
+            return "contact is no longer in Telegram Game folder"
+        auto_enabled = auto_folder.contains(peer_id) or game_enabled
         await gate.refresh(force=force)
         if gate.error:
             if gate.error.startswith("invalid bio model directive"):
                 return gate.error
             return "global bio switch is unreadable"
         if not gate.enabled and not auto_enabled and not owner_opt_in:
-            return "global bio switch is off and contact is not in Telegram Auto folder"
+            return "global bio switch is off and contact is not in Telegram Auto or Game folder"
         return None
     locks: dict[int, asyncio.Lock] = {}
     assistant_send_markers: dict[tuple[int, str], datetime] = {}
@@ -1448,6 +1459,8 @@ async def run() -> None:
             await manual_folder.refresh(force=True)
             auto_folder.invalidate()
             await auto_folder.refresh(force=True)
+            game_folder.invalidate()
+            await game_folder.refresh(force=True)
 
     async def notify_conversation_started(
         peer_id: int, sender: types.User, category: str, session_started_at: str
@@ -1507,10 +1520,18 @@ async def run() -> None:
                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                 store.audit(peer_id, "skipped", "night quiet hours")
             return
-        if not event.is_private or not event.raw_text.strip():
+        if not event.is_private:
             return
         sender = await event.get_sender()
         if not isinstance(sender, types.User) or sender.bot or sender.deleted or sender.is_self:
+            return
+        if not await game_folder.refresh(force=True):
+            if store.claim_message(settings.account_id, peer_id, event.message.id):
+                store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                store.audit(peer_id, "skipped", "Telegram Game folder state is unavailable")
+            return
+        is_game_chat = game_folder.contains(peer_id)
+        if not event.raw_text.strip() and not is_game_chat:
             return
         if not store.claim_message(settings.account_id, peer_id, event.message.id):
             return
@@ -1536,7 +1557,7 @@ async def run() -> None:
             )
             return
         realtor_signal = None
-        if store.realtor_check_pending(peer_id):
+        if not is_game_chat and store.realtor_check_pending(peer_id):
             try:
                 realtor_signal, opening_complete = await new_contact_realtor_topic(client, event)
             except Exception as exc:
@@ -1576,7 +1597,9 @@ async def run() -> None:
                 source="automatic",
             )
             store.audit(peer_id, "contact_auto_categorized", "unknown")
-        block_reason = await reply_policy_block(peer_id, force=True)
+        block_reason = await reply_policy_block(
+            peer_id, force=True, require_game=is_game_chat
+        )
         if block_reason:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
             store.audit(peer_id, "skipped", block_reason)
@@ -1590,12 +1613,14 @@ async def run() -> None:
             typing_action = None
             typing_action_active = False
             try:
-                block_reason = await reply_policy_block(peer_id, force=True)
+                block_reason = await reply_policy_block(
+                    peer_id, force=True, require_game=is_game_chat
+                )
                 if block_reason:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", block_reason)
                     return
-                if ends_with_comma(event.raw_text):
+                if not is_game_chat and ends_with_comma(event.raw_text):
                     await mark_incoming_message_read(event)
                     session_started_at = store.record_incoming_session(
                         settings.account_id, peer_id, event.message.date
@@ -1612,7 +1637,9 @@ async def run() -> None:
                     return
                 if random.random() < 0.3:
                     await asyncio.sleep(random.uniform(1.0, 10.0))
-                    block_reason = await reply_policy_block(peer_id, force=True)
+                    block_reason = await reply_policy_block(
+                        peer_id, force=True, require_game=is_game_chat
+                    )
                     if block_reason:
                         store.message_state(
                             settings.account_id, peer_id, event.message.id, "skipped"
@@ -1635,6 +1662,49 @@ async def run() -> None:
                 session_started_at = store.record_incoming_session(
                     settings.account_id, peer_id, event.message.date
                 )
+                if is_game_chat:
+                    reply = await game_reply_algorithm.reply(
+                        settings.account_id, peer_id, event.raw_text or ""
+                    )
+                    game_source = "chat_with_role"
+                    store.audit(
+                        peer_id,
+                        "generated",
+                        json.dumps(
+                            {
+                                "incoming_message_id": event.message.id,
+                                "algorithm": game_source,
+                            }
+                        ),
+                    )
+                    await asyncio.sleep(max(1.0, sum(char.isalpha() for char in reply) / 10.0))
+                    block_reason = await reply_policy_block(
+                        peer_id, force=True, require_game=True
+                    )
+                    if block_reason:
+                        store.message_state(
+                            settings.account_id, peer_id, event.message.id, "skipped"
+                        )
+                        store.audit(peer_id, "skipped", f"{block_reason} before send")
+                        return
+                    mark_assistant_send(peer_id, reply)
+                    sent = await event.respond(reply)
+                    store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                    store.audit(
+                        peer_id,
+                        "sent",
+                        json.dumps(
+                            {
+                                "incoming_message_id": event.message.id,
+                                "sent_message_id": sent.id,
+                                "algorithm": game_source,
+                            }
+                        ),
+                    )
+                    await notify_conversation_started(
+                        peer_id, sender, category, session_started_at
+                    )
+                    return
                 try:
                     context = await live_chat_history(client, event)
                 except Exception as exc:
