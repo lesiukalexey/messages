@@ -18,7 +18,7 @@ from telethon import TelegramClient, events, functions, types, utils
 
 from .calendar import GoogleCalendar
 from .config import Settings
-from .game_reply import GameReplyAlgorithm
+from .game_reply import GameReplyAlgorithm, game_session_history
 from .llm import Responder
 from .model_selection import (
     BIO_MODEL_SELECTION_SETTING,
@@ -1666,8 +1666,18 @@ async def run() -> None:
                     settings.account_id, peer_id, event.message.date
                 )
                 if is_game_chat:
+                    context = await game_session_history(client, event, session_started_at)
+                    model, effort, _ = selected_model_settings()
+
+                    async def generate_game_reply(prompt: str) -> str:
+                        return await responder._run(model, prompt, effort=effort)
+
                     reply = await game_reply_algorithm.reply(
-                        settings.account_id, peer_id, event.raw_text or ""
+                        settings.account_id,
+                        peer_id,
+                        event.raw_text or "",
+                        context,
+                        generate_game_reply,
                     )
                     game_source = "chat_with_role"
                     store.audit(

@@ -1,13 +1,37 @@
 """Adapter for the reply algorithm kept in the separate Game project."""
 
-import asyncio
 import importlib.util
+import inspect
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 
 class GameReplyError(RuntimeError):
     pass
+
+
+async def game_session_history(client: Any, event: Any, session_started_at: str) -> list[dict[str, str]]:
+    """Read every earlier text turn in the current Telegram conversation."""
+    started = datetime.fromisoformat(session_started_at)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    turns: list[dict[str, str]] = []
+    async for item in client.iter_messages(await event.get_input_chat()):
+        if item.date is None:
+            continue
+        item_date = item.date if item.date.tzinfo else item.date.replace(tzinfo=UTC)
+        if item_date < started:
+            break
+        if item.id >= event.message.id:
+            continue
+        text = (item.message or "").strip()
+        if text:
+            turns.append({"role": "assistant" if item.out else "contact", "text": text})
+    turns.reverse()
+    return turns
 
 
 class GameReplyAlgorithm:
@@ -39,12 +63,20 @@ class GameReplyAlgorithm:
         self._mtime_ns = modified
         return module
 
-    async def reply(self, account_id: str, peer_id: int, message: str) -> str:
-        def invoke() -> str:
-            return self._load().reply_to_message(account_id, peer_id, message)
-
+    async def reply(
+        self,
+        account_id: str,
+        peer_id: int,
+        message: str,
+        history: list[dict[str, str]],
+        generate: Callable[[str], Awaitable[str]],
+    ) -> str:
         try:
-            result = await asyncio.to_thread(invoke)
+            result = self._load().reply_to_message(
+                account_id, peer_id, message, history, generate
+            )
+            if inspect.isawaitable(result):
+                result = await result
         except GameReplyError:
             raise
         except Exception as exc:
