@@ -1186,6 +1186,14 @@ async def run() -> None:
     async def reply_policy_block(
         peer_id: int, force: bool = True, require_game: bool = False
     ) -> str | None:
+        if not await game_folder.refresh(force=force):
+            return "Telegram Game folder state is unavailable"
+        game_enabled = game_folder.contains(peer_id)
+        if require_game:
+            return None if game_enabled else "contact is no longer in Telegram Game folder"
+        if game_enabled:
+            return "contact moved to Telegram Game folder and requires its reply algorithm"
+
         owner_opt_in = store.conversation_owner_opt_in_active(settings.account_id, peer_id)
         if store.conversation_control_mode(settings.account_id, peer_id) == "manual" and not owner_opt_in:
             return "conversation is being handled manually by Alexey"
@@ -1195,19 +1203,14 @@ async def run() -> None:
             return "contact is in Telegram Manual folder"
         if not await auto_folder.refresh(force=force):
             return "Telegram Auto folder state is unavailable"
-        if not await game_folder.refresh(force=force):
-            return "Telegram Game folder state is unavailable"
-        game_enabled = game_folder.contains(peer_id)
-        if require_game and not game_enabled:
-            return "contact is no longer in Telegram Game folder"
-        auto_enabled = auto_folder.contains(peer_id) or game_enabled
+        auto_enabled = auto_folder.contains(peer_id)
         await gate.refresh(force=force)
         if gate.error:
             if gate.error.startswith("invalid bio model directive"):
                 return gate.error
             return "global bio switch is unreadable"
         if not gate.enabled and not auto_enabled and not owner_opt_in:
-            return "global bio switch is off and contact is not in Telegram Auto or Game folder"
+            return "global bio switch is off and contact is not in Telegram Auto folder"
         return None
     locks: dict[int, asyncio.Lock] = {}
     assistant_send_markers: dict[tuple[int, str], datetime] = {}
@@ -1677,7 +1680,10 @@ async def run() -> None:
                             }
                         ),
                     )
-                    await asyncio.sleep(max(1.0, sum(char.isalpha() for char in reply) / 10.0))
+                    delay_seconds = max(
+                        1.0, sum(char.isalpha() for char in reply) / 10.0
+                    )
+                    await asyncio.sleep(delay_seconds)
                     block_reason = await reply_policy_block(
                         peer_id, force=True, require_game=True
                     )
