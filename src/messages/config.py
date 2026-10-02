@@ -35,6 +35,7 @@ class Settings:
     reply_api_port: int = 8095
     reply_api_persona_id: str = "alexey-lesiuk"
     game_algorithm_path: Path = Path("/game/games/chat_with_role/src/reply_algorithm.py")
+    black_castle_algorithm_path: Path = Path("/game/games/black_castle/src/reply_algorithm.py")
     call_reminder_username: str = ""
     log_level: str = "INFO"
     category_answers_dir: Path = Path("/home/admin/messages-runtime/category-answers")
@@ -227,6 +228,12 @@ class Settings:
                 os.getenv(
                     "GAME_ALGORITHM_PATH",
                     "/game/games/chat_with_role/src/reply_algorithm.py",
+                )
+            ),
+            black_castle_algorithm_path=Path(
+                os.getenv(
+                    "BLACK_CASTLE_ALGORITHM_PATH",
+                    "/game/games/black_castle/src/reply_algorithm.py",
                 )
             ),
             call_reminder_username=call_reminder_username,

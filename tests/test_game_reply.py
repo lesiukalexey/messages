@@ -7,6 +7,17 @@ from types import SimpleNamespace
 from messages.game_reply import GameReplyAlgorithm, game_session_history
 
 
+GAME_SOURCE = next(
+    (
+        path for path in (
+            Path("/game/games/chat_with_role/src/reply_algorithm.py"),
+            Path("/var/www/game/games/chat_with_role/src/reply_algorithm.py"),
+        ) if path.exists()
+    ),
+    Path("/game/games/chat_with_role/src/reply_algorithm.py"),
+)
+
+
 class FakeEvent:
     def __init__(self, message_id: int) -> None:
         self.message = SimpleNamespace(id=message_id)
@@ -52,12 +63,11 @@ class GameReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("future", [turn["text"] for turn in history])
 
     @unittest.skipUnless(
-        Path("/var/www/game/games/chat_with_role/src/reply_algorithm.py").exists(),
+        GAME_SOURCE.exists(),
         "Game source is mounted only in the active workspace",
     )
     async def test_game_uses_history_and_latest_message_for_generation(self) -> None:
-        path = Path("/var/www/game/games/chat_with_role/src/reply_algorithm.py")
-        algorithm = GameReplyAlgorithm(path)
+        algorithm = GameReplyAlgorithm(GAME_SOURCE)
         prompts: list[str] = []
 
         async def generate(prompt: str) -> str:
@@ -82,13 +92,11 @@ class GameReplyTests(unittest.IsolatedAsyncioTestCase):
         )
 
     @unittest.skipUnless(
-        Path("/var/www/game/games/chat_with_role/src/reply_algorithm.py").exists(),
+        GAME_SOURCE.exists(),
         "Game source is mounted only in the active workspace",
     )
     async def test_separate_follow_up_question_uses_ten_percent_threshold(self) -> None:
-        algorithm = GameReplyAlgorithm(
-            Path("/var/www/game/games/chat_with_role/src/reply_algorithm.py")
-        )
+        algorithm = GameReplyAlgorithm(GAME_SOURCE)
         module = algorithm._load()
         prompts: list[str] = []
 

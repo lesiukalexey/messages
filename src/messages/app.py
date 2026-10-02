@@ -17,8 +17,10 @@ import pymysql
 from telethon import TelegramClient, events, functions, types, utils
 
 from .calendar import GoogleCalendar
+from .black_castle_reply import BlackCastleReplyAlgorithm
 from .config import Settings
 from .game_reply import GameReplyAlgorithm, game_session_history
+from .game_routing import selected_game_folder
 from .llm import Responder
 from .model_selection import (
     BIO_MODEL_SELECTION_SETTING,
@@ -1157,6 +1159,11 @@ async def run() -> None:
     game_folder = DialogFilterGate(client, "Game")
     await game_folder.refresh(force=True)
     game_reply_algorithm = GameReplyAlgorithm(settings.game_algorithm_path)
+    black_castle_folder = DialogFilterGate(client, "BlackCastle")
+    await black_castle_folder.refresh(force=True)
+    black_castle_reply_algorithm = BlackCastleReplyAlgorithm(
+        settings.black_castle_algorithm_path
+    )
 
     learning_bot = (
         LearningBot(
@@ -1184,15 +1191,19 @@ async def run() -> None:
         await learning_bot.publish_next_question()
 
     async def reply_policy_block(
-        peer_id: int, force: bool = True, require_game: bool = False
+        peer_id: int, force: bool = True, require_game: str | None = None
     ) -> str | None:
         if not await game_folder.refresh(force=force):
             return "Telegram Game folder state is unavailable"
-        game_enabled = game_folder.contains(peer_id)
-        if require_game:
-            return None if game_enabled else "contact is no longer in Telegram Game folder"
-        if game_enabled:
-            return "contact moved to Telegram Game folder and requires its reply algorithm"
+        if not await black_castle_folder.refresh(force=force):
+            return "Telegram BlackCastle folder state is unavailable"
+        selected_game = selected_game_folder(
+            black_castle_folder.contains(peer_id), game_folder.contains(peer_id)
+        )
+        if require_game is not None:
+            return None if selected_game == require_game else f"contact is no longer routed to {require_game}"
+        if selected_game is not None:
+            return f"contact moved to Telegram {selected_game} folder and requires its reply algorithm"
 
         owner_opt_in = store.conversation_owner_opt_in_active(settings.account_id, peer_id)
         if store.conversation_control_mode(settings.account_id, peer_id) == "manual" and not owner_opt_in:
@@ -1464,6 +1475,8 @@ async def run() -> None:
             await auto_folder.refresh(force=True)
             game_folder.invalidate()
             await game_folder.refresh(force=True)
+            black_castle_folder.invalidate()
+            await black_castle_folder.refresh(force=True)
 
     async def notify_conversation_started(
         peer_id: int, sender: types.User, category: str, session_started_at: str
@@ -1523,8 +1536,15 @@ async def run() -> None:
                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                 store.audit(peer_id, "skipped", "Telegram Game folder state is unavailable")
             return
-        is_game_chat = game_folder.contains(peer_id)
-        if not is_game_chat and (
+        if not await black_castle_folder.refresh(force=True):
+            if store.claim_message(settings.account_id, peer_id, event.message.id):
+                store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                store.audit(peer_id, "skipped", "Telegram BlackCastle folder state is unavailable")
+            return
+        selected_game = selected_game_folder(
+            black_castle_folder.contains(peer_id), game_folder.contains(peer_id)
+        )
+        if selected_game != "Game" and (
             is_quiet_hours(datetime.now(UTC), settings.timezone)
             or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
         ):
@@ -1534,7 +1554,7 @@ async def run() -> None:
                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                 store.audit(peer_id, "skipped", "night quiet hours")
             return
-        if not event.raw_text.strip() and not is_game_chat:
+        if not event.raw_text.strip() and selected_game is None:
             return
         if not store.claim_message(settings.account_id, peer_id, event.message.id):
             return
@@ -1560,7 +1580,7 @@ async def run() -> None:
             )
             return
         realtor_signal = None
-        if not is_game_chat and store.realtor_check_pending(peer_id):
+        if selected_game is None and store.realtor_check_pending(peer_id):
             try:
                 realtor_signal, opening_complete = await new_contact_realtor_topic(client, event)
             except Exception as exc:
@@ -1601,7 +1621,7 @@ async def run() -> None:
             )
             store.audit(peer_id, "contact_auto_categorized", "unknown")
         block_reason = await reply_policy_block(
-            peer_id, force=True, require_game=is_game_chat
+            peer_id, force=True, require_game=selected_game
         )
         if block_reason:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
@@ -1617,13 +1637,13 @@ async def run() -> None:
             typing_action_active = False
             try:
                 block_reason = await reply_policy_block(
-                    peer_id, force=True, require_game=is_game_chat
+                    peer_id, force=True, require_game=selected_game
                 )
                 if block_reason:
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     store.audit(peer_id, "skipped", block_reason)
                     return
-                if not is_game_chat and ends_with_comma(event.raw_text):
+                if selected_game is None and ends_with_comma(event.raw_text):
                     await mark_incoming_message_read(event)
                     session_started_at = store.record_incoming_session(
                         settings.account_id, peer_id, event.message.date
@@ -1641,7 +1661,7 @@ async def run() -> None:
                 if random.random() < 0.3:
                     await asyncio.sleep(random.uniform(1.0, 10.0))
                     block_reason = await reply_policy_block(
-                        peer_id, force=True, require_game=is_game_chat
+                        peer_id, force=True, require_game=selected_game
                     )
                     if block_reason:
                         store.message_state(
@@ -1665,7 +1685,40 @@ async def run() -> None:
                 session_started_at = store.record_incoming_session(
                     settings.account_id, peer_id, event.message.date
                 )
-                if is_game_chat:
+                if selected_game == "BlackCastle":
+                    reply = black_castle_reply_algorithm.reply(
+                        settings.account_id, peer_id, event.raw_text or ""
+                    )
+                    store.audit(
+                        peer_id,
+                        "generated",
+                        json.dumps({"incoming_message_id": event.message.id, "algorithm": "black_castle"}),
+                    )
+                    await asyncio.sleep(max(1.0, sum(char.isalpha() for char in reply) / 10.0))
+                    block_reason = await reply_policy_block(
+                        peer_id, force=True, require_game="BlackCastle"
+                    )
+                    if block_reason:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        store.audit(peer_id, "skipped", f"{block_reason} before send")
+                        return
+                    mark_assistant_send(peer_id, reply)
+                    sent = await event.respond(reply)
+                    store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                    store.audit(
+                        peer_id,
+                        "sent",
+                        json.dumps({
+                            "incoming_message_id": event.message.id,
+                            "sent_message_id": sent.id,
+                            "algorithm": "black_castle",
+                        }),
+                    )
+                    await notify_conversation_started(
+                        peer_id, sender, category, session_started_at
+                    )
+                    return
+                if selected_game == "Game":
                     context = await game_session_history(client, event, session_started_at)
                     model, effort, _ = selected_model_settings()
 
@@ -1695,7 +1748,7 @@ async def run() -> None:
                     )
                     await asyncio.sleep(delay_seconds)
                     block_reason = await reply_policy_block(
-                        peer_id, force=True, require_game=True
+                        peer_id, force=True, require_game="Game"
                     )
                     if block_reason:
                         store.message_state(
@@ -1726,7 +1779,7 @@ async def run() -> None:
                         )
                         if question:
                             block_reason = await reply_policy_block(
-                                peer_id, force=True, require_game=True
+                                peer_id, force=True, require_game="Game"
                             )
                             if not block_reason:
                                 mark_assistant_send(peer_id, question)
