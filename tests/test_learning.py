@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import sqlite3
+import json
 from pathlib import Path
 import asyncio
 from datetime import datetime, timezone
@@ -15,6 +16,72 @@ from messages.store import Store
 
 
 class LearningAnswersTest(unittest.TestCase):
+    def test_black_castle_photo_is_cached_for_inline_delivery_with_inert_choices(self) -> None:
+        class FakeLearningBot(LearningBot):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)
+                self.calls: list[tuple[str, dict[str, object]]] = []
+
+            async def _call(self, method: str, payload: dict[str, object]) -> object:
+                self.calls.append((method, payload))
+                return {}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "answers.yaml"
+            profile.write_text("learned_answers: {}\n", encoding="utf-8")
+            scene = root / "opening_scene.json"
+            scene.write_text(json.dumps({
+                "caption": "Идите по лесу.",
+                "question": "Вы пойдете:",
+                "choices": [
+                    {"id": "right_road", "text": "По правой дороге"},
+                    {"id": "left_road", "text": "По левой дороге"},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            store = Store(root / "assistant.sqlite3", "personal")
+            try:
+                store.initialize()
+                store.register_learning_owner(123)
+                bot = FakeLearningBot(
+                    "test-token", store, profile, black_castle_scene_path=scene
+                )
+                asyncio.run(bot.process_update({"message": {
+                    "from": {"id": 123},
+                    "chat": {"id": 123, "type": "private"},
+                    "caption": "/blackcastle_photo",
+                    "photo": [{"file_id": "cached-photo-id"}],
+                }}))
+                self.assertEqual(
+                    store.setting("black_castle_photo_file_id", ""), "cached-photo-id"
+                )
+
+                asyncio.run(bot.process_update({"inline_query": {
+                    "id": "inline-1", "query": "black_castle_opening",
+                }}))
+                method, payload = bot.calls[-1]
+                self.assertEqual(method, "answerInlineQuery")
+                result = payload["results"][0]
+                self.assertEqual(result["photo_file_id"], "cached-photo-id")
+                self.assertEqual(result["caption"], "Идите по лесу.\n\nВы пойдете:")
+                self.assertEqual(
+                    [button["text"] for button in result["reply_markup"]["inline_keyboard"][0]],
+                    ["По правой дороге", "По левой дороге"],
+                )
+                self.assertTrue(all(
+                    button["callback_data"] == "black_castle_noop"
+                    for button in result["reply_markup"]["inline_keyboard"][0]
+                ))
+
+                asyncio.run(bot.process_update({"callback_query": {
+                    "id": "callback-1", "data": "black_castle_noop",
+                }}))
+                self.assertEqual(bot.calls[-1], (
+                    "answerCallbackQuery", {"callback_query_id": "callback-1"}
+                ))
+            finally:
+                store.close()
+
     def test_existing_learning_queue_migrates_to_recruiter_category(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "assistant.sqlite3"

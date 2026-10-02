@@ -8,6 +8,7 @@ import logging
 import os
 import random
 import re
+import secrets
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,6 @@ import pymysql
 from telethon import TelegramClient, events, functions, types, utils
 
 from .calendar import GoogleCalendar
-from .black_castle_reply import BlackCastleReplyAlgorithm
 from .config import Settings
 from .game_reply import GameReplyAlgorithm, game_session_history
 from .game_routing import selected_game_folder
@@ -30,7 +30,7 @@ from .model_selection import (
     parse_bio_model_directive,
 )
 from .language import check_reply_language, expected_reply_language
-from .learning import LearningBot
+from .learning import BOT_USERNAME, LearningBot, black_castle_caption_and_keyboard
 from .runtime import load_environment
 from .recruiter_answers import CategoryAnswers, RecruiterAnswers
 from .store import Store
@@ -1161,10 +1161,6 @@ async def run() -> None:
     game_reply_algorithm = GameReplyAlgorithm(settings.game_algorithm_path)
     black_castle_folder = DialogFilterGate(client, "BlackCastle")
     await black_castle_folder.refresh(force=True)
-    black_castle_reply_algorithm = BlackCastleReplyAlgorithm(
-        settings.black_castle_algorithm_path
-    )
-
     learning_bot = (
         LearningBot(
             settings.learning_bot_token,
@@ -1178,6 +1174,7 @@ async def run() -> None:
             translate_to_english=lambda text: responder.translate_to_english(
                 selected_model_settings()[0], text, effort=selected_model_settings()[1]
             ),
+            black_castle_scene_path=settings.black_castle_scene_path,
         )
         if settings.learning_bot_token and settings.account_id == "personal"
         else None
@@ -1686,13 +1683,16 @@ async def run() -> None:
                     settings.account_id, peer_id, event.message.date
                 )
                 if selected_game == "BlackCastle":
-                    reply = black_castle_reply_algorithm.reply(
-                        settings.account_id, peer_id, event.raw_text or ""
-                    )
+                    try:
+                        reply, _ = black_castle_caption_and_keyboard(settings.black_castle_scene_path)
+                    except Exception as exc:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        store.audit(peer_id, "failed", f"BlackCastle scene is unavailable ({type(exc).__name__})")
+                        return
                     store.audit(
                         peer_id,
                         "generated",
-                        json.dumps({"incoming_message_id": event.message.id, "algorithm": "black_castle"}),
+                        json.dumps({"incoming_message_id": event.message.id, "algorithm": "black_castle_scene"}),
                     )
                     await asyncio.sleep(max(1.0, sum(char.isalpha() for char in reply) / 10.0))
                     block_reason = await reply_policy_block(
@@ -1702,16 +1702,49 @@ async def run() -> None:
                         store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                         store.audit(peer_id, "skipped", f"{block_reason} before send")
                         return
+                    try:
+                        bot_peer = await client.get_input_entity(f"@{BOT_USERNAME}")
+                        inline_results = await client(functions.messages.GetInlineBotResultsRequest(
+                            bot=utils.get_input_user(bot_peer),
+                            peer=await event.get_input_chat(),
+                            query="black_castle_opening",
+                            offset="",
+                        ))
+                        result = next(
+                            (item for item in inline_results.results if item.id == "black_castle_opening"),
+                            None,
+                        )
+                        if result is None:
+                            raise RuntimeError("BlackCastle inline photo is not configured")
+                        sent = await client(functions.messages.SendInlineBotResultRequest(
+                            peer=await event.get_input_chat(),
+                            query_id=inline_results.query_id,
+                            id=result.id,
+                            random_id=secrets.randbits(63),
+                        ))
+                    except Exception as exc:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "failed")
+                        store.audit(
+                            peer_id,
+                            "failed",
+                            f"BlackCastle inline scene send failed ({type(exc).__name__})",
+                        )
+                        logger.warning("Could not send BlackCastle inline scene (%s)", type(exc).__name__)
+                        return
                     mark_assistant_send(peer_id, reply)
-                    sent = await event.respond(reply)
                     store.message_state(settings.account_id, peer_id, event.message.id, "sent")
                     store.audit(
                         peer_id,
                         "sent",
                         json.dumps({
                             "incoming_message_id": event.message.id,
-                            "sent_message_id": sent.id,
-                            "algorithm": "black_castle",
+                            "sent_message_id": next(
+                                (getattr(getattr(update, "message", None), "id", None)
+                                 for update in getattr(sent, "updates", [])
+                                 if getattr(getattr(update, "message", None), "id", None) is not None),
+                                None,
+                            ),
+                            "algorithm": "black_castle_scene",
                         }),
                     )
                     await notify_conversation_started(
