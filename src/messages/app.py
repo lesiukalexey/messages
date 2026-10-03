@@ -1233,6 +1233,12 @@ async def run() -> None:
     def chatrole_test_peer_allowed(peer_id: int) -> bool:
         return peer_id in settings.chatrole_test_peer_ids
 
+    def selected_game_for_peer(peer_id: int, in_black_castle: bool) -> str | None:
+        selected = selected_game_folder(in_black_castle, game_contains(peer_id))
+        if selected is None and chatrole_test_peer_allowed(peer_id):
+            return "Game"
+        return selected
+
     black_castle_folder = DialogFilterGate(client, "BlackCastle")
     await black_castle_folder.refresh(force=True)
     learning_bot = (
@@ -1387,8 +1393,8 @@ async def run() -> None:
             return "Telegram Game folder state is unavailable"
         if not await black_castle_folder.refresh(force=force):
             return "Telegram BlackCastle folder state is unavailable"
-        selected_game = selected_game_folder(
-            black_castle_folder.contains(peer_id), game_contains(peer_id)
+        selected_game = selected_game_for_peer(
+            peer_id, black_castle_folder.contains(peer_id)
         )
         if require_game is not None:
             return None if selected_game == require_game else f"contact is no longer routed to {require_game}"
@@ -1795,8 +1801,8 @@ async def run() -> None:
                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                 store.audit(peer_id, "skipped", "Telegram BlackCastle folder state is unavailable")
             return
-        selected_game = selected_game_folder(
-            black_castle_folder.contains(peer_id), game_contains(peer_id)
+        selected_game = selected_game_for_peer(
+            peer_id, black_castle_folder.contains(peer_id)
         )
         message_key = (settings.account_id, peer_id, event.message.id)
         startup_game_recovery = (
