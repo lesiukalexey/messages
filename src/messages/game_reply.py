@@ -2,6 +2,7 @@
 
 import importlib.util
 import inspect
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
