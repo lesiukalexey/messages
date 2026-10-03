@@ -30,26 +30,6 @@ _QUESTION_STOP_WORDS = frozenset({
 })
 
 
-def black_castle_caption_and_keyboard(scene_path: Path) -> tuple[str, list[dict[str, Any]]]:
-    scene = json.loads(scene_path.read_text(encoding="utf-8"))
-    caption = scene["caption"]
-    question = scene["question"]
-    choices = scene["choices"]
-    if (
-        not isinstance(caption, str)
-        or not isinstance(question, str)
-        or not isinstance(choices, list)
-        or len(choices) != 2
-    ):
-        raise ValueError("BlackCastle opening scene is invalid")
-    buttons: list[dict[str, Any]] = []
-    for choice in choices:
-        if not isinstance(choice, dict) or not isinstance(choice.get("text"), str):
-            raise ValueError("BlackCastle choice is invalid")
-        buttons.append({"text": choice["text"], "callback_data": "black_castle_noop"})
-    return f"{caption}\n\n{question}", buttons
-
-
 def _profile_lock(path: Path) -> Path:
     profile_key = hashlib.sha256(path.parent.name.casefold().encode("utf-8")).hexdigest()
     if path.parent.parent.name == "profiles":
@@ -256,7 +236,6 @@ class LearningBot:
         category_profile_paths: dict[str, Path] | None = None,
         profile_paths: dict[str, Path] | None = None,
         translate_to_english: Callable[[str], Awaitable[str]] | None = None,
-        black_castle_scene_path: Path | None = None,
     ) -> None:
         self.token = token
         self.store = store
@@ -268,9 +247,6 @@ class LearningBot:
         }
         self.profile_paths = profile_paths or {}
         self.translate_to_english = translate_to_english
-        self.black_castle_scene_path = black_castle_scene_path or Path(
-            "/game/games/black_castle/data/opening_scene.json"
-        )
         self._translated_questions: dict[str, str] = {}
         self._translation_retry_at: dict[str, float] = {}
 
@@ -291,58 +267,6 @@ class LearningBot:
 
     async def _send_message(self, chat_id: int, text: str) -> Any:
         return await self._call("sendMessage", {"chat_id": chat_id, "text": text})
-
-    def _black_castle_caption_and_keyboard(self) -> tuple[str, list[dict[str, Any]]]:
-        return black_castle_caption_and_keyboard(self.black_castle_scene_path)
-
-    async def _answer_black_castle_inline_query(self, query: dict[str, Any]) -> None:
-        query_id = query.get("id")
-        text = str(query.get("query") or "").strip().casefold()
-        if not isinstance(query_id, str) or text != "black_castle_opening":
-            return
-        photo_file_id = self.store.setting("black_castle_photo_file_id", "")
-        results: list[dict[str, Any]] = []
-        if photo_file_id:
-            caption, buttons = self._black_castle_caption_and_keyboard()
-            results.append({
-                "type": "photo",
-                "id": "black_castle_opening",
-                "photo_file_id": photo_file_id,
-                "caption": caption,
-                "reply_markup": {"inline_keyboard": [buttons]},
-            })
-        await self._call("answerInlineQuery", {
-            "inline_query_id": query_id,
-            "results": results,
-            "cache_time": 0,
-            "is_personal": True,
-        })
-
-    async def _handle_owner_black_castle_photo(self, message: dict[str, Any]) -> bool:
-        sender = message.get("from") or {}
-        chat = message.get("chat") or {}
-        sender_id = sender.get("id")
-        chat_id = chat.get("id")
-        caption = str(message.get("caption") or "").strip()
-        command = caption.split(maxsplit=1)[0].split("@", maxsplit=1)[0] if caption else ""
-        photos = message.get("photo")
-        if (
-            command != "/blackcastle_photo"
-            or not isinstance(sender_id, int)
-            or sender_id not in self.store.learning_owner_ids()
-            or chat.get("type") != "private"
-            or chat_id != sender_id
-            or not isinstance(photos, list)
-            or not photos
-            or not isinstance(photos[-1], dict)
-            or not isinstance(photos[-1].get("file_id"), str)
-        ):
-            return False
-        self.store.set_setting("black_castle_photo_file_id", photos[-1]["file_id"])
-        self.store.set_setting("learn_bot_owner_chat_id", str(chat_id))
-        await self._send_message(chat_id, "Фото для BlackCastle сохранено.")
-        logger.info("Saved the BlackCastle inline photo from the owner")
-        return True
 
     async def publish_next_question(self) -> None:
         chat_id = self.store.setting("learn_bot_owner_chat_id", "")
@@ -403,21 +327,8 @@ class LearningBot:
         logger.info("Sent one unanswered question to the owner's learning bot chat")
 
     async def process_update(self, update: dict[str, Any]) -> None:
-        inline_query = update.get("inline_query")
-        if isinstance(inline_query, dict):
-            await self._answer_black_castle_inline_query(inline_query)
-            return
-        callback_query = update.get("callback_query")
-        if isinstance(callback_query, dict):
-            if callback_query.get("data") == "black_castle_noop":
-                callback_id = callback_query.get("id")
-                if isinstance(callback_id, str):
-                    await self._call("answerCallbackQuery", {"callback_query_id": callback_id})
-            return
         message = update.get("message")
         if not isinstance(message, dict):
-            return
-        if await self._handle_owner_black_castle_photo(message):
             return
         sender = message.get("from") or {}
         chat = message.get("chat") or {}
@@ -517,7 +428,7 @@ class LearningBot:
             if str(bot.get("username", "")).casefold() != BOT_USERNAME.casefold():
                 raise RuntimeError("Configured token does not belong to the learning bot")
             if not bot.get("supports_inline_queries"):
-                logger.warning("Learning bot inline mode is disabled; BlackCastle inline replies are unavailable")
+                logger.warning("Learning bot inline mode is disabled")
             webhook = await self._call("getWebhookInfo", {})
             if webhook.get("url"):
                 raise RuntimeError("Learning bot already has a webhook configured")
@@ -535,7 +446,7 @@ class LearningBot:
                     {
                         "offset": offset,
                         "timeout": 20,
-                        "allowed_updates": ["message", "inline_query", "callback_query"],
+                        "allowed_updates": ["message"],
                     },
                 )
                 for update in updates or []:

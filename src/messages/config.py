@@ -24,6 +24,7 @@ class Settings:
     google_token_file: Path
     recruiter_answers_file: Path
     learning_bot_token: str
+    black_castle_bot_token: str = ""
     google_calendar_ids: tuple[str, ...] = ("primary",)
     job_apply_telegram_accounts: dict[str, str] = field(default_factory=dict)
     opencode_binary: Path = Path("/home/admin/.opencode/bin/opencode")
@@ -219,6 +220,7 @@ class Settings:
             recruiter_answers_file=recruiter_answers_file.resolve(),
             job_apply_profiles=job_apply_profiles,
             learning_bot_token=os.getenv("LEARNING_BOT_TOKEN", "").strip(),
+            black_castle_bot_token=os.getenv("KNIGA_IGRA_BOT_TOKEN", "").strip(),
             google_calendar_ids=google_calendar_ids,
             job_apply_telegram_accounts=job_apply_telegram_accounts,
             reply_api_token=os.getenv("REPLY_API_TOKEN", "").strip(),

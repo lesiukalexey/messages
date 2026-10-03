@@ -37,7 +37,9 @@ from .model_selection import (
     parse_bio_model_directive,
 )
 from .language import check_reply_language, expected_reply_language
-from .learning import BOT_USERNAME, LearningBot, black_castle_caption_and_keyboard
+from .black_castle_bot import BOT_USERNAME as BLACK_CASTLE_BOT_USERNAME, BlackCastleBot
+from .black_castle_scene import black_castle_caption_and_keyboard
+from .learning import LearningBot
 from .runtime import load_environment
 from .recruiter_answers import CategoryAnswers, RecruiterAnswers
 from .store import Store
@@ -1209,11 +1211,21 @@ async def run() -> None:
             translate_to_english=lambda text: responder.translate_to_english(
                 selected_model_settings()[0], text, effort=selected_model_settings()[1]
             ),
-            black_castle_scene_path=settings.black_castle_scene_path,
         )
         if settings.learning_bot_token and settings.account_id == "personal"
         else None
     )
+    black_castle_bot = (
+        BlackCastleBot(
+            settings.black_castle_bot_token,
+            store,
+            settings.black_castle_scene_path,
+        )
+        if settings.black_castle_bot_token and settings.account_id == "personal"
+        else None
+    )
+    if settings.account_id == "personal" and not settings.black_castle_bot_token:
+        logger.error("BlackCastle replies are disabled until the @KnigaIgraBot token is configured")
     if settings.account_id == "personal" and not settings.learning_bot_token:
         logger.warning("Learning bot token is not configured; unknown questions will stay queued")
 
@@ -1755,6 +1767,11 @@ async def run() -> None:
                         store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                         store.audit(peer_id, "failed", f"BlackCastle scene is unavailable ({type(exc).__name__})")
                         return
+                    if not settings.black_castle_bot_token:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "failed")
+                        store.audit(peer_id, "failed", "BlackCastle bot token is not configured")
+                        logger.error("BlackCastle routing requires the @KnigaIgraBot token")
+                        return
                     store.audit(
                         peer_id,
                         "generated",
@@ -1769,7 +1786,7 @@ async def run() -> None:
                         store.audit(peer_id, "skipped", f"{block_reason} before send")
                         return
                     try:
-                        bot_peer = await client.get_input_entity(f"@{BOT_USERNAME}")
+                        bot_peer = await client.get_input_entity(f"@{BLACK_CASTLE_BOT_USERNAME}")
                         inline_results = await client(functions.messages.GetInlineBotResultsRequest(
                             bot=utils.get_input_user(bot_peer),
                             peer=await event.get_input_chat(),
@@ -2947,6 +2964,7 @@ async def run() -> None:
 
     poller: asyncio.Task[None] | None = None
     learning_poller: asyncio.Task[None] | None = None
+    black_castle_poller: asyncio.Task[None] | None = None
     calendar_call_poller: asyncio.Task[None] | None = None
     try:
         async def poll_bio() -> None:
@@ -2959,6 +2977,8 @@ async def run() -> None:
         poller = asyncio.create_task(poll_bio())
         if learning_bot is not None:
             learning_poller = asyncio.create_task(learning_bot.run_forever())
+        if black_castle_bot is not None:
+            black_castle_poller = asyncio.create_task(black_castle_bot.run_forever())
         if (
             settings.account_id == "personal"
             and (me.username or "").casefold() == "alexskyer"
@@ -3060,6 +3080,12 @@ async def run() -> None:
             learning_poller.cancel()
             try:
                 await learning_poller
+            except asyncio.CancelledError:
+                pass
+        if black_castle_poller:
+            black_castle_poller.cancel()
+            try:
+                await black_castle_poller
             except asyncio.CancelledError:
                 pass
         if calendar_call_poller:

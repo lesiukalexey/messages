@@ -10,6 +10,7 @@ import yaml
 
 from messages.config import Settings
 from messages.llm import Responder
+from messages.black_castle_bot import BlackCastleBot
 from messages.learning import LearningBot, save_learned_answer
 from messages.recruiter_answers import RecruiterAnswers
 from messages.store import Store
@@ -17,7 +18,7 @@ from messages.store import Store
 
 class LearningAnswersTest(unittest.TestCase):
     def test_black_castle_photo_is_cached_for_inline_delivery_with_inert_choices(self) -> None:
-        class FakeLearningBot(LearningBot):
+        class FakeBlackCastleBot(BlackCastleBot):
             def __init__(self, *args: object, **kwargs: object) -> None:
                 super().__init__(*args, **kwargs)
                 self.calls: list[tuple[str, dict[str, object]]] = []
@@ -28,8 +29,6 @@ class LearningAnswersTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            profile = root / "answers.yaml"
-            profile.write_text("learned_answers: {}\n", encoding="utf-8")
             scene = root / "opening_scene.json"
             scene.write_text(json.dumps({
                 "caption": "Идите по лесу.",
@@ -43,9 +42,7 @@ class LearningAnswersTest(unittest.TestCase):
             try:
                 store.initialize()
                 store.register_learning_owner(123)
-                bot = FakeLearningBot(
-                    "test-token", store, profile, black_castle_scene_path=scene
-                )
+                bot = FakeBlackCastleBot("test-token", store, scene)
                 asyncio.run(bot.process_update({"message": {
                     "from": {"id": 123},
                     "chat": {"id": 123, "type": "private"},
@@ -53,7 +50,8 @@ class LearningAnswersTest(unittest.TestCase):
                     "photo": [{"file_id": "cached-photo-id"}],
                 }}))
                 self.assertEqual(
-                    store.setting("black_castle_photo_file_id", ""), "cached-photo-id"
+                    store.setting("kniga_igra_black_castle_photo_file_id", ""),
+                    "cached-photo-id",
                 )
 
                 asyncio.run(bot.process_update({"inline_query": {
