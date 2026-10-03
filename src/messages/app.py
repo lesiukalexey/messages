@@ -2088,60 +2088,59 @@ async def run() -> None:
                         store.message_state(settings.account_id, peer_id, event.message.id, "failed")
                         store.audit(peer_id, "failed", "asynchronous ChatRole engine is unavailable")
                         return
-                    async with locks.setdefault(peer_id, asyncio.Lock()):
-                        logger.info(
-                            "ChatRole turn started (peer_id=%s, message_id=%s)",
-                            peer_id, event.message.id,
-                        )
-                        # Quiet hours pause the story clock except for an explicitly
-                        # enabled, allowlisted test peer.
-                        model, effort, _ = selected_model_settings()
+                    logger.info(
+                        "ChatRole turn started (peer_id=%s, message_id=%s)",
+                        peer_id, event.message.id,
+                    )
+                    # Quiet hours pause the story clock except for an explicitly
+                    # enabled, allowlisted test peer.
+                    model, effort, _ = selected_model_settings()
 
-                        async def generate_chatrole(prompt: str, schema: dict[str, Any] | None = None) -> str:
-                            # Interactive game turns must not inherit the generic
-                            # four-minute model timeout.
-                            return await responder._run(
-                                model, prompt, schema, timeout_seconds=20, effort=effort
-                            )
+                    async def generate_chatrole(prompt: str, schema: dict[str, Any] | None = None) -> str:
+                        # Interactive game turns must not inherit the generic
+                        # four-minute model timeout.
+                        return await responder._run(
+                            model, prompt, schema, timeout_seconds=20, effort=effort
+                        )
 
-                        result = await chatrole_game.handle_player_message(
-                            peer_id, event.raw_text or "", generate_chatrole
-                        )
-                        # Apply the player's message before overdue deadlines so a
-                        # response sent before a deadline can still cancel it after
-                        # the worker has recovered from an outage.
-                        if not chatrole_quiet_for_peer(peer_id):
-                            chatrole_game.process_due_events(peer_id)
-                            await deliver_chatrole_outbox(peer_id)
-                        logger.info(
-                            "ChatRole turn resolved (peer_id=%s, message_id=%s, action=%s)",
-                            peer_id, event.message.id, result.get("action"),
-                        )
-                        reply = result["reply"]
-                        block_reason = await reply_policy_block(
-                            peer_id, force=True, require_game="Game"
-                        )
-                        if block_reason:
-                            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
-                            store.audit(peer_id, "skipped", f"{block_reason} before ChatRole reply")
-                            return
-                        store.audit(peer_id, "chatrole_action", json.dumps({
-                            "incoming_message_id": event.message.id,
-                            "action": result.get("action"),
-                            "started": result.get("started", False),
-                        }))
-                        mark_assistant_send(peer_id, reply)
-                        sent = await event.respond(reply)
-                        logger.info(
-                            "ChatRole reply sent (peer_id=%s, message_id=%s, reply_id=%s)",
-                            peer_id, event.message.id, sent.id,
-                        )
-                        store.message_state(settings.account_id, peer_id, event.message.id, "sent")
-                        store.audit(peer_id, "sent", json.dumps({
-                            "incoming_message_id": event.message.id,
-                            "sent_message_id": sent.id,
-                            "algorithm": "chatrole_async_thriller",
-                        }))
+                    result = await chatrole_game.handle_player_message(
+                        peer_id, event.raw_text or "", generate_chatrole
+                    )
+                    # Apply the player's message before overdue deadlines so a
+                    # response sent before a deadline can still cancel it after
+                    # the worker has recovered from an outage.
+                    if not chatrole_quiet_for_peer(peer_id):
+                        chatrole_game.process_due_events(peer_id)
+                        await deliver_chatrole_outbox(peer_id)
+                    logger.info(
+                        "ChatRole turn resolved (peer_id=%s, message_id=%s, action=%s)",
+                        peer_id, event.message.id, result.get("action"),
+                    )
+                    reply = result["reply"]
+                    block_reason = await reply_policy_block(
+                        peer_id, force=True, require_game="Game"
+                    )
+                    if block_reason:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        store.audit(peer_id, "skipped", f"{block_reason} before ChatRole reply")
+                        return
+                    store.audit(peer_id, "chatrole_action", json.dumps({
+                        "incoming_message_id": event.message.id,
+                        "action": result.get("action"),
+                        "started": result.get("started", False),
+                    }))
+                    mark_assistant_send(peer_id, reply)
+                    sent = await event.respond(reply)
+                    logger.info(
+                        "ChatRole reply sent (peer_id=%s, message_id=%s, reply_id=%s)",
+                        peer_id, event.message.id, sent.id,
+                    )
+                    store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                    store.audit(peer_id, "sent", json.dumps({
+                        "incoming_message_id": event.message.id,
+                        "sent_message_id": sent.id,
+                        "algorithm": "chatrole_async_thriller",
+                    }))
                     await notify_conversation_started(
                         peer_id, sender, category, session_started_at
                     )
