@@ -1169,8 +1169,19 @@ async def run() -> None:
     await manual_folder.refresh(force=True)
     auto_folder = DialogFilterGate(client, "Auto")
     await auto_folder.refresh(force=True)
-    game_folder = DialogFilterGate(client, "Game")
+    game_folder = DialogFilterGate(client, "Chat_role")
+    legacy_game_folder = DialogFilterGate(client, "Game")
     await game_folder.refresh(force=True)
+    await legacy_game_folder.refresh(force=True)
+
+    async def refresh_game_folders(force: bool = False) -> bool:
+        current_ready = await game_folder.refresh(force=force)
+        legacy_ready = await legacy_game_folder.refresh(force=force)
+        return current_ready and legacy_ready
+
+    def game_contains(peer_id: int) -> bool:
+        return game_folder.contains(peer_id) or legacy_game_folder.contains(peer_id)
+
     game_reply_algorithm = GameReplyAlgorithm(settings.game_algorithm_path)
     black_castle_folder = DialogFilterGate(client, "BlackCastle")
     await black_castle_folder.refresh(force=True)
@@ -1203,12 +1214,12 @@ async def run() -> None:
     async def reply_policy_block(
         peer_id: int, force: bool = True, require_game: str | None = None
     ) -> str | None:
-        if not await game_folder.refresh(force=force):
+        if not await refresh_game_folders(force=force):
             return "Telegram Game folder state is unavailable"
         if not await black_castle_folder.refresh(force=force):
             return "Telegram BlackCastle folder state is unavailable"
         selected_game = selected_game_folder(
-            black_castle_folder.contains(peer_id), game_folder.contains(peer_id)
+            black_castle_folder.contains(peer_id), game_contains(peer_id)
         )
         if require_game is not None:
             return None if selected_game == require_game else f"contact is no longer routed to {require_game}"
@@ -1487,7 +1498,8 @@ async def run() -> None:
             auto_folder.invalidate()
             await auto_folder.refresh(force=True)
             game_folder.invalidate()
-            await game_folder.refresh(force=True)
+            legacy_game_folder.invalidate()
+            await refresh_game_folders(force=True)
             black_castle_folder.invalidate()
             await black_castle_folder.refresh(force=True)
 
@@ -1545,7 +1557,7 @@ async def run() -> None:
         sender = await event.get_sender()
         if not isinstance(sender, types.User) or sender.bot or sender.deleted or sender.is_self:
             return
-        if not await game_folder.refresh(force=True):
+        if not await refresh_game_folders(force=True):
             if store.claim_message(settings.account_id, peer_id, event.message.id):
                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                 store.audit(peer_id, "skipped", "Telegram Game folder state is unavailable")
@@ -1556,7 +1568,7 @@ async def run() -> None:
                 store.audit(peer_id, "skipped", "Telegram BlackCastle folder state is unavailable")
             return
         selected_game = selected_game_folder(
-            black_castle_folder.contains(peer_id), game_folder.contains(peer_id)
+            black_castle_folder.contains(peer_id), game_contains(peer_id)
         )
         message_key = (settings.account_id, peer_id, event.message.id)
         startup_game_recovery = (
@@ -2869,7 +2881,7 @@ async def run() -> None:
 
     startup_game_scan_started_at = datetime.now(UTC)
     await client.catch_up()
-    if await game_folder.refresh(force=True) and await black_castle_folder.refresh(force=True):
+    if await refresh_game_folders(force=True) and await black_castle_folder.refresh(force=True):
         owner_ids = store.learning_owner_ids()
         async for dialog in client.iter_dialogs():
             user = dialog.entity
@@ -2880,7 +2892,7 @@ async def run() -> None:
                 or user.deleted
                 or user.is_self
                 or user.id in owner_ids
-                or not game_folder.contains(dialog.id)
+                or not game_contains(dialog.id)
                 or black_castle_folder.contains(dialog.id)
                 or message is None
                 or message.out
@@ -2903,7 +2915,7 @@ async def run() -> None:
     logger.info("Startup Game scan sent %d replies", startup_game_replies_sent)
     for peer_id, message_id in interrupted_messages:
         try:
-            if game_folder.contains(peer_id):
+            if game_contains(peer_id):
                 # Game startup recovery deliberately handles only each dialog's latest message.
                 continue
             message = await client.get_messages(peer_id, ids=message_id)
