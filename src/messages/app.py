@@ -1169,18 +1169,26 @@ async def run() -> None:
     await manual_folder.refresh(force=True)
     auto_folder = DialogFilterGate(client, "Auto")
     await auto_folder.refresh(force=True)
-    game_folder = DialogFilterGate(client, "Chat_role")
-    legacy_game_folder = DialogFilterGate(client, "Game")
+    game_folder = DialogFilterGate(client, "ChatRole")
+    legacy_game_folders = [
+        DialogFilterGate(client, "Chat_role"),
+        DialogFilterGate(client, "Game"),
+    ]
     await game_folder.refresh(force=True)
-    await legacy_game_folder.refresh(force=True)
+    for legacy_folder in legacy_game_folders:
+        await legacy_folder.refresh(force=True)
 
     async def refresh_game_folders(force: bool = False) -> bool:
         current_ready = await game_folder.refresh(force=force)
-        legacy_ready = await legacy_game_folder.refresh(force=force)
+        legacy_ready = True
+        for legacy_folder in legacy_game_folders:
+            legacy_ready = await legacy_folder.refresh(force=force) and legacy_ready
         return current_ready and legacy_ready
 
     def game_contains(peer_id: int) -> bool:
-        return game_folder.contains(peer_id) or legacy_game_folder.contains(peer_id)
+        return game_folder.contains(peer_id) or any(
+            legacy_folder.contains(peer_id) for legacy_folder in legacy_game_folders
+        )
 
     game_reply_algorithm = GameReplyAlgorithm(settings.game_algorithm_path)
     black_castle_folder = DialogFilterGate(client, "BlackCastle")
@@ -1498,7 +1506,8 @@ async def run() -> None:
             auto_folder.invalidate()
             await auto_folder.refresh(force=True)
             game_folder.invalidate()
-            legacy_game_folder.invalidate()
+            for legacy_folder in legacy_game_folders:
+                legacy_folder.invalidate()
             await refresh_game_folders(force=True)
             black_castle_folder.invalidate()
             await black_castle_folder.refresh(force=True)
