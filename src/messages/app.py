@@ -1407,6 +1407,10 @@ async def run() -> None:
         selected_game = selected_game_for_peer(
             peer_id, black_castle_folder.contains(peer_id)
         )
+        logger.info(
+            "Incoming message routed (peer_id=%s, message_id=%s, game=%s)",
+            peer_id, event.message.id, selected_game or "none",
+        )
         if require_game is not None:
             return None if selected_game == require_game else f"contact is no longer routed to {require_game}"
         if selected_game is not None:
@@ -1938,6 +1942,10 @@ async def run() -> None:
             store.audit(peer_id, "contact_auto_categorized", "unknown")
         block_reason = await reply_policy_block(
             peer_id, force=True, require_game=selected_game
+        )
+        logger.info(
+            "Initial reply policy checked (peer_id=%s, message_id=%s, blocked=%s)",
+            peer_id, event.message.id, bool(block_reason),
         )
         if block_reason:
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
