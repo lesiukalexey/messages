@@ -857,12 +857,19 @@ async def live_chat_history(
 
 
 class RecoveredMessageEvent:
-    def __init__(self, client: TelegramClient, message: Any) -> None:
+    def __init__(
+        self,
+        client: TelegramClient,
+        message: Any,
+        *,
+        startup_game_recovery: bool = False,
+    ) -> None:
         self.client = client
         self.message = message
         self.chat_id = message.chat_id
         self.raw_text = message.raw_text or ""
         self.is_private = True
+        self.startup_game_recovery = startup_game_recovery
 
     async def get_sender(self) -> Any:
         return await self.message.get_sender()
@@ -1222,6 +1229,9 @@ async def run() -> None:
         return None
     locks: dict[int, asyncio.Lock] = {}
     assistant_send_markers: dict[tuple[int, str], datetime] = {}
+    startup_game_recovery_ids: set[tuple[str, int, int]] = set()
+    startup_game_scan_started_at: datetime | None = None
+    startup_game_replies_sent = 0
 
     async def mark_incoming_message_read(event: events.NewMessage.Event) -> None:
         try:
@@ -1522,6 +1532,7 @@ async def run() -> None:
 
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
+        nonlocal startup_game_replies_sent
         peer_id = event.chat_id
         if not event.is_private:
             return
@@ -1541,6 +1552,21 @@ async def run() -> None:
         selected_game = selected_game_folder(
             black_castle_folder.contains(peer_id), game_folder.contains(peer_id)
         )
+        message_key = (settings.account_id, peer_id, event.message.id)
+        startup_game_recovery = (
+            selected_game == "Game"
+            and getattr(event, "startup_game_recovery", False)
+            and message_key in startup_game_recovery_ids
+        )
+        message_date = event.message.date
+        if (
+            selected_game == "Game"
+            and startup_game_scan_started_at is not None
+            and message_date is not None
+            and message_date <= startup_game_scan_started_at
+            and message_key not in startup_game_recovery_ids
+        ):
+            return
         if selected_game != "Game" and (
             is_quiet_hours(datetime.now(UTC), settings.timezone)
             or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
@@ -1553,10 +1579,20 @@ async def run() -> None:
             return
         if not event.raw_text.strip() and selected_game is None:
             return
-        if not store.claim_message(settings.account_id, peer_id, event.message.id):
+        claimed = (
+            store.claim_startup_game_message(
+                settings.account_id, peer_id, event.message.id
+            )
+            if startup_game_recovery
+            else store.claim_message(settings.account_id, peer_id, event.message.id)
+        )
+        if not claimed:
             return
-        message_date = event.message.date
-        if message_date and datetime.now(UTC) - message_date > timedelta(minutes=30):
+        if (
+            message_date
+            and datetime.now(UTC) - message_date > timedelta(minutes=30)
+            and not startup_game_recovery
+        ):
             store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
             store.audit(peer_id, "skipped", "incoming message is older than 30 minutes")
             return
@@ -1806,6 +1842,13 @@ async def run() -> None:
                     await notify_conversation_started(
                         peer_id, sender, category, session_started_at
                     )
+                    if startup_game_recovery:
+                        startup_game_replies_sent += 1
+                        store.audit(
+                            peer_id,
+                            "startup_game_reply_sent",
+                            f"incoming_message_id={event.message.id}; sent_message_id={sent.id}",
+                        )
                     try:
                         question = await game_reply_algorithm.follow_up_question(
                             event.raw_text or "", context, reply, generate_game_reply
@@ -2769,9 +2812,45 @@ async def run() -> None:
                             type(exc).__name__,
                         )
 
+    startup_game_scan_started_at = datetime.now(UTC)
     await client.catch_up()
+    if await game_folder.refresh(force=True) and await black_castle_folder.refresh(force=True):
+        owner_ids = store.learning_owner_ids()
+        async for dialog in client.iter_dialogs():
+            user = dialog.entity
+            message = dialog.message
+            if (
+                not isinstance(user, types.User)
+                or user.bot
+                or user.deleted
+                or user.is_self
+                or user.id in owner_ids
+                or not game_folder.contains(dialog.id)
+                or black_castle_folder.contains(dialog.id)
+                or message is None
+                or message.out
+                or not (message.raw_text or "").strip()
+            ):
+                continue
+            startup_game_recovery_ids.add((settings.account_id, dialog.id, message.id))
+            try:
+                await on_message(
+                    RecoveredMessageEvent(
+                        client, message, startup_game_recovery=True
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not recover latest Game message (%s)", type(exc).__name__
+                )
+    else:
+        logger.warning("Startup Game scan skipped because a Telegram folder is unavailable")
+    logger.info("Startup Game scan sent %d replies", startup_game_replies_sent)
     for peer_id, message_id in interrupted_messages:
         try:
+            if game_folder.contains(peer_id):
+                # Game startup recovery deliberately handles only each dialog's latest message.
+                continue
             message = await client.get_messages(peer_id, ids=message_id)
             if message is None or message.out or not (message.raw_text or "").strip():
                 store.message_state(settings.account_id, peer_id, message_id, "failed")

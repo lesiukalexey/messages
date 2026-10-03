@@ -581,6 +581,52 @@ class Store:
         self.connection.commit()
         return claimed
 
+    def claim_startup_game_message(
+        self, account_id: str, peer_id: int, message_id: int
+    ) -> bool:
+        """Claim a startup Game reply unless generation or delivery already began."""
+        if self.claim_message(account_id, peer_id, message_id):
+            return True
+
+        state = self.connection.execute(
+            """SELECT state FROM processed_messages
+               WHERE account_id = ? AND peer_id = ? AND message_id = ?""",
+            (account_id, peer_id, message_id),
+        ).fetchone()
+        if state is None or state["state"] != "skipped":
+            return False
+        for row in self.connection.execute(
+            """SELECT event, details FROM assistant_audit_events
+               WHERE account_id = ? AND peer_id = ?
+                 AND event IN ('generated', 'sent')""",
+            (account_id, peer_id),
+        ):
+            try:
+                details = json.loads(row["details"])
+                audited_message_id = int(details["incoming_message_id"])
+            except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+                continue
+            if audited_message_id == message_id:
+                return False
+
+        now = utc_now()
+        cursor = self.connection.execute(
+            """UPDATE processed_messages SET state = 'processing', updated_at = ?
+               WHERE account_id = ? AND peer_id = ? AND message_id = ? AND state = 'skipped'""",
+            (now, account_id, peer_id, message_id),
+        )
+        if cursor.rowcount != 1:
+            self.connection.commit()
+            return False
+        self.connection.execute(
+            """INSERT INTO assistant_audit_events
+               (account_id, peer_id, event, details, created_at)
+               VALUES (?, ?, 'startup_game_recovery_requeued', ?, ?)""",
+            (account_id, peer_id, f"message_id={message_id}", now),
+        )
+        self.connection.commit()
+        return True
+
     def message_state(self, account_id: str, peer_id: int, message_id: int, state: str) -> None:
         self.connection.execute(
             """UPDATE processed_messages SET state = ?, updated_at = ?
