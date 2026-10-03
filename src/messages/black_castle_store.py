@@ -88,6 +88,20 @@ class BlackCastleStore:
                            ON UPDATE CURRENT_TIMESTAMP
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS player_button_presses (
+                       press_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                       callback_query_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                       player_id BIGINT NOT NULL,
+                       paragraph_number INT UNSIGNED NULL,
+                       target_paragraph INT UNSIGNED NULL,
+                       button_text VARCHAR(128) NOT NULL,
+                       callback_data VARCHAR(256) NOT NULL,
+                       pressed_at_utc DATETIME(6) NOT NULL,
+                       UNIQUE KEY unique_callback_query (callback_query_id),
+                       KEY player_pressed_at (player_id, pressed_at_utc)
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
         if scene_path is not None:
             self.seed_opening_scene(scene_path)
 
@@ -182,6 +196,33 @@ class BlackCastleStore:
                 (paragraph_number, choice_id),
             )
             return cursor.fetchone()
+
+    def record_button_press(
+        self,
+        callback_query_id: str,
+        player_id: int,
+        paragraph_number: int | None,
+        target_paragraph: int | None,
+        button_text: str,
+        callback_data: str,
+    ) -> None:
+        """Record one Telegram button callback, idempotently, in UTC."""
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """INSERT IGNORE INTO player_button_presses
+                   (callback_query_id, player_id, paragraph_number, target_paragraph,
+                    button_text, callback_data, pressed_at_utc)
+                   VALUES (%s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6))""",
+                (
+                    callback_query_id[:64],
+                    player_id,
+                    paragraph_number,
+                    target_paragraph,
+                    button_text[:128],
+                    callback_data[:256],
+                ),
+            )
 
     def set_paragraph_photo(self, paragraph_number: int, photo_file_id: str) -> bool:
         self.ensure_connected()

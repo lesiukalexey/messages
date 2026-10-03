@@ -411,6 +411,67 @@ class BlackCastleBot:
             "is_personal": True,
         })
 
+    def _record_button_press(self, callback: dict[str, Any], player_id: int, state: dict[str, Any], action: str) -> None:
+        callback_id = callback.get("id")
+        if not isinstance(callback_id, str) or not callback_id:
+            return
+
+        paragraph_number = state.get("step")
+        target_paragraph = None
+        label = action.removeprefix("blackcastle:")
+        label_from_message = False
+        message = callback.get("message")
+        if isinstance(message, dict):
+            markup = message.get("reply_markup") or {}
+            keyboard = markup.get("inline_keyboard") or []
+            for row in keyboard:
+                if not isinstance(row, list):
+                    continue
+                for button in row:
+                    if isinstance(button, dict) and button.get("callback_data") == action:
+                        label = str(button.get("text") or label)
+                        label_from_message = True
+                        break
+
+        if action.startswith("blackcastle:route:"):
+            try:
+                _, _, source_text, choice_id = action.split(":", 3)
+                paragraph_number = int(source_text)
+                choice = self.game_store.get_paragraph_choice(paragraph_number, choice_id)
+            except (ValueError, TypeError):
+                choice = None
+            if choice is not None:
+                target_paragraph = int(choice["target_paragraph"])
+                if not label_from_message:
+                    label = self._route_button_text(
+                        str(choice["button_text"]), target_paragraph
+                    )
+        elif action.startswith("blackcastle:step:"):
+            try:
+                target_paragraph = int(action.rsplit(":", 1)[1])
+                if not label_from_message:
+                    label = "К шагу 1" if target_paragraph == 1 else f"Локация {target_paragraph}"
+            except ValueError:
+                pass
+        else:
+            label = {
+                "blackcastle:preface": "Предисловие",
+                "blackcastle:stats": "Характеристики",
+                "blackcastle:inventory": "Инвентарь",
+                "blackcastle:continue": "Продолжить",
+                "blackcastle:preface_next": "Продолжить",
+                "blackcastle:page_next": "Продолжить",
+            }.get(action, label)
+
+        self.game_store.record_button_press(
+            callback_id,
+            player_id,
+            paragraph_number if isinstance(paragraph_number, int) else None,
+            target_paragraph,
+            label,
+            action,
+        )
+
     async def process_update(self, update: dict[str, Any]) -> None:
         query = update.get("inline_query")
         if isinstance(query, dict):
@@ -429,6 +490,7 @@ class BlackCastleBot:
                 return
             state = self._get_or_create_state(player_id)
             callback_message = callback.get("message") or {}
+            self._record_button_press(callback, player_id, state, action)
             callback_photo = callback_message.get("photo")
             if isinstance(callback_message, dict):
                 state["direct_message_has_photo"] = isinstance(callback_photo, list) and bool(callback_photo)
