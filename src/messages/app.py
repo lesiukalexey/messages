@@ -20,6 +20,12 @@ from telethon import TelegramClient, events, functions, types, utils
 from .calendar import GoogleCalendar
 from .config import Settings
 from .game_reply import GameReplyAlgorithm, game_session_history
+from .game_memory import (
+    GAME_MEMORY_SCHEMA,
+    build_memory_update_prompt,
+    parse_memory_delta,
+    prompt_with_player_memory,
+)
 from .game_routing import selected_game_folder
 from .llm import Responder
 from .model_selection import (
@@ -1790,9 +1796,14 @@ async def run() -> None:
                 if selected_game == "Game":
                     context = await game_session_history(client, event, session_started_at)
                     model, effort, _ = selected_model_settings()
+                    player_memory = store.game_player_memory(peer_id)
 
                     async def generate_game_reply(prompt: str) -> str:
-                        return await responder._run(model, prompt, effort=effort)
+                        return await responder._run(
+                            model,
+                            prompt_with_player_memory(prompt, player_memory),
+                            effort=effort,
+                        )
 
                     reply = await game_reply_algorithm.reply(
                         settings.account_id,
@@ -1842,6 +1853,50 @@ async def run() -> None:
                     await notify_conversation_started(
                         peer_id, sender, category, session_started_at
                     )
+                    if typing_action is not None and typing_action_active:
+                        try:
+                            await typing_action.__aexit__(None, None, None)
+                        except Exception as typing_error:
+                            logger.warning(
+                                "Could not stop Telegram typing status (%s)",
+                                type(typing_error).__name__,
+                            )
+                        typing_action_active = False
+                    try:
+                        memory_prompt = build_memory_update_prompt(
+                            player_memory,
+                            context,
+                            event.raw_text or "",
+                            reply,
+                        )
+                        memory_result = await responder._run(
+                            model,
+                            memory_prompt,
+                            GAME_MEMORY_SCHEMA,
+                            timeout_seconds=45,
+                            effort=effort,
+                        )
+                        remember, forget = parse_memory_delta(memory_result)
+                        updated_memory = store.update_game_player_memory(
+                            peer_id, remember, forget
+                        )
+                        if updated_memory != player_memory:
+                            store.audit(
+                                peer_id,
+                                "game_player_memory_updated",
+                                f"facts={len(updated_memory)}; added={len(remember)}; removed={len(forget)}",
+                            )
+                        player_memory = updated_memory
+                    except Exception as memory_error:
+                        store.audit(
+                            peer_id,
+                            "game_player_memory_update_failed",
+                            type(memory_error).__name__,
+                        )
+                        logger.warning(
+                            "Could not update Game player memory (%s)",
+                            type(memory_error).__name__,
+                        )
                     if startup_game_recovery:
                         startup_game_replies_sent += 1
                         store.audit(
