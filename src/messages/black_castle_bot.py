@@ -111,6 +111,7 @@ class BlackCastleBot:
         }
         icon = icons.get(title.strip(), "📖")
         formatted = [f"{icon} <b>{html.escape(title.strip())}</b>"]
+        is_list_screen = title.strip() in {"Характеристики", "Инвентарь"}
 
         for block in re.split(r"\n\s*\n", body.strip()):
             block = block.strip()
@@ -121,7 +122,7 @@ class BlackCastleBot:
                 continue
 
             lines = block.splitlines()
-            if len(lines) > 1:
+            if is_list_screen and len(lines) > 1:
                 formatted_lines = []
                 for line in lines:
                     match = re.match(r"^(\s*(?:•\s*)?[^:]+:)(\s*)(.*)$", line)
@@ -134,17 +135,30 @@ class BlackCastleBot:
                 formatted.append("\n".join(formatted_lines))
                 continue
 
-            sentences = re.findall(
-                r".+?[.!?…](?:[»”\"’]+)?(?=\s|$)|.+$",
-                block,
-            )
-            if not sentences:
-                sentences = [block]
-            groups = [sentences[index:index + 4] for index in range(0, len(sentences), 4)]
-            formatted.append("\n\n".join(
-                html.escape(" ".join(sentence.strip() for sentence in group))
-                for group in groups
-            ))
+            prompt = None
+            if (
+                len(lines) > 1
+                and len(lines[-1].strip()) <= 140
+                and lines[-1].strip().endswith((":", "?"))
+            ):
+                prompt = lines.pop().strip()
+
+            prose = " ".join(line.strip() for line in lines).strip()
+            if not prose and prompt is None and block.strip().endswith((":", "?")):
+                prompt = block.strip()
+
+            if prose:
+                sentences = re.findall(
+                    r".+?[.!?…](?:[»”\"’]+)?(?=\s|$)|.+$",
+                    prose,
+                ) or [prose]
+                groups = [sentences[index:index + 4] for index in range(0, len(sentences), 4)]
+                formatted.append("\n\n".join(
+                    html.escape(" ".join(sentence.strip() for sentence in group))
+                    for group in groups
+                ))
+            if prompt is not None:
+                formatted.append(f"<b>{html.escape(prompt)}</b>")
 
         return "\n\n".join(formatted)
 
