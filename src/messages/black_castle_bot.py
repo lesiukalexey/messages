@@ -152,7 +152,7 @@ class BlackCastleBot:
                     r".+?[.!?…](?:[»”\"’]+)?(?=\s|$)|.+$",
                     prose,
                 ) or [prose]
-                groups = [sentences[index:index + 4] for index in range(0, len(sentences), 4)]
+                groups = [sentences[index:index + 3] for index in range(0, len(sentences), 3)]
                 formatted.append("\n\n".join(
                     html.escape(" ".join(sentence.strip() for sentence in group))
                     for group in groups
