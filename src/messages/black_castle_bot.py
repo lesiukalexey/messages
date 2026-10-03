@@ -117,11 +117,11 @@ class BlackCastleBot:
             if not block:
                 continue
             if block == "Вы пойдете:":
-                formatted.append(f"\n<b>{html.escape(block)}</b>")
+                formatted.append(f"<b>{html.escape(block)}</b>")
                 continue
 
             lines = block.splitlines()
-            if len(lines) > 1 or all(":" in line for line in lines):
+            if len(lines) > 1:
                 formatted_lines = []
                 for line in lines:
                     match = re.match(r"^(\s*(?:•\s*)?[^:]+:)(\s*)(.*)$", line)
@@ -140,8 +140,11 @@ class BlackCastleBot:
             )
             if not sentences:
                 sentences = [block]
-            groups = [sentences[index:index + 2] for index in range(0, len(sentences), 2)]
-            formatted.append("\n\n".join(html.escape(" ".join(group).strip()) for group in groups))
+            groups = [sentences[index:index + 4] for index in range(0, len(sentences), 4)]
+            formatted.append("\n\n".join(
+                html.escape(" ".join(sentence.strip() for sentence in group))
+                for group in groups
+            ))
 
         return "\n\n".join(formatted)
 
