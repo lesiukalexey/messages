@@ -1807,7 +1807,7 @@ async def run() -> None:
                         chatrole_game.process_due_events(peer_id)
                         await deliver_chatrole_outbox(peer_id)
             except Exception as exc:
-                logger.warning("ChatRole event scheduler failed (%s)", type(exc).__name__)
+                logger.exception("ChatRole event scheduler failed (%s)", type(exc).__name__)
 
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
@@ -2085,7 +2085,11 @@ async def run() -> None:
                         model, effort, _ = selected_model_settings()
 
                         async def generate_chatrole(prompt: str, schema: dict[str, Any] | None = None) -> str:
-                            return await responder._run(model, prompt, schema, effort=effort)
+                            # Interactive game turns must not inherit the generic
+                            # four-minute model timeout.
+                            return await responder._run(
+                                model, prompt, schema, timeout_seconds=20, effort=effort
+                            )
 
                         result = await chatrole_game.handle_player_message(
                             peer_id, event.raw_text or "", generate_chatrole
