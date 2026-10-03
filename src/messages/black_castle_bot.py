@@ -118,12 +118,21 @@ class BlackCastleBot:
             }]], False
 
         if view == "inventory":
-            items = "\n".join(f"• {item}" for item in state["items"])
+            carried_items = [
+                item for item in state.get("items", []) if isinstance(item, str)
+            ]
+            equipment_names = {"меч", "фляга", "заплечный мешок"}
+            bag_items = [
+                item for item in carried_items
+                if item.strip().casefold() not in equipment_names
+            ]
+            bag_listing = "\n".join(f"• {item}" for item in bag_items) or "Пусто"
             text = (
                 "Инвентарь\n\n"
-                f"{items}\n"
+                "Снаряжение: меч\n"
                 f"Фляга: {state['water_sips']} глотка; каждый восстанавливает 2 ВЫНОСЛИВОСТИ.\n"
-                f"Заплечный мешок: 0/{state['bag_capacity']} предметов.\n"
+                f"Заплечный мешок: {len(bag_items)}/{state['bag_capacity']} предметов:\n"
+                f"{bag_listing}\n"
                 f"Золотые: {state['gold']}"
             )
             return text, [[{
