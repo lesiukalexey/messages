@@ -2095,9 +2095,6 @@ async def run() -> None:
                         )
                         # Quiet hours pause the story clock except for an explicitly
                         # enabled, allowlisted test peer.
-                        if not chatrole_quiet_for_peer(peer_id):
-                            chatrole_game.process_due_events(peer_id)
-                            await deliver_chatrole_outbox(peer_id)
                         model, effort, _ = selected_model_settings()
 
                         async def generate_chatrole(prompt: str, schema: dict[str, Any] | None = None) -> str:
@@ -2110,6 +2107,12 @@ async def run() -> None:
                         result = await chatrole_game.handle_player_message(
                             peer_id, event.raw_text or "", generate_chatrole
                         )
+                        # Apply the player's message before overdue deadlines so a
+                        # response sent before a deadline can still cancel it after
+                        # the worker has recovered from an outage.
+                        if not chatrole_quiet_for_peer(peer_id):
+                            chatrole_game.process_due_events(peer_id)
+                            await deliver_chatrole_outbox(peer_id)
                         logger.info(
                             "ChatRole turn resolved (peer_id=%s, message_id=%s, action=%s)",
                             peer_id, event.message.id, result.get("action"),
