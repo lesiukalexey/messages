@@ -7,7 +7,7 @@ import logging
 import random
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.request import Request, urlopen
 
 BOT_USERNAME = "KnigaIgraBot"
@@ -23,13 +23,11 @@ class BlackCastleBot:
         owner_store: Any,
         game_store: Any,
         scene_path: Path,
-        folder_screen_handler: Callable[[int], Any] | None = None,
     ) -> None:
         self.token = token
         self.owner_store = owner_store
         self.game_store = game_store
         self.scene_path = scene_path
-        self.folder_screen_handler = folder_screen_handler
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
         def send() -> Any:
@@ -109,15 +107,20 @@ class BlackCastleBot:
         if not separator:
             return html.escape(text)
 
+        title = title.strip()
+        is_heading = bool(re.fullmatch(r"Шаг \d+|Характеристики|Инвентарь|Книга-игра", title))
+        if not is_heading:
+            body = text
+
         icons = {
             "Шаг 1": "📖",
             "Характеристики": "🎲",
             "Инвентарь": "🎒",
             "Книга-игра": "📚",
         }
-        icon = icons.get(title.strip(), "📖")
-        formatted = [f"{icon} <b>{html.escape(title.strip())}</b>"]
-        is_list_screen = title.strip() in {"Характеристики", "Инвентарь"}
+        icon = icons.get(title, "📖")
+        formatted = [f"{icon} <b>{html.escape(title)}</b>"] if is_heading else []
+        is_list_screen = title in {"Характеристики", "Инвентарь"} and is_heading
 
         for block in re.split(r"\n\s*\n", body.strip()):
             block = block.strip()
@@ -330,40 +333,31 @@ class BlackCastleBot:
             wording = f"{clipped.rstrip()}…"
         return f"{wording}{suffix}"
 
+    def _paged_screen(
+        self, state: dict[str, Any], limit: int = 950
+    ) -> tuple[str, list[list[dict[str, str]]], bool]:
+        text, keyboard, _ = self._screen(state)
+        part_key = "preface_part" if state.get("view") == "preface" else "page_part"
+        parts = self._preface_parts(text, limit=limit)
+        part = max(0, min(int(state.get(part_key, 0)), len(parts) - 1))
+        state[part_key] = part
+        if len(parts) == 1:
+            return parts[0], keyboard, True
+
+        navigation: list[dict[str, str]] = []
+        if part > 0:
+            navigation.append({"text": "Назад", "callback_data": "blackcastle:page_prev"})
+        if part + 1 < len(parts):
+            action = "blackcastle:preface_next" if state.get("view") == "preface" else "blackcastle:page_next"
+            navigation.append({"text": "Читать продолжение", "callback_data": action})
+        keyboard = [navigation] + (keyboard if part == len(parts) - 1 else [])
+        return parts[part], keyboard, part == 0
+
     def _inline_screen(
         self, state: dict[str, Any]
     ) -> tuple[str, list[list[dict[str, str]]]]:
-        text, keyboard, _ = self._screen(state)
-        # Every inline result is a photo; Telegram limits photo captions to 1024 chars.
-        part_limit = 950
-        if state.get("view") == "preface":
-            parts = self._preface_parts(text, limit=part_limit)
-            part = max(0, min(int(state.get("preface_part", 0)), len(parts) - 1))
-            text = parts[part]
-            if part + 1 < len(parts):
-                keyboard = [[{
-                    "text": "Продолжить",
-                    "callback_data": "blackcastle:preface_next",
-                }]]
-            else:
-                keyboard = [[{
-                    "text": "Продолжить",
-                    "callback_data": "blackcastle:continue",
-                }]]
-            text = self._format_telegram_text(text)
-        elif state.get("view") == "step":
-            parts = self._preface_parts(text, limit=part_limit)
-            part = max(0, min(int(state.get("page_part", 0)), len(parts) - 1))
-            text = parts[part]
-            if part + 1 < len(parts):
-                keyboard = [[{
-                    "text": "Продолжить",
-                    "callback_data": "blackcastle:page_next",
-                }]]
-            text = self._format_telegram_text(text)
-        else:
-            text = self._format_telegram_text(text)
-        return text, keyboard
+        text, keyboard, _ = self._paged_screen(state, limit=950)
+        return self._format_telegram_text(text), keyboard
 
     async def _delete_message(self, chat_id: int, message_id: int) -> bool:
         if not message_id:
@@ -395,16 +389,12 @@ class BlackCastleBot:
             old_ids.append(previous_message_id)
         old_ids = list(dict.fromkeys(old_ids))
 
-        text, keyboard, has_photo = self._screen(state)
-        parts = self._preface_parts(text, limit=950 if has_photo else 4000)
-        photo_id = self._paragraph_photo(int(state.get("step", 1))) if has_photo else ""
-        if has_photo and not photo_id:
-            parts = ["Сцена сейчас недоступна. Попробуй написать позже."]
+        text, keyboard, first_part = self._paged_screen(state, limit=950)
+        _, _, has_photo = self._screen(state)
+        photo_id = self._paragraph_photo(int(state.get("step", 1))) if has_photo and first_part else ""
+        if has_photo and first_part and not photo_id:
+            text = "Сцена сейчас недоступна. Попробуй написать позже."
             keyboard = [[{"text": "Обновить", "callback_data": "blackcastle:continue"}]]
-            has_photo = False
-
-        part_key = "preface_part" if state.get("view") == "preface" else "page_part"
-        state[part_key] = 0
 
         for old_id in old_ids:
             if not await self._delete_message(chat_id, old_id):
@@ -418,33 +408,26 @@ class BlackCastleBot:
         state["direct_message_has_photo"] = None
         self._save_state(player_id, state)
 
-        message_ids: list[int] = []
-        for index, part in enumerate(parts):
-            is_first_photo = has_photo and index == 0
-            is_last = index == len(parts) - 1
-            payload: dict[str, Any] = {
-                "chat_id": chat_id,
-                "parse_mode": "HTML",
-            }
-            if is_last:
-                payload["reply_markup"] = {"inline_keyboard": keyboard}
-            formatted_part = self._format_telegram_text(part)
-            if is_first_photo:
-                payload.update({"photo": photo_id, "caption": formatted_part})
-                sent = await self._call("sendPhoto", payload)
-            else:
-                payload["text"] = formatted_part
-                sent = await self._call("sendMessage", payload)
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": keyboard},
+        }
+        formatted = self._format_telegram_text(text)
+        if photo_id:
+            payload.update({"photo": photo_id, "caption": formatted})
+            sent = await self._call("sendPhoto", payload)
+            has_photo = True
+        else:
+            payload["text"] = formatted
+            sent = await self._call("sendMessage", payload)
+            has_photo = False
 
-            sent_id = sent.get("message_id")
-            if isinstance(sent_id, int) and sent_id > 0:
-                message_ids.append(sent_id)
-            else:
-                logger.error("BlackCastle screen message was sent without a Telegram message ID")
-            state["direct_message_ids"] = list(message_ids)
-            state["direct_message_id"] = message_ids[-1] if message_ids else 0
-            state["direct_message_has_photo"] = bool(message_ids and is_first_photo)
-            self._save_state(player_id, state)
+        sent_id = sent.get("message_id")
+        state["direct_message_ids"] = [sent_id] if isinstance(sent_id, int) and sent_id > 0 else []
+        state["direct_message_id"] = sent_id if isinstance(sent_id, int) and sent_id > 0 else 0
+        state["direct_message_has_photo"] = has_photo
+        self._save_state(player_id, state)
 
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
         text, keyboard = self._inline_screen(state)
@@ -479,34 +462,15 @@ class BlackCastleBot:
         photo_id = self._paragraph_photo(int(state.get("step", 1)))
         results: list[dict[str, Any]] = []
         if photo_id:
-            text, keyboard, _ = self._screen(state)
-            parts = self._preface_parts(text, limit=950)
-            for index, part in enumerate(parts):
-                is_last = index == len(parts) - 1
-                reply_markup = {"inline_keyboard": keyboard} if is_last else None
-                if index == 0:
-                    result: dict[str, Any] = {
-                        "type": "photo",
-                        "id": f"black_castle_player_{player_id}_part_{index}",
-                        "photo_file_id": photo_id,
-                        "caption": self._format_telegram_text(part),
-                        "parse_mode": "HTML",
-                    }
-                    if reply_markup is not None:
-                        result["reply_markup"] = reply_markup
-                else:
-                    result = {
-                        "type": "article",
-                        "id": f"black_castle_player_{player_id}_part_{index}",
-                        "title": f"Продолжение {index + 1}",
-                        "input_message_content": {
-                            "message_text": self._format_telegram_text(part),
-                            "parse_mode": "HTML",
-                        },
-                    }
-                    if reply_markup is not None:
-                        result["reply_markup"] = reply_markup
-                results.append(result)
+            text, keyboard = self._inline_screen(state)
+            results.append({
+                "type": "photo",
+                "id": f"black_castle_player_{player_id}",
+                "photo_file_id": photo_id,
+                "caption": text,
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": keyboard},
+            })
         await self._call("answerInlineQuery", {
             "inline_query_id": query_id,
             "results": results,
@@ -562,8 +526,9 @@ class BlackCastleBot:
                 "blackcastle:stats": "Характеристики",
                 "blackcastle:inventory": "Инвентарь",
                 "blackcastle:continue": "Продолжить",
-                "blackcastle:preface_next": "Продолжить",
-                "blackcastle:page_next": "Продолжить",
+                "blackcastle:preface_next": "Читать продолжение",
+                "blackcastle:page_next": "Читать продолжение",
+                "blackcastle:page_prev": "Назад",
             }.get(action, label)
 
         self.game_store.record_button_press(
@@ -609,7 +574,11 @@ class BlackCastleBot:
             elif action == "blackcastle:preface_next":
                 state["preface_part"] = int(state.get("preface_part", 0)) + 1
             elif action == "blackcastle:page_next":
-                state["page_part"] = int(state.get("page_part", 0)) + 1
+                part_key = "preface_part" if state.get("view") == "preface" else "page_part"
+                state[part_key] = int(state.get(part_key, 0)) + 1
+            elif action == "blackcastle:page_prev":
+                part_key = "preface_part" if state.get("view") == "preface" else "page_part"
+                state[part_key] = max(0, int(state.get(part_key, 0)) - 1)
             elif action == "blackcastle:stats":
                 state["view"] = "stats"
             elif action == "blackcastle:inventory":
@@ -652,14 +621,11 @@ class BlackCastleBot:
                 state["page_part"] = 0
             else:
                 return
+            if state.get("view") in {"preface", "step"}:
+                self._paged_screen(state)
             self._save_state(player_id, state)
             inline_message_id = callback.get("inline_message_id")
             if isinstance(inline_message_id, str):
-                if self.folder_screen_handler is not None:
-                    result = self.folder_screen_handler(player_id)
-                    if asyncio.iscoroutine(result):
-                        await result
-                    return
                 await self._edit_inline_screen(inline_message_id, state)
                 return
             message = callback_message
@@ -721,6 +687,8 @@ class BlackCastleBot:
             return
 
         state = self._get_or_create_state(sender_id)
+        part_key = "preface_part" if state.get("view") == "preface" else "page_part"
+        state[part_key] = 0
         previous_message_id = state.get("direct_message_id", 0)
         await self._send_direct_screen(
             chat_id,

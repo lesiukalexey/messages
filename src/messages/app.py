@@ -1249,7 +1249,6 @@ async def run() -> None:
     )
 
     black_castle_folder_locks: dict[int, asyncio.Lock] = {}
-    black_castle_folder_refresh_tasks: set[asyncio.Task[Any]] = set()
 
     async def send_black_castle_folder_screen(peer_id: int) -> list[int]:
         if black_castle_store is None:
@@ -1264,37 +1263,30 @@ async def run() -> None:
                 query=f"blackcastle_player_{peer_id}",
                 offset="",
             ))
-            part_prefix = f"black_castle_player_{peer_id}_part_"
-            matching_results = [
-                item for item in inline_results.results
-                if isinstance(getattr(item, "id", None), str)
-                and item.id.startswith(part_prefix)
-            ]
-            matching_results.sort(key=lambda item: int(item.id[len(part_prefix):]))
-            if not matching_results:
-                raise RuntimeError("BlackCastle inline screen results are unavailable")
+            expected_id = f"black_castle_player_{peer_id}"
+            result = next(
+                (item for item in inline_results.results if getattr(item, "id", None) == expected_id),
+                None,
+            )
+            if result is None:
+                raise RuntimeError("BlackCastle inline screen result is unavailable")
 
             player_state = black_castle_store.get_player_state(peer_id)
             if player_state is None:
                 if black_castle_bot is None:
                     raise RuntimeError("BlackCastle player state is unavailable")
                 player_state = black_castle_bot._get_or_create_state(peer_id)
-            old_folder_ids = player_state.get("folder_screen_message_ids")
-            if not isinstance(old_folder_ids, list):
-                old_folder_ids = []
-            old_folder_ids = [
-                message_id for message_id in old_folder_ids
-                if isinstance(message_id, int) and message_id > 0
-            ]
-            fallback_folder_id = player_state.get("folder_screen_message_id")
-            if isinstance(fallback_folder_id, int) and fallback_folder_id > 0:
-                old_folder_ids.append(fallback_folder_id)
-            old_folder_ids = list(dict.fromkeys(old_folder_ids))
+            old_ids = player_state.get("folder_screen_message_ids")
+            if not isinstance(old_ids, list):
+                old_ids = []
+            old_ids = [message_id for message_id in old_ids if isinstance(message_id, int) and message_id > 0]
+            fallback_id = player_state.get("folder_screen_message_id")
+            if isinstance(fallback_id, int) and fallback_id > 0:
+                old_ids.append(fallback_id)
 
-            # Include any earlier inline messages left behind by a partial send.
             previous_screens = await client.get_messages(chat_peer, limit=200)
             bot_id = getattr(bot_peer, "user_id", None)
-            old_folder_ids.extend(
+            old_ids.extend(
                 int(message.id)
                 for message in previous_screens
                 if isinstance(getattr(message, "id", None), int)
@@ -1303,11 +1295,10 @@ async def run() -> None:
                     or _is_black_castle_screen_message(message)
                 )
             )
-            old_folder_ids = list(dict.fromkeys(old_folder_ids))
-
-            for old_folder_id in old_folder_ids:
+            old_ids = list(dict.fromkeys(old_ids))
+            for old_id in old_ids:
                 try:
-                    await client.delete_messages(chat_peer, [old_folder_id])
+                    await client.delete_messages(chat_peer, [old_id])
                 except Exception as delete_error:
                     error = str(delete_error).casefold()
                     if "message_id_invalid" in error or "message id invalid" in error:
@@ -1319,62 +1310,44 @@ async def run() -> None:
             player_state["folder_screen_tracking_initialized"] = True
             black_castle_store.save_player_state(peer_id, player_state)
 
-            sent_message_ids: list[int] = []
-            for result in matching_results:
-                sent = await client(functions.messages.SendInlineBotResultRequest(
-                    peer=chat_peer,
-                    query_id=inline_results.query_id,
-                    id=result.id,
-                    random_id=secrets.randbits(63),
-                ))
-                sent_message_id = next(
+            sent = await client(functions.messages.SendInlineBotResultRequest(
+                peer=chat_peer,
+                query_id=inline_results.query_id,
+                id=result.id,
+                random_id=secrets.randbits(63),
+            ))
+            message_id = next(
+                (
+                    int(update.message.id)
+                    for update in getattr(sent, "updates", [])
+                    if isinstance(getattr(getattr(update, "message", None), "id", None), int)
+                ),
+                None,
+            )
+            if message_id is None:
+                latest = await client.get_messages(chat_peer, limit=20)
+                message_id = next(
                     (
-                        int(update.message.id)
-                        for update in getattr(sent, "updates", [])
-                        if isinstance(getattr(getattr(update, "message", None), "id", None), int)
+                        int(message.id)
+                        for message in latest
+                        if getattr(message, "out", False)
+                        and isinstance(getattr(message, "id", None), int)
+                        and (
+                            getattr(message, "via_bot_id", None) == bot_id
+                            or _is_black_castle_screen_message(message)
+                        )
                     ),
                     None,
                 )
-                if sent_message_id is None:
-                    latest_messages = await client.get_messages(chat_peer, limit=20)
-                    sent_message_id = next(
-                        (
-                            int(message.id)
-                            for message in latest_messages
-                            if getattr(message, "out", False)
-                            and isinstance(getattr(message, "id", None), int)
-                            and message.id not in sent_message_ids
-                            and (
-                                getattr(message, "via_bot_id", None) == bot_id
-                                or _is_black_castle_screen_message(message)
-                            )
-                        ),
-                        None,
-                    )
-                if sent_message_id is None:
-                    raise RuntimeError("BlackCastle screen message ID was not returned")
-                sent_message_ids.append(sent_message_id)
-                player_state = black_castle_store.get_player_state(peer_id) or player_state
-                player_state["folder_screen_message_ids"] = list(sent_message_ids)
-                player_state["folder_screen_message_id"] = sent_message_id
-                player_state["folder_screen_tracking_initialized"] = True
-                black_castle_store.save_player_state(peer_id, player_state)
-            return sent_message_ids
+            if message_id is None:
+                raise RuntimeError("BlackCastle screen message ID was not returned")
 
-    async def schedule_black_castle_folder_screen(peer_id: int) -> None:
-        task = asyncio.create_task(send_black_castle_folder_screen(peer_id))
-        black_castle_folder_refresh_tasks.add(task)
-
-        def finish_folder_refresh(completed: asyncio.Task[list[int]]) -> None:
-            black_castle_folder_refresh_tasks.discard(completed)
-            try:
-                completed.result()
-            except Exception as exc:
-                logger.warning(
-                    "Could not replace BlackCastle folder screen (%s)", type(exc).__name__
-                )
-
-        task.add_done_callback(finish_folder_refresh)
+            player_state = black_castle_store.get_player_state(peer_id) or player_state
+            player_state["folder_screen_message_ids"] = [message_id]
+            player_state["folder_screen_message_id"] = message_id
+            player_state["folder_screen_tracking_initialized"] = True
+            black_castle_store.save_player_state(peer_id, player_state)
+            return [message_id]
 
     black_castle_bot = (
         BlackCastleBot(
@@ -1382,7 +1355,6 @@ async def run() -> None:
             store,
             black_castle_store,
             settings.black_castle_scene_path,
-            folder_screen_handler=schedule_black_castle_folder_screen,
         )
         if (
             settings.black_castle_bot_token
