@@ -1789,6 +1789,16 @@ async def run() -> None:
                         continue
                     if chatrole_quiet_for_peer(peer_id):
                         continue
+                    if not await black_castle_folder.refresh(force=True):
+                        continue
+                    if black_castle_folder.contains(peer_id):
+                        # Never run ChatRole in a dialog currently owned by
+                        # BlackCastle; keep its test timeline paused until rerouted.
+                        chatrole_game.defer_pending_events(
+                            peer_id,
+                            settings.chatrole_test_event_delay_minutes or 5,
+                        )
+                        continue
                     async with locks.setdefault(peer_id, asyncio.Lock()):
                         # Start the selected test campaign when its allowlisted
                         # peer is eligible to progress.
