@@ -67,6 +67,9 @@ class BlackCastleBot:
             "direct_message_id": 0,
             "direct_message_ids": [],
             "direct_message_has_photo": None,
+            "folder_screen_message_id": 0,
+            "folder_screen_message_ids": [],
+            "folder_screen_tracking_initialized": False,
         }
 
     def _get_or_create_state(self, player_id: int) -> dict[str, Any]:
@@ -294,7 +297,8 @@ class BlackCastleBot:
             })
             return True
         except Exception as exc:
-            if "message to delete not found" in str(exc).casefold():
+            error = str(exc).casefold()
+            if "message to delete not found" in error or "message_id_invalid" in error:
                 return True
             logger.info("Could not replace previous BlackCastle bot message (%s)", type(exc).__name__)
             return False
@@ -307,21 +311,14 @@ class BlackCastleBot:
             old_ids = []
         old_ids = [message_id for message_id in old_ids if isinstance(message_id, int) and message_id > 0]
         fallback_id = state.get("direct_message_id")
-        if isinstance(fallback_id, int) and fallback_id > 0 and fallback_id not in old_ids:
-            if len(old_ids) <= 1:
-                old_ids.insert(0, fallback_id)
-            else:
-                old_ids.append(fallback_id)
-        if previous_message_id > 0 and previous_message_id not in old_ids:
+        if isinstance(fallback_id, int) and fallback_id > 0:
+            old_ids.append(fallback_id)
+        if previous_message_id > 0:
             old_ids.append(previous_message_id)
         old_ids = list(dict.fromkeys(old_ids))
-        old_has_photo = state.get("direct_message_has_photo")
-        if not isinstance(old_has_photo, bool):
-            # Before this flag existed, the stored view matched the existing direct screen.
-            old_has_photo = state.get("view", "step") == "step"
 
         text, keyboard, has_photo = self._screen(state)
-        parts = self._preface_parts(text, limit=950 if has_photo or old_has_photo else 4000)
+        parts = self._preface_parts(text, limit=950 if has_photo else 4000)
         photo_id = self._paragraph_photo(int(state.get("step", 1))) if has_photo else ""
         if has_photo and not photo_id:
             parts = ["Сцена сейчас недоступна. Попробуй написать позже."]
@@ -336,138 +333,40 @@ class BlackCastleBot:
             callback = "blackcastle:preface_next" if part_key == "preface_part" else "blackcastle:page_next"
             keyboard = [[{"text": "Продолжить", "callback_data": callback}]]
         part = parts[part_index]
-        markup = {"inline_keyboard": keyboard}
 
-        edited_id = 0
         for old_id in old_ids:
-            try:
-                if old_has_photo:
-                    if has_photo:
-                        await self._call("editMessageMedia", {
-                            "chat_id": chat_id,
-                            "message_id": old_id,
-                            "media": {"type": "photo", "media": photo_id, "caption": part},
-                            "reply_markup": markup,
-                        })
-                    else:
-                        # Telegram cannot turn a photo message into a text message.
-                        # Keep the existing photo and replace its caption and keyboard.
-                        await self._call("editMessageCaption", {
-                            "chat_id": chat_id,
-                            "message_id": old_id,
-                            "caption": part,
-                            "reply_markup": markup,
-                        })
-                elif has_photo:
-                    await self._call("editMessageMedia", {
-                        "chat_id": chat_id,
-                        "message_id": old_id,
-                        "media": {"type": "photo", "media": photo_id, "caption": part},
-                        "reply_markup": markup,
-                    })
-                else:
-                    await self._call("editMessageText", {
-                        "chat_id": chat_id,
-                        "message_id": old_id,
-                        "text": part,
-                        "reply_markup": markup,
-                    })
-                edited_id = old_id
-                old_has_photo = old_has_photo or has_photo
-                break
-            except Exception as exc:
-                error = str(exc).casefold()
-                if "message is not modified" in error:
-                    edited_id = old_id
-                    old_has_photo = old_has_photo or has_photo
-                    break
-                fallback_method = ""
-                fallback_payload: dict[str, Any] = {}
-                if "there is no media in the message to edit" in error and has_photo:
-                    fallback_method = "editMessageText"
-                    fallback_payload = {
-                        "chat_id": chat_id, "message_id": old_id, "text": part,
-                        "reply_markup": markup,
-                    }
-                    old_has_photo = False
-                elif "there is no caption in the message to edit" in error and old_has_photo and not has_photo:
-                    fallback_method = "editMessageText"
-                    fallback_payload = {
-                        "chat_id": chat_id, "message_id": old_id, "text": part,
-                        "reply_markup": markup,
-                    }
-                    old_has_photo = False
-                elif "there is no text in the message to edit" in error and not old_has_photo and not has_photo:
-                    fallback_method = "editMessageCaption"
-                    fallback_payload = {
-                        "chat_id": chat_id, "message_id": old_id, "caption": part,
-                        "reply_markup": markup,
-                    }
-                    old_has_photo = True
-                if fallback_method:
-                    try:
-                        await self._call(fallback_method, fallback_payload)
-                        edited_id = old_id
-                        break
-                    except Exception as fallback_exc:
-                        fallback_error = str(fallback_exc).casefold()
-                        if "message is not modified" in fallback_error:
-                            edited_id = old_id
-                            break
-                        if any(token in fallback_error for token in (
-                            "message to edit not found", "message can't be edited", "message_id_invalid",
-                        )):
-                            logger.info("Could not edit previous BlackCastle screen (%s)", type(fallback_exc).__name__)
-                            continue
-                        logger.warning("Could not update BlackCastle screen (%s)", type(fallback_exc).__name__)
-                        return
-                if any(token in error for token in (
-                    "message to edit not found",
-                    "message can't be edited",
-                    "message_id_invalid",
-                    "there is no text in the message to edit",
-                    "there is no media in the message to edit",
-                    "there is no caption in the message to edit",
-                )):
-                    logger.info("Could not edit previous BlackCastle screen (%s)", type(exc).__name__)
-                    continue
-                # A transport or unexpected API error must not create a duplicate screen.
-                logger.warning("Could not update BlackCastle screen (%s)", type(exc).__name__)
+            if not await self._delete_message(chat_id, old_id):
+                logger.warning("Keeping existing BlackCastle screen because its message could not be deleted")
                 return
 
-        if edited_id:
-            for old_id in old_ids:
-                if old_id != edited_id:
-                    await self._delete_message(chat_id, old_id)
-            message_ids = [edited_id]
-            state["direct_message_has_photo"] = old_has_photo
+        # Clear stale IDs before sending so a failed send cannot leave the state pointing
+        # at messages that have already been removed.
+        state["direct_message_ids"] = []
+        state["direct_message_id"] = 0
+        state["direct_message_has_photo"] = None
+        self._save_state(player_id, state)
+
+        if has_photo:
+            sent = await self._call("sendPhoto", {
+                "chat_id": chat_id,
+                "photo": photo_id,
+                "caption": part,
+                "reply_markup": {"inline_keyboard": keyboard},
+            })
         else:
-            # The prior screen exists but Telegram no longer permits editing it.
-            # Remove stale/legacy messages before creating its replacement.
-            deleted = True
-            for old_id in old_ids:
-                deleted = await self._delete_message(chat_id, old_id) and deleted
-            if not deleted:
-                # Do not create a second visible screen if a stale one could not be removed.
-                return
-            if has_photo:
-                sent = await self._call("sendPhoto", {
-                    "chat_id": chat_id,
-                    "photo": photo_id,
-                    "caption": part,
-                    "reply_markup": markup,
-                })
-            else:
-                sent = await self._call("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": part,
-                    "reply_markup": markup,
-                })
-            sent_id = sent.get("message_id")
-            message_ids = [sent_id] if isinstance(sent_id, int) and sent_id > 0 else []
-            state["direct_message_has_photo"] = has_photo
+            sent = await self._call("sendMessage", {
+                "chat_id": chat_id,
+                "text": part,
+                "reply_markup": {"inline_keyboard": keyboard},
+            })
+
+        sent_id = sent.get("message_id")
+        message_ids = [sent_id] if isinstance(sent_id, int) and sent_id > 0 else []
+        if not message_ids:
+            logger.error("BlackCastle screen was sent but Telegram returned no message ID")
         state["direct_message_ids"] = message_ids
         state["direct_message_id"] = message_ids[-1] if message_ids else 0
+        state["direct_message_has_photo"] = has_photo if message_ids else None
         self._save_state(player_id, state)
 
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:

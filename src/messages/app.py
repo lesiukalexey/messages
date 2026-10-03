@@ -46,6 +46,20 @@ from .store import Store
 from .telegram_calls import place_short_call
 from .web_search import search_web
 
+
+def _is_black_castle_screen_message(message: Any) -> bool:
+    if not getattr(message, "out", False):
+        return False
+    markup = getattr(message, "reply_markup", None)
+    for row in getattr(markup, "rows", ()):
+        for button in getattr(row, "buttons", ()):
+            data = getattr(button, "data", b"")
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            if isinstance(data, (bytes, bytearray)) and bytes(data).startswith(b"blackcastle:"):
+                return True
+    return False
+
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
 GAME_INACTIVITY_FOLLOWUP_DELAY = timedelta(minutes=25)
 NOTIFICATION_BOT_USERNAME = "@NotificationFastBot"
@@ -1996,10 +2010,11 @@ async def run() -> None:
                         )
                         paragraph = black_castle_store.get_paragraph(paragraph_number)
                         if paragraph is None:
+                            paragraph_number = 1
                             paragraph = black_castle_store.get_paragraph(1)
                         if paragraph is None:
                             raise RuntimeError("BlackCastle opening paragraph is unavailable")
-                        reply = str(paragraph["title"])
+                        reply = "Шаг 1" if paragraph_number == 1 else f"Локация {paragraph_number}"
                         if paragraph.get("body"):
                             reply += f"\n\n{paragraph['body']}"
                         if paragraph.get("question"):
@@ -2027,9 +2042,10 @@ async def run() -> None:
                         return
                     try:
                         bot_peer = await client.get_input_entity(f"@{BLACK_CASTLE_BOT_USERNAME}")
+                        chat_peer = await event.get_input_chat()
                         inline_results = await client(functions.messages.GetInlineBotResultsRequest(
                             bot=utils.get_input_user(bot_peer),
-                            peer=await event.get_input_chat(),
+                            peer=chat_peer,
                             query=f"blackcastle_player_{peer_id}",
                             offset="",
                         ))
@@ -2039,12 +2055,79 @@ async def run() -> None:
                         )
                         if result is None:
                             raise RuntimeError("BlackCastle inline photo is not configured")
+
+                        player_state = black_castle_store.get_player_state(peer_id)
+                        if player_state is None:
+                            if black_castle_bot is None:
+                                raise RuntimeError("BlackCastle player state is unavailable")
+                            player_state = black_castle_bot._get_or_create_state(peer_id)
+                        old_folder_ids = player_state.get("folder_screen_message_ids")
+                        if not isinstance(old_folder_ids, list):
+                            old_folder_ids = []
+                        old_folder_ids = [
+                            message_id for message_id in old_folder_ids
+                            if isinstance(message_id, int) and message_id > 0
+                        ]
+                        fallback_folder_id = player_state.get("folder_screen_message_id")
+                        if isinstance(fallback_folder_id, int) and fallback_folder_id > 0:
+                            old_folder_ids.append(fallback_folder_id)
+                        old_folder_ids = list(dict.fromkeys(old_folder_ids))
+
+                        # Recover screens sent before message IDs were persisted.
+                        if (
+                            not player_state.get("folder_screen_tracking_initialized")
+                            or not old_folder_ids
+                        ):
+                            previous_screens = await client.get_messages(chat_peer, limit=200)
+                            old_folder_ids.extend(
+                                int(message.id)
+                                for message in previous_screens
+                                if _is_black_castle_screen_message(message)
+                                and isinstance(getattr(message, "id", None), int)
+                            )
+                            old_folder_ids = list(dict.fromkeys(old_folder_ids))
+
+                        if old_folder_ids:
+                            for old_folder_id in old_folder_ids:
+                                try:
+                                    await client.delete_messages(chat_peer, [old_folder_id])
+                                except Exception as delete_error:
+                                    error = str(delete_error).casefold()
+                                    if "message_id_invalid" in error or "message id invalid" in error:
+                                        continue
+                                    raise
+                        player_state["folder_screen_message_ids"] = []
+                        player_state["folder_screen_message_id"] = 0
+                        player_state["folder_screen_tracking_initialized"] = True
+                        black_castle_store.save_player_state(peer_id, player_state)
+
                         sent = await client(functions.messages.SendInlineBotResultRequest(
-                            peer=await event.get_input_chat(),
+                            peer=chat_peer,
                             query_id=inline_results.query_id,
                             id=result.id,
                             random_id=secrets.randbits(63),
                         ))
+                        sent_message_id = next(
+                            (getattr(getattr(update, "message", None), "id", None)
+                             for update in getattr(sent, "updates", [])
+                             if isinstance(getattr(getattr(update, "message", None), "id", None), int)),
+                            None,
+                        )
+                        if sent_message_id is None:
+                            latest_messages = await client.get_messages(chat_peer, limit=5)
+                            sent_message_id = next(
+                                (int(message.id) for message in latest_messages
+                                 if _is_black_castle_screen_message(message)
+                                 and isinstance(getattr(message, "id", None), int)),
+                                None,
+                            )
+                        if sent_message_id is None:
+                            raise RuntimeError("BlackCastle sent message ID was not returned")
+                        player_state = black_castle_store.get_player_state(peer_id) or player_state
+                        player_state["folder_screen_message_ids"] = [sent_message_id]
+                        player_state["folder_screen_message_id"] = sent_message_id
+                        player_state["folder_screen_tracking_initialized"] = True
+                        black_castle_store.save_player_state(peer_id, player_state)
                     except Exception as exc:
                         store.message_state(settings.account_id, peer_id, event.message.id, "failed")
                         store.audit(
@@ -2061,12 +2144,7 @@ async def run() -> None:
                         "sent",
                         json.dumps({
                             "incoming_message_id": event.message.id,
-                            "sent_message_id": next(
-                                (getattr(getattr(update, "message", None), "id", None)
-                                 for update in getattr(sent, "updates", [])
-                                 if getattr(getattr(update, "message", None), "id", None) is not None),
-                                None,
-                            ),
+                            "sent_message_id": sent_message_id,
                             "algorithm": "black_castle_scene",
                         }),
                     )
