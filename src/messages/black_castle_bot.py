@@ -311,7 +311,8 @@ class BlackCastleBot:
         self, state: dict[str, Any]
     ) -> tuple[str, list[list[dict[str, str]]]]:
         text, keyboard, _ = self._screen(state)
-        part_limit = 950 if state.get("view") == "step" else 4000
+        # Every inline result is a photo; Telegram limits photo captions to 1024 chars.
+        part_limit = 950
         if state.get("view") == "preface":
             parts = self._preface_parts(text, limit=part_limit)
             part = max(0, min(int(state.get("preface_part", 0)), len(parts) - 1))
