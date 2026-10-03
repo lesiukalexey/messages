@@ -7,7 +7,7 @@ import logging
 import random
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.request import Request, urlopen
 
 BOT_USERNAME = "KnigaIgraBot"
@@ -18,12 +18,18 @@ logger = logging.getLogger(__name__)
 
 class BlackCastleBot:
     def __init__(
-        self, token: str, owner_store: Any, game_store: Any, scene_path: Path
+        self,
+        token: str,
+        owner_store: Any,
+        game_store: Any,
+        scene_path: Path,
+        folder_screen_handler: Callable[[int], Any] | None = None,
     ) -> None:
         self.token = token
         self.owner_store = owner_store
         self.game_store = game_store
         self.scene_path = scene_path
+        self.folder_screen_handler = folder_screen_handler
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
         def send() -> Any:
@@ -473,15 +479,34 @@ class BlackCastleBot:
         photo_id = self._paragraph_photo(int(state.get("step", 1)))
         results: list[dict[str, Any]] = []
         if photo_id:
-            caption, keyboard = self._inline_screen(state)
-            results.append({
-                "type": "photo",
-                "id": f"black_castle_player_{player_id}",
-                "photo_file_id": photo_id,
-                "caption": caption,
-                "parse_mode": "HTML",
-                "reply_markup": {"inline_keyboard": keyboard},
-            })
+            text, keyboard, _ = self._screen(state)
+            parts = self._preface_parts(text, limit=950)
+            for index, part in enumerate(parts):
+                is_last = index == len(parts) - 1
+                reply_markup = {"inline_keyboard": keyboard} if is_last else None
+                if index == 0:
+                    result: dict[str, Any] = {
+                        "type": "photo",
+                        "id": f"black_castle_player_{player_id}_part_{index}",
+                        "photo_file_id": photo_id,
+                        "caption": self._format_telegram_text(part),
+                        "parse_mode": "HTML",
+                    }
+                    if reply_markup is not None:
+                        result["reply_markup"] = reply_markup
+                else:
+                    result = {
+                        "type": "article",
+                        "id": f"black_castle_player_{player_id}_part_{index}",
+                        "title": f"Продолжение {index + 1}",
+                        "input_message_content": {
+                            "message_text": self._format_telegram_text(part),
+                            "parse_mode": "HTML",
+                        },
+                    }
+                    if reply_markup is not None:
+                        result["reply_markup"] = reply_markup
+                results.append(result)
         await self._call("answerInlineQuery", {
             "inline_query_id": query_id,
             "results": results,
@@ -630,6 +655,11 @@ class BlackCastleBot:
             self._save_state(player_id, state)
             inline_message_id = callback.get("inline_message_id")
             if isinstance(inline_message_id, str):
+                if self.folder_screen_handler is not None:
+                    result = self.folder_screen_handler(player_id)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    return
                 await self._edit_inline_screen(inline_message_id, state)
                 return
             message = callback_message
