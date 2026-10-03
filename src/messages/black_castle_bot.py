@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import random
@@ -94,6 +95,55 @@ class BlackCastleBot:
 
     def _save_state(self, player_id: int, state: dict[str, Any]) -> None:
         self.game_store.save_player_state(player_id, state)
+
+    @staticmethod
+    def _format_telegram_text(text: str) -> str:
+        """Add readable Telegram HTML formatting while keeping book text intact."""
+        title, separator, body = text.partition("\n\n")
+        if not separator:
+            return html.escape(text)
+
+        icons = {
+            "Шаг 1": "📖",
+            "Характеристики": "🎲",
+            "Инвентарь": "🎒",
+            "Книга-игра": "📚",
+        }
+        icon = icons.get(title.strip(), "📖")
+        formatted = [f"{icon} <b>{html.escape(title.strip())}</b>"]
+
+        for block in re.split(r"\n\s*\n", body.strip()):
+            block = block.strip()
+            if not block:
+                continue
+            if block == "Вы пойдете:":
+                formatted.append(f"\n<b>{html.escape(block)}</b>")
+                continue
+
+            lines = block.splitlines()
+            if len(lines) > 1 or all(":" in line for line in lines):
+                formatted_lines = []
+                for line in lines:
+                    match = re.match(r"^(\s*(?:•\s*)?[^:]+:)(\s*)(.*)$", line)
+                    if match:
+                        prefix = html.escape(match.group(1))
+                        value = html.escape(match.group(3))
+                        formatted_lines.append(f"<b>{prefix}</b> {value}".rstrip())
+                    else:
+                        formatted_lines.append(html.escape(line))
+                formatted.append("\n".join(formatted_lines))
+                continue
+
+            sentences = re.findall(
+                r".+?[.!?…](?:[»”\"’]+)?(?=\s|$)|.+$",
+                block,
+            )
+            if not sentences:
+                sentences = [block]
+            groups = [sentences[index:index + 2] for index in range(0, len(sentences), 2)]
+            formatted.append("\n\n".join(html.escape(" ".join(group).strip()) for group in groups))
+
+        return "\n\n".join(formatted)
 
     def _screen(self, state: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]], bool]:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
@@ -276,6 +326,7 @@ class BlackCastleBot:
                     "text": "Продолжить",
                     "callback_data": "blackcastle:continue",
                 }]]
+            text = self._format_telegram_text(text)
         elif state.get("view") == "step":
             parts = self._preface_parts(text, limit=part_limit)
             part = max(0, min(int(state.get("page_part", 0)), len(parts) - 1))
@@ -285,6 +336,9 @@ class BlackCastleBot:
                     "text": "Продолжить",
                     "callback_data": "blackcastle:page_next",
                 }]]
+            text = self._format_telegram_text(text)
+        else:
+            text = self._format_telegram_text(text)
         return text, keyboard
 
     async def _delete_message(self, chat_id: int, message_id: int) -> bool:
@@ -333,6 +387,7 @@ class BlackCastleBot:
             callback = "blackcastle:preface_next" if part_key == "preface_part" else "blackcastle:page_next"
             keyboard = [[{"text": "Продолжить", "callback_data": callback}]]
         part = parts[part_index]
+        formatted_part = self._format_telegram_text(part)
 
         for old_id in old_ids:
             if not await self._delete_message(chat_id, old_id):
@@ -350,13 +405,15 @@ class BlackCastleBot:
             sent = await self._call("sendPhoto", {
                 "chat_id": chat_id,
                 "photo": photo_id,
-                "caption": part,
+                "caption": formatted_part,
+                "parse_mode": "HTML",
                 "reply_markup": {"inline_keyboard": keyboard},
             })
         else:
             sent = await self._call("sendMessage", {
                 "chat_id": chat_id,
-                "text": part,
+                "text": formatted_part,
+                "parse_mode": "HTML",
                 "reply_markup": {"inline_keyboard": keyboard},
             })
 
@@ -376,10 +433,16 @@ class BlackCastleBot:
             photo_id = self._paragraph_photo(int(state.get("step", 1)))
             if not photo_id:
                 raise RuntimeError("BlackCastle has no paragraph or default photo")
-            payload["media"] = {"type": "photo", "media": photo_id, "caption": text}
+            payload["media"] = {
+                "type": "photo",
+                "media": photo_id,
+                "caption": text,
+                "parse_mode": "HTML",
+            }
             await self._call("editMessageMedia", payload)
         else:
             payload["caption"] = text
+            payload["parse_mode"] = "HTML"
             await self._call("editMessageCaption", payload)
 
     async def _answer_inline_query(self, query: dict[str, Any]) -> None:
@@ -402,6 +465,7 @@ class BlackCastleBot:
                 "id": f"black_castle_player_{player_id}",
                 "photo_file_id": photo_id,
                 "caption": caption,
+                "parse_mode": "HTML",
                 "reply_markup": {"inline_keyboard": keyboard},
             })
         await self._call("answerInlineQuery", {
