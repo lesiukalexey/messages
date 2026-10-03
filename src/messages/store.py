@@ -60,13 +60,6 @@ class Store:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (account_id, peer_id, message_id)
             );
-            CREATE TABLE IF NOT EXISTS game_player_memories (
-                account_id TEXT NOT NULL,
-                peer_id INTEGER NOT NULL,
-                facts_json TEXT NOT NULL DEFAULT '[]',
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (account_id, peer_id)
-            );
             CREATE TABLE IF NOT EXISTS calendar_events (
                 source_account_id TEXT NOT NULL,
                 peer_id INTEGER NOT NULL,
@@ -641,54 +634,6 @@ class Store:
             (state, utc_now(), account_id, peer_id, message_id),
         )
         self.connection.commit()
-
-    def game_player_memory(self, peer_id: int) -> list[str]:
-        row = self.connection.execute(
-            """SELECT facts_json FROM game_player_memories
-               WHERE account_id = ? AND peer_id = ?""",
-            (self.account_id, peer_id),
-        ).fetchone()
-        if row is None:
-            return []
-        try:
-            value = json.loads(row["facts_json"])
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(value, list):
-            return []
-        return [
-            item.strip()[:280]
-            for item in value
-            if isinstance(item, str) and item.strip()
-        ][:24]
-
-    def update_game_player_memory(
-        self, peer_id: int, remember: list[str], forget: list[str]
-    ) -> list[str]:
-        """Apply derived fact deltas to the private, account/contact-scoped memory."""
-        facts = self.game_player_memory(peer_id)
-        forgotten = {value.casefold() for value in forget if isinstance(value, str)}
-        updated = [value for value in facts if value.casefold() not in forgotten]
-        existing = {value.casefold() for value in updated}
-        for value in remember:
-            if not isinstance(value, str):
-                continue
-            normalized = " ".join(value.split())[:280]
-            if normalized and normalized.casefold() not in existing:
-                updated.append(normalized)
-                existing.add(normalized.casefold())
-        updated = updated[-24:]
-        if updated == facts:
-            return updated
-        self.connection.execute(
-            """INSERT INTO game_player_memories(account_id, peer_id, facts_json, updated_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(account_id, peer_id) DO UPDATE SET
-                 facts_json=excluded.facts_json, updated_at=excluded.updated_at""",
-            (self.account_id, peer_id, json.dumps(updated, ensure_ascii=False), utc_now()),
-        )
-        self.connection.commit()
-        return updated
 
     def record_incoming_session(
         self, account_id: str, peer_id: int, received_at: datetime

@@ -26,6 +26,7 @@ from .game_memory import (
     parse_memory_delta,
     prompt_with_player_memory,
 )
+from .game_memory_store import GameMemoryStore
 from .game_routing import selected_game_folder
 from .llm import Responder
 from .model_selection import (
@@ -1088,6 +1089,8 @@ async def run() -> None:
     settings.session_path.parent.chmod(0o700)
     store = Store(settings.database_path, settings.account_id)
     store.initialize()
+    game_memory_store = GameMemoryStore(settings.account_id)
+    game_memory_store.initialize()
     interrupted_messages = store.recover_interrupted_messages()
     if interrupted_messages:
         logger.info("Recovered %s recent interrupted Telegram messages", len(interrupted_messages))
@@ -1817,7 +1820,7 @@ async def run() -> None:
                 if selected_game == "Game":
                     context = await game_session_history(client, event, session_started_at)
                     model, effort, _ = selected_model_settings()
-                    player_memory = store.game_player_memory(peer_id)
+                    player_memory = game_memory_store.game_player_memory(peer_id)
 
                     async def generate_game_reply(prompt: str) -> str:
                         return await responder._run(
@@ -1898,7 +1901,7 @@ async def run() -> None:
                             effort=effort,
                         )
                         remember, forget = parse_memory_delta(memory_result)
-                        updated_memory = store.update_game_player_memory(
+                        updated_memory = game_memory_store.update_game_player_memory(
                             peer_id, remember, forget
                         )
                         if updated_memory != player_memory:
@@ -3066,6 +3069,7 @@ async def run() -> None:
             except asyncio.CancelledError:
                 pass
         history.close()
+        game_memory_store.close()
         store.close()
         await client.disconnect()
 
