@@ -943,7 +943,7 @@ def is_quiet_hours(value: datetime, timezone_name: str) -> bool:
 def is_chatrole_quiet_hours(value: datetime, timezone_name: str) -> bool:
     zone = ZoneInfo(timezone_name)
     local = value.replace(tzinfo=zone) if value.tzinfo is None else value.astimezone(zone)
-    return local.time() >= time(22, 0) or local.time() < time(8, 0)
+    return local.time() >= time(22, 0) or local.time() < time(9, 0)
 
 def interval_overlaps_quiet_hours(
     start_at: str, duration_minutes: int, timezone_name: str
