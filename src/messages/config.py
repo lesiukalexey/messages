@@ -36,6 +36,7 @@ class Settings:
     reply_api_port: int = 8095
     reply_api_persona_id: str = "alexey-lesiuk"
     chatrole_engine_path: Path = Path("/game/games/chat_with_role/src/game.py")
+    chatrole_test_peer_ids: frozenset[int] = frozenset()
     black_castle_algorithm_path: Path = Path("/game/games/black_castle/src/reply_algorithm.py")
     black_castle_scene_path: Path = Path("/game/games/black_castle/data/opening_scene.json")
     call_reminder_username: str = ""
@@ -58,6 +59,19 @@ class Settings:
         account_id = os.getenv("TELEGRAM_ACCOUNT_ID", "personal").strip()
         if not account_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for char in account_id):
             raise ValueError("TELEGRAM_ACCOUNT_ID has invalid characters")
+
+        chatrole_test_ids: set[int] = set()
+        for raw_peer_id in os.getenv("CHATROLE_TEST_PEER_IDS", "").split(","):
+            raw_peer_id = raw_peer_id.strip()
+            if not raw_peer_id:
+                continue
+            try:
+                peer_id = int(raw_peer_id)
+            except ValueError as exc:
+                raise ValueError("CHATROLE_TEST_PEER_IDS must be comma-separated numeric Telegram peer IDs") from exc
+            if peer_id <= 0:
+                raise ValueError("CHATROLE_TEST_PEER_IDS values must be positive")
+            chatrole_test_ids.add(peer_id)
 
         codex_options = tuple(
             model.strip()
@@ -230,6 +244,7 @@ class Settings:
             chatrole_engine_path=Path(
                 os.getenv("CHATROLE_ENGINE_PATH", "/game/games/chat_with_role/src/game.py")
             ),
+            chatrole_test_peer_ids=frozenset(chatrole_test_ids),
             black_castle_algorithm_path=Path(
                 os.getenv(
                     "BLACK_CASTLE_ALGORITHM_PATH",

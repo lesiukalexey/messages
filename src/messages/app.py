@@ -1124,6 +1124,8 @@ async def run() -> None:
     chatrole_game = None
     try:
         chatrole_game = load_chatrole_game(settings.chatrole_engine_path, settings.account_id)
+        if not settings.chatrole_test_peer_ids:
+            logger.warning("ChatRole remains disabled until CHATROLE_TEST_PEER_IDS is configured")
     except Exception as exc:
         logger.exception("Could not initialize asynchronous ChatRole (%s)", type(exc).__name__)
     interrupted_messages = store.recover_interrupted_messages()
@@ -1227,6 +1229,9 @@ async def run() -> None:
         return game_folder.contains(peer_id) or any(
             legacy_folder.contains(peer_id) for legacy_folder in legacy_game_folders
         )
+
+    def chatrole_test_peer_allowed(peer_id: int) -> bool:
+        return peer_id in settings.chatrole_test_peer_ids
 
     black_castle_folder = DialogFilterGate(client, "BlackCastle")
     await black_castle_folder.refresh(force=True)
@@ -1714,7 +1719,11 @@ async def run() -> None:
             )
 
     async def deliver_chatrole_outbox(peer_id: int) -> None:
-        if chatrole_game is None or is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
+        if (
+            chatrole_game is None
+            or not chatrole_test_peer_allowed(peer_id)
+            or is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone)
+        ):
             return
         if await reply_policy_block(peer_id, force=True, require_game="Game"):
             return
@@ -1759,6 +1768,8 @@ async def run() -> None:
                 if is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
                     continue
                 for peer_id in chatrole_game.due_peer_ids():
+                    if not chatrole_test_peer_allowed(peer_id):
+                        continue
                     async with locks.setdefault(peer_id, asyncio.Lock()):
                         chatrole_game.process_due_events(peer_id)
                         await deliver_chatrole_outbox(peer_id)
@@ -2020,6 +2031,10 @@ async def run() -> None:
                     )
                     return
                 if selected_game == "Game":
+                    if not chatrole_test_peer_allowed(peer_id):
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        store.audit(peer_id, "chatrole_test_restricted", "peer is not in CHATROLE_TEST_PEER_IDS")
+                        return
                     if startup_game_recovery:
                         store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                         store.audit(peer_id, "skipped", "historical ChatRole messages do not start or advance a campaign")
