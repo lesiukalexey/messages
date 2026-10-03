@@ -1773,10 +1773,16 @@ async def run() -> None:
             try:
                 if is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
                     continue
-                for peer_id in chatrole_game.due_peer_ids():
+                peer_ids = set(chatrole_game.due_peer_ids())
+                peer_ids.update(settings.chatrole_test_peer_ids)
+                for peer_id in sorted(peer_ids):
                     if not chatrole_test_peer_allowed(peer_id):
                         continue
                     async with locks.setdefault(peer_id, asyncio.Lock()):
+                        # Start the selected test campaign after quiet hours so
+                        # its first response deadline also begins in daytime.
+                        if not chatrole_game.has_player(peer_id):
+                            chatrole_game.start_campaign(peer_id)
                         chatrole_game.process_due_events(peer_id)
                         await deliver_chatrole_outbox(peer_id)
             except Exception as exc:
