@@ -2081,6 +2081,10 @@ async def run() -> None:
                         store.audit(peer_id, "failed", "asynchronous ChatRole engine is unavailable")
                         return
                     async with locks.setdefault(peer_id, asyncio.Lock()):
+                        logger.info(
+                            "ChatRole turn started (peer_id=%s, message_id=%s)",
+                            peer_id, event.message.id,
+                        )
                         # Quiet hours pause the story clock except for an explicitly
                         # enabled, allowlisted test peer.
                         if not chatrole_quiet_for_peer(peer_id):
@@ -2098,6 +2102,10 @@ async def run() -> None:
                         result = await chatrole_game.handle_player_message(
                             peer_id, event.raw_text or "", generate_chatrole
                         )
+                        logger.info(
+                            "ChatRole turn resolved (peer_id=%s, message_id=%s, action=%s)",
+                            peer_id, event.message.id, result.get("action"),
+                        )
                         reply = result["reply"]
                         block_reason = await reply_policy_block(
                             peer_id, force=True, require_game="Game"
@@ -2113,6 +2121,10 @@ async def run() -> None:
                         }))
                         mark_assistant_send(peer_id, reply)
                         sent = await event.respond(reply)
+                        logger.info(
+                            "ChatRole reply sent (peer_id=%s, message_id=%s, reply_id=%s)",
+                            peer_id, event.message.id, sent.id,
+                        )
                         store.message_state(settings.account_id, peer_id, event.message.id, "sent")
                         store.audit(peer_id, "sent", json.dumps({
                             "incoming_message_id": event.message.id,
