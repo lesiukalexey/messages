@@ -95,9 +95,9 @@ class BlackCastleBot:
             values = state["characteristics"]
             text = (
                 "Характеристики\n\n"
-                f"МАСТЕРСТВО: {values['mastery']}/{values['max_mastery']}\n"
-                f"ВЫНОСЛИВОСТЬ: {values['stamina']}/{values['max_stamina']}\n"
-                f"УДАЧА: {values['luck']}/{values['max_luck']}"
+                f"МАСТЕРСТВО: {values['mastery']}\n"
+                f"ВЫНОСЛИВОСТЬ: {values['stamina']}\n"
+                f"УДАЧА: {values['luck']}"
             )
             return text, [[{
                 "text": "К шагу 1",
