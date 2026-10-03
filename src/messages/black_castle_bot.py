@@ -648,8 +648,19 @@ class BlackCastleBot:
                     },
                 )
                 for update in updates or []:
-                    await self.process_update(update)
                     offset = int(update["update_id"]) + 1
+                    try:
+                        await self.process_update(update)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        # A stale inline message or other per-update failure must
+                        # not hold every later player message behind it.
+                        logger.warning(
+                            "BlackCastle update processing failed (update %s, %s)",
+                            update.get("update_id"),
+                            type(exc).__name__,
+                        )
                     self.game_store.set_setting("kniga_igra_update_offset", str(offset))
             except asyncio.CancelledError:
                 raise
