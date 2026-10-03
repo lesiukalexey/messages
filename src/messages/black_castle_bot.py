@@ -4,11 +4,14 @@ import asyncio
 import json
 import logging
 import random
+import re
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
 BOT_USERNAME = "KnigaIgraBot"
+ROUTE_BUTTON_MAX_LENGTH = 50
+ROUTE_BUTTON_SUFFIX = re.compile(r"\s+[—–-]\s*\d+\s*$")
 logger = logging.getLogger(__name__)
 
 
@@ -144,11 +147,12 @@ class BlackCastleBot:
         if view == "step" and isinstance(step, int):
             paragraph = self.game_store.get_paragraph(step)
             if paragraph is None:
-                text = f"Параграф {step}\n\nЭта страница ещё не добавлена."
+                heading = "Шаг 1" if step == 1 else f"Локация {step}"
+                text = f"{heading}\n\nЭта страница ещё не добавлена."
                 keyboard = [[{"text": "К шагу 1", "callback_data": "blackcastle:step:1"}]]
                 return text, keyboard, False
 
-            title = str(paragraph["title"])
+            title = "Шаг 1" if step == 1 else f"Локация {step}"
             body = paragraph.get("body")
             text = title
             if body:
@@ -166,7 +170,9 @@ class BlackCastleBot:
                 if required_item and not self._has_item(state, str(required_item)):
                     continue
                 keyboard.append([{
-                    "text": str(choice["button_text"]),
+                    "text": self._route_button_text(
+                        str(choice["button_text"]), int(choice["target_paragraph"])
+                    ),
                     "callback_data": f"blackcastle:route:{step}:{choice['choice_id']}",
                 }])
             if step == 1:
@@ -235,6 +241,18 @@ class BlackCastleBot:
         if paragraph and paragraph.get("photo_file_id"):
             return str(paragraph["photo_file_id"])
         return self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
+
+    @staticmethod
+    def _route_button_text(label: str, target_paragraph: int) -> str:
+        wording = ROUTE_BUTTON_SUFFIX.sub("", str(label)).strip() or "Продолжить"
+        suffix = f" — {target_paragraph}"
+        wording_limit = ROUTE_BUTTON_MAX_LENGTH - len(suffix)
+        if len(wording) > wording_limit:
+            clipped = wording[:wording_limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+            if not clipped:
+                clipped = wording[:wording_limit - 1]
+            wording = f"{clipped.rstrip()}…"
+        return f"{wording}{suffix}"
 
     def _inline_screen(
         self, state: dict[str, Any]
