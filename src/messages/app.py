@@ -1808,7 +1808,16 @@ async def run() -> None:
                         # peer is eligible to progress.
                         if not chatrole_game.has_player(peer_id):
                             chatrole_game.start_campaign(peer_id)
-                        chatrole_game.process_due_events(peer_id)
+                        model, effort, _ = selected_model_settings()
+
+                        async def generate_chatrole_event(
+                            prompt: str, schema: dict[str, Any] | None = None
+                        ) -> str:
+                            return await responder._run(
+                                model, prompt, schema, timeout_seconds=20, effort=effort
+                            )
+
+                        await chatrole_game.process_due_events(peer_id, generate_chatrole_event)
                         await deliver_chatrole_outbox(peer_id)
             except Exception as exc:
                 logger.exception("ChatRole event scheduler failed (%s)", type(exc).__name__)
@@ -2110,7 +2119,7 @@ async def run() -> None:
                     # response sent before a deadline can still cancel it after
                     # the worker has recovered from an outage.
                     if not chatrole_quiet_for_peer(peer_id):
-                        chatrole_game.process_due_events(peer_id)
+                        await chatrole_game.process_due_events(peer_id, generate_chatrole)
                         await deliver_chatrole_outbox(peer_id)
                     logger.info(
                         "ChatRole turn resolved (peer_id=%s, message_id=%s, action=%s)",
