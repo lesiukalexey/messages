@@ -1835,7 +1835,7 @@ async def run() -> None:
                     "Could not cancel a stale Game follow-up (%s)",
                     type(exc).__name__,
                 )
-        if selected_game != "Game" and (
+        if selected_game is None and (
             is_quiet_hours(datetime.now(UTC), settings.timezone)
             or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
         ):
