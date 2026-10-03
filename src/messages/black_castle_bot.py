@@ -276,6 +276,7 @@ class BlackCastleBot:
 
         message_id = old_ids[0] if old_ids else 0
         edited = False
+        can_send_new = not message_id
         if message_id:
             if photo_id:
                 try:
@@ -301,8 +302,13 @@ class BlackCastleBot:
                             })
                             edited = True
                         except RuntimeError as text_exc:
-                            if "message is not modified" in str(text_exc).casefold():
+                            text_description = str(text_exc).casefold()
+                            if "message is not modified" in text_description:
                                 edited = True
+                            elif "message to edit not found" in text_description:
+                                can_send_new = True
+                    elif "message to edit not found" in description:
+                        can_send_new = True
                     else:
                         logger.info("Could not edit BlackCastle screen (%s)", type(exc).__name__)
             else:
@@ -315,9 +321,10 @@ class BlackCastleBot:
                     })
                     edited = True
                 except RuntimeError as exc:
-                    if "message is not modified" in str(exc).casefold():
+                    description = str(exc).casefold()
+                    if "message is not modified" in description:
                         edited = True
-                    elif "there is no text in the message to edit" in str(exc).casefold():
+                    elif "there is no text in the message to edit" in description:
                         try:
                             await self._call("editMessageCaption", {
                                 "chat_id": chat_id,
@@ -327,10 +334,15 @@ class BlackCastleBot:
                             })
                             edited = True
                         except RuntimeError as caption_exc:
-                            if "message is not modified" in str(caption_exc).casefold():
+                            caption_description = str(caption_exc).casefold()
+                            if "message is not modified" in caption_description:
                                 edited = True
+                            elif "message to edit not found" in caption_description:
+                                can_send_new = True
+                    elif "message to edit not found" in description:
+                        can_send_new = True
 
-        if not edited:
+        if not edited and can_send_new:
             if photo_id:
                 sent = await self._call("sendPhoto", {
                     "chat_id": chat_id,
@@ -346,11 +358,12 @@ class BlackCastleBot:
                 })
             message_id = int(sent.get("message_id", 0))
 
-        for extra_id in old_ids:
-            if extra_id != message_id:
-                await self._delete_message(chat_id, extra_id)
-        state["direct_message_ids"] = [message_id] if message_id else []
-        state["direct_message_id"] = message_id
+        if edited or can_send_new:
+            for extra_id in old_ids:
+                if extra_id != message_id:
+                    await self._delete_message(chat_id, extra_id)
+            state["direct_message_ids"] = [message_id] if message_id else []
+            state["direct_message_id"] = message_id
         self._save_state(player_id, state)
 
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
