@@ -57,7 +57,7 @@ class BlackCastleBot:
                 "luck": luck,
                 "max_luck": luck,
             },
-            "items": ["Меч", "Фляга", "Заплечный мешок"],
+            "items": ["Меч", "Фляга"],
             "gold": 15,
             "water_sips": 2,
             "bag_capacity": 7,
@@ -70,6 +70,19 @@ class BlackCastleBot:
         if state is None:
             state = self._new_state()
             self._save_state(player_id, state)
+        else:
+            items = state.get("items")
+            if isinstance(items, list):
+                filtered_items = [
+                    item for item in items
+                    if not (
+                        isinstance(item, str)
+                        and item.strip().casefold() == "заплечный мешок"
+                    )
+                ]
+                if len(filtered_items) != len(items):
+                    state["items"] = filtered_items
+                    self._save_state(player_id, state)
         return state
 
     def _save_state(self, player_id: int, state: dict[str, Any]) -> None:
