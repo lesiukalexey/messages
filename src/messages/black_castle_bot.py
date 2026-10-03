@@ -239,8 +239,9 @@ class BlackCastleBot:
         self, state: dict[str, Any]
     ) -> tuple[str, list[list[dict[str, str]]]]:
         text, keyboard, _ = self._screen(state)
+        part_limit = 950 if state.get("view") == "step" else 4000
         if state.get("view") == "preface":
-            parts = self._preface_parts(text)
+            parts = self._preface_parts(text, limit=part_limit)
             part = max(0, min(int(state.get("preface_part", 0)), len(parts) - 1))
             text = parts[part]
             if part + 1 < len(parts):
@@ -254,7 +255,7 @@ class BlackCastleBot:
                     "callback_data": "blackcastle:continue",
                 }]]
         elif state.get("view") == "step":
-            parts = self._preface_parts(text)
+            parts = self._preface_parts(text, limit=part_limit)
             part = max(0, min(int(state.get("page_part", 0)), len(parts) - 1))
             text = parts[part]
             if part + 1 < len(parts):
@@ -291,40 +292,38 @@ class BlackCastleBot:
             await self._delete_message(chat_id, old_id)
 
         text, keyboard, has_photo = self._screen(state)
-        parts = self._preface_parts(text)
+        parts = self._preface_parts(text, limit=950 if has_photo else 4000)
         photo_id = self._paragraph_photo(int(state.get("step", 1))) if has_photo else ""
         if has_photo and not photo_id:
             parts = ["Сцена сейчас недоступна. Попробуй написать позже."]
             keyboard = [[{"text": "Обновить", "callback_data": "blackcastle:continue"}]]
             has_photo = False
 
-        message_ids: list[int] = []
-        try:
-            for part_index, part in enumerate(parts):
-                is_last = part_index == len(parts) - 1
-                markup = {"inline_keyboard": keyboard} if is_last else None
-                if part_index == 0 and has_photo:
-                    payload: dict[str, Any] = {
-                        "chat_id": chat_id,
-                        "photo": photo_id,
-                        "caption": part,
-                    }
-                    if markup:
-                        payload["reply_markup"] = markup
-                    sent = await self._call("sendPhoto", payload)
-                else:
-                    payload = {"chat_id": chat_id, "text": part}
-                    if markup:
-                        payload["reply_markup"] = markup
-                    sent = await self._call("sendMessage", payload)
-                sent_id = sent.get("message_id")
-                if isinstance(sent_id, int) and sent_id > 0:
-                    message_ids.append(sent_id)
-        except Exception:
-            for sent_id in message_ids:
-                await self._delete_message(chat_id, sent_id)
-            raise
+        part_key = "preface_part" if state.get("view") == "preface" else "page_part"
+        part_index = max(0, min(int(state.get(part_key, 0)), len(parts) - 1))
+        state[part_key] = part_index
+        has_more = part_index + 1 < len(parts)
+        if has_more:
+            callback = "blackcastle:preface_next" if part_key == "preface_part" else "blackcastle:page_next"
+            keyboard = [[{"text": "Продолжить", "callback_data": callback}]]
+        part = parts[part_index]
+        if has_photo:
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "photo": photo_id,
+                "caption": part,
+                "reply_markup": {"inline_keyboard": keyboard},
+            }
+            sent = await self._call("sendPhoto", payload)
+        else:
+            sent = await self._call("sendMessage", {
+                "chat_id": chat_id,
+                "text": part,
+                "reply_markup": {"inline_keyboard": keyboard},
+            })
 
+        sent_id = sent.get("message_id")
+        message_ids = [sent_id] if isinstance(sent_id, int) and sent_id > 0 else []
         state["direct_message_ids"] = message_ids
         state["direct_message_id"] = message_ids[-1] if message_ids else 0
         self._save_state(player_id, state)
