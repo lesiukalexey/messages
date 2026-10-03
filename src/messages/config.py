@@ -35,7 +35,7 @@ class Settings:
     reply_api_host: str = "192.168.31.46"
     reply_api_port: int = 8095
     reply_api_persona_id: str = "alexey-lesiuk"
-    game_algorithm_path: Path = Path("/game/games/chat_with_role/src/reply_algorithm.py")
+    chatrole_engine_path: Path = Path("/game/games/chat_with_role/src/game.py")
     black_castle_algorithm_path: Path = Path("/game/games/black_castle/src/reply_algorithm.py")
     black_castle_scene_path: Path = Path("/game/games/black_castle/data/opening_scene.json")
     call_reminder_username: str = ""
@@ -227,11 +227,8 @@ class Settings:
             reply_api_host=reply_api_host,
             reply_api_port=reply_api_port,
             reply_api_persona_id=os.getenv("REPLY_API_PERSONA_ID", "alexey-lesiuk").strip(),
-            game_algorithm_path=Path(
-                os.getenv(
-                    "GAME_ALGORITHM_PATH",
-                    "/game/games/chat_with_role/src/reply_algorithm.py",
-                )
+            chatrole_engine_path=Path(
+                os.getenv("CHATROLE_ENGINE_PATH", "/game/games/chat_with_role/src/game.py")
             ),
             black_castle_algorithm_path=Path(
                 os.getenv(

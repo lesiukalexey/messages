@@ -19,14 +19,7 @@ from telethon import TelegramClient, events, functions, types, utils
 
 from .calendar import GoogleCalendar
 from .config import Settings
-from .game_reply import GameReplyAlgorithm, game_session_history
-from .game_memory import (
-    GAME_MEMORY_SCHEMA,
-    build_memory_update_prompt,
-    parse_memory_delta,
-    prompt_with_player_memory,
-)
-from .game_memory_store import GameMemoryStore
+from .chatrole_runtime import load_game as load_chatrole_game
 from .game_routing import selected_game_folder
 from .black_castle_store import BlackCastleStore
 from .llm import Responder
@@ -61,7 +54,6 @@ def _is_black_castle_screen_message(message: Any) -> bool:
     return False
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
-GAME_INACTIVITY_FOLLOWUP_DELAY = timedelta(minutes=25)
 NOTIFICATION_BOT_USERNAME = "@NotificationFastBot"
 DEFAULT_STYLE = "Write like a concise, practical, informal Telegram conversation."
 MEETING_SIGNAL = re.compile(
@@ -947,6 +939,12 @@ def is_quiet_hours(value: datetime, timezone_name: str) -> bool:
     local = value.replace(tzinfo=zone) if value.tzinfo is None else value.astimezone(zone)
     return time(0, 30) <= local.time() < time(8, 0)
 
+
+def is_chatrole_quiet_hours(value: datetime, timezone_name: str) -> bool:
+    zone = ZoneInfo(timezone_name)
+    local = value.replace(tzinfo=zone) if value.tzinfo is None else value.astimezone(zone)
+    return local.time() >= time(22, 0) or local.time() < time(8, 0)
+
 def interval_overlaps_quiet_hours(
     start_at: str, duration_minutes: int, timezone_name: str
 ) -> bool:
@@ -1123,8 +1121,11 @@ async def run() -> None:
                 black_castle_store.close()
                 black_castle_store = None
             logger.exception("Could not initialize the BlackCastle MySQL database")
-    game_memory_store = GameMemoryStore(settings.account_id)
-    game_memory_store.initialize()
+    chatrole_game = None
+    try:
+        chatrole_game = load_chatrole_game(settings.chatrole_engine_path, settings.account_id)
+    except Exception as exc:
+        logger.exception("Could not initialize asynchronous ChatRole (%s)", type(exc).__name__)
     interrupted_messages = store.recover_interrupted_messages()
     if interrupted_messages:
         logger.info("Recovered %s recent interrupted Telegram messages", len(interrupted_messages))
@@ -1227,7 +1228,6 @@ async def run() -> None:
             legacy_folder.contains(peer_id) for legacy_folder in legacy_game_folders
         )
 
-    game_reply_algorithm = GameReplyAlgorithm(settings.game_algorithm_path)
     black_castle_folder = DialogFilterGate(client, "BlackCastle")
     await black_castle_folder.refresh(force=True)
     learning_bot = (
@@ -1427,31 +1427,6 @@ async def run() -> None:
 
     def mark_assistant_send(peer_id: int, text: str) -> None:
         assistant_send_markers[(peer_id, text)] = datetime.now(UTC) + timedelta(minutes=2)
-
-    def schedule_game_inactivity_followup(
-        peer_id: int, player_message_id: int, bot_message: Any
-    ) -> None:
-        sent_at = bot_message.date or datetime.now(UTC)
-        due_at = sent_at + GAME_INACTIVITY_FOLLOWUP_DELAY
-        try:
-            game_memory_store.schedule_player_followup(
-                peer_id, player_message_id, bot_message.id, due_at
-            )
-            store.audit(
-                peer_id,
-                "game_inactivity_followup_scheduled",
-                json.dumps({
-                    "player_message_id": player_message_id,
-                    "bot_message_id": bot_message.id,
-                    "due_at": due_at.astimezone(UTC).isoformat(),
-                }),
-            )
-        except Exception as exc:
-            logger.warning(
-                "Could not schedule a Game inactivity follow-up (%s)",
-                type(exc).__name__,
-            )
-            store.audit(peer_id, "game_inactivity_followup_schedule_failed", type(exc).__name__)
 
     async def react_to_incoming(
         event: events.NewMessage.Event,
@@ -1738,172 +1713,57 @@ async def run() -> None:
                 NOTIFICATION_BOT_USERNAME,
             )
 
-    async def poll_game_inactivity_followups() -> None:
+    async def deliver_chatrole_outbox(peer_id: int) -> None:
+        if chatrole_game is None or is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
+            return
+        if await reply_policy_block(peer_id, force=True, require_game="Game"):
+            return
+        if store.contact_category(peer_id) == "realtors":
+            return
+        # Drain a single queued message per pass to preserve chronology without
+        # releasing a burst after quiet hours or a process outage.
+        for item in chatrole_game.pending_messages(peer_id, limit=1):
+            block_reason = await reply_policy_block(peer_id, force=True, require_game="Game")
+            if block_reason or is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
+                return
+            chatrole_game.mark_delivery(item["delivery_id"], "sending")
+            try:
+                mark_assistant_send(peer_id, item["body"])
+                result = await client(functions.messages.SendMessageRequest(
+                    peer=await client.get_input_entity(types.PeerUser(peer_id)),
+                    message=item["body"],
+                    random_id=int(item["telegram_random_id"]),
+                ))
+                message_id = None
+                for update in getattr(result, "updates", ()):
+                    message = getattr(update, "message", None)
+                    if message is not None and getattr(message, "out", False):
+                        message_id = getattr(message, "id", None)
+                        break
+                chatrole_game.mark_delivery(item["delivery_id"], "sent", message_id)
+                store.audit(peer_id, "chatrole_event_sent", json.dumps({
+                    "delivery_id": item["delivery_id"],
+                    "telegram_message_id": message_id,
+                }))
+            except Exception as exc:
+                chatrole_game.mark_delivery(item["delivery_id"], "pending")
+                logger.warning("Could not deliver ChatRole event (%s)", type(exc).__name__)
+                return
+
+    async def poll_chatrole_events() -> None:
+        if chatrole_game is None:
+            return
         while True:
             await asyncio.sleep(15)
             try:
-                reminder = game_memory_store.claim_due_player_followup()
+                if is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
+                    continue
+                for peer_id in chatrole_game.due_peer_ids():
+                    async with locks.setdefault(peer_id, asyncio.Lock()):
+                        chatrole_game.process_due_events(peer_id)
+                        await deliver_chatrole_outbox(peer_id)
             except Exception as exc:
-                logger.warning(
-                    "Could not claim a due Game inactivity follow-up (%s)",
-                    type(exc).__name__,
-                )
-                continue
-            if reminder is None:
-                continue
-
-            peer_id = reminder["peer_id"]
-            player_message_id = reminder["player_message_id"]
-            bot_message_id = reminder["bot_message_id"]
-            async with locks.setdefault(peer_id, asyncio.Lock()):
-                try:
-                    block_reason = await reply_policy_block(
-                        peer_id, force=True, require_game="Game"
-                    )
-                    if block_reason or store.contact_category(peer_id) == "realtors":
-                        game_memory_store.set_player_followup_state(
-                            peer_id, player_message_id, bot_message_id,
-                            "generating", "cancelled",
-                        )
-                        store.audit(
-                            peer_id,
-                            "game_inactivity_followup_skipped",
-                            block_reason or "realtor contact",
-                        )
-                        continue
-
-                    messages = await client.get_messages(peer_id, limit=32)
-                    latest = messages[0] if messages else None
-                    if latest is None or latest.id != bot_message_id or not latest.out:
-                        game_memory_store.set_player_followup_state(
-                            peer_id, player_message_id, bot_message_id,
-                            "generating", "cancelled",
-                        )
-                        store.audit(
-                            peer_id,
-                            "game_inactivity_followup_cancelled",
-                            "conversation changed since the reminder was scheduled",
-                        )
-                        continue
-
-                    context = [
-                        {
-                            "role": "assistant" if item.out else "contact",
-                            "text": (item.message or "").strip(),
-                        }
-                        for item in reversed(messages)
-                        if (item.message or "").strip()
-                    ]
-                    if not any(turn["role"] == "contact" for turn in context):
-                        game_memory_store.set_player_followup_state(
-                            peer_id, player_message_id, bot_message_id,
-                            "generating", "cancelled",
-                        )
-                        continue
-
-                    model, effort, _ = selected_model_settings()
-                    player_memory = game_memory_store.game_player_memory(peer_id)
-
-                    async def generate_inactivity_question(prompt: str) -> str:
-                        return await responder._run(
-                            model,
-                            prompt_with_player_memory(prompt, player_memory),
-                            effort=effort,
-                        )
-
-                    typing_action = client.action(peer_id, "typing")
-                    typing_active = False
-                    try:
-                        try:
-                            await typing_action.__aenter__()
-                            typing_active = True
-                        except Exception as exc:
-                            logger.warning(
-                                "Could not show typing for a Game follow-up (%s)",
-                                type(exc).__name__,
-                            )
-                        question = await game_reply_algorithm.inactivity_question(
-                            context, generate_inactivity_question
-                        )
-                    finally:
-                        if typing_active:
-                            try:
-                                await typing_action.__aexit__(None, None, None)
-                            except Exception:
-                                pass
-
-                    block_reason = await reply_policy_block(
-                        peer_id, force=True, require_game="Game"
-                    )
-                    latest = await client.get_messages(peer_id, limit=1)
-                    latest_message = latest[0] if latest else None
-                    if (
-                        block_reason
-                        or store.contact_category(peer_id) == "realtors"
-                        or latest_message is None
-                        or latest_message.id != bot_message_id
-                        or not latest_message.out
-                    ):
-                        game_memory_store.set_player_followup_state(
-                            peer_id, player_message_id, bot_message_id,
-                            "generating", "cancelled",
-                        )
-                        store.audit(
-                            peer_id,
-                            "game_inactivity_followup_cancelled",
-                            block_reason or "conversation changed before send",
-                        )
-                        continue
-                    if not game_memory_store.set_player_followup_state(
-                        peer_id, player_message_id, bot_message_id,
-                        "generating", "sending",
-                    ):
-                        continue
-                    if not game_memory_store.set_player_followup_state(
-                        peer_id, player_message_id, bot_message_id,
-                        "sending", "sending",
-                    ):
-                        continue
-
-                    mark_assistant_send(peer_id, question)
-                    sent = await client.send_message(peer_id, question)
-                    game_memory_store.set_player_followup_state(
-                        peer_id, player_message_id, bot_message_id,
-                        "sending", "sent",
-                    )
-                    store.audit(
-                        peer_id,
-                        "game_inactivity_followup_sent",
-                        json.dumps({
-                            "player_message_id": player_message_id,
-                            "reply_anchor_id": bot_message_id,
-                            "sent_message_id": sent.id,
-                        }),
-                    )
-                except Exception as exc:
-                    try:
-                        game_memory_store.set_player_followup_state(
-                            peer_id, player_message_id, bot_message_id,
-                            "generating", "failed",
-                        )
-                        game_memory_store.set_player_followup_state(
-                            peer_id, player_message_id, bot_message_id,
-                            "sending", "failed",
-                        )
-                        store.audit(
-                            peer_id,
-                            "game_inactivity_followup_failed",
-                            type(exc).__name__,
-                        )
-                    except Exception as state_error:
-                        logger.warning(
-                            "Could not record a failed Game follow-up (%s)",
-                            type(state_error).__name__,
-                        )
-                    logger.warning(
-                        "Could not send a Game inactivity follow-up (%s)",
-                        type(exc).__name__,
-                    )
+                logger.warning("ChatRole event scheduler failed (%s)", type(exc).__name__)
 
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
@@ -1942,15 +1802,6 @@ async def run() -> None:
             and message_key not in startup_game_recovery_ids
         ):
             return
-        if selected_game == "Game":
-            # A newer player message ends any unanswered inactivity cycle.
-            try:
-                game_memory_store.cancel_player_followup(peer_id, event.message.id)
-            except Exception as exc:
-                logger.warning(
-                    "Could not cancel a stale Game follow-up (%s)",
-                    type(exc).__name__,
-                )
         if selected_game is None and (
             is_quiet_hours(datetime.now(UTC), settings.timezone)
             or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
@@ -2169,146 +2020,51 @@ async def run() -> None:
                     )
                     return
                 if selected_game == "Game":
-                    context = await game_session_history(client, event, session_started_at)
-                    model, effort, _ = selected_model_settings()
-                    player_memory = game_memory_store.game_player_memory(peer_id)
-
-                    async def generate_game_reply(prompt: str) -> str:
-                        return await responder._run(
-                            model,
-                            prompt_with_player_memory(prompt, player_memory),
-                            effort=effort,
-                        )
-
-                    reply = await game_reply_algorithm.reply(
-                        settings.account_id,
-                        peer_id,
-                        event.raw_text or "",
-                        context,
-                        generate_game_reply,
-                    )
-                    game_source = "chat_with_role"
-                    store.audit(
-                        peer_id,
-                        "generated",
-                        json.dumps(
-                            {
-                                "incoming_message_id": event.message.id,
-                                "algorithm": game_source,
-                            }
-                        ),
-                    )
-                    block_reason = await reply_policy_block(
-                        peer_id, force=True, require_game="Game"
-                    )
-                    if block_reason:
-                        store.message_state(
-                            settings.account_id, peer_id, event.message.id, "skipped"
-                        )
-                        store.audit(peer_id, "skipped", f"{block_reason} before send")
+                    if startup_game_recovery:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        store.audit(peer_id, "skipped", "historical ChatRole messages do not start or advance a campaign")
                         return
-                    mark_assistant_send(peer_id, reply)
-                    sent = await event.respond(reply)
-                    store.message_state(settings.account_id, peer_id, event.message.id, "sent")
-                    store.audit(
-                        peer_id,
-                        "sent",
-                        json.dumps(
-                            {
-                                "incoming_message_id": event.message.id,
-                                "sent_message_id": sent.id,
-                                "algorithm": game_source,
-                            }
-                        ),
-                    )
-                    schedule_game_inactivity_followup(peer_id, event.message.id, sent)
+                    if chatrole_game is None:
+                        store.message_state(settings.account_id, peer_id, event.message.id, "failed")
+                        store.audit(peer_id, "failed", "asynchronous ChatRole engine is unavailable")
+                        return
+                    async with locks.setdefault(peer_id, asyncio.Lock()):
+                        # Quiet hours pause the story clock and hold proactive delivery.
+                        if not is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
+                            chatrole_game.process_due_events(peer_id)
+                            await deliver_chatrole_outbox(peer_id)
+                        model, effort, _ = selected_model_settings()
+
+                        async def generate_chatrole(prompt: str, schema: dict[str, Any] | None = None) -> str:
+                            return await responder._run(model, prompt, schema, effort=effort)
+
+                        result = await chatrole_game.handle_player_message(
+                            peer_id, event.raw_text or "", generate_chatrole
+                        )
+                        reply = result["reply"]
+                        block_reason = await reply_policy_block(
+                            peer_id, force=True, require_game="Game"
+                        )
+                        if block_reason:
+                            store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                            store.audit(peer_id, "skipped", f"{block_reason} before ChatRole reply")
+                            return
+                        store.audit(peer_id, "chatrole_action", json.dumps({
+                            "incoming_message_id": event.message.id,
+                            "action": result.get("action"),
+                            "started": result.get("started", False),
+                        }))
+                        mark_assistant_send(peer_id, reply)
+                        sent = await event.respond(reply)
+                        store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                        store.audit(peer_id, "sent", json.dumps({
+                            "incoming_message_id": event.message.id,
+                            "sent_message_id": sent.id,
+                            "algorithm": "chatrole_async_thriller",
+                        }))
                     await notify_conversation_started(
                         peer_id, sender, category, session_started_at
                     )
-                    if typing_action is not None and typing_action_active:
-                        try:
-                            await typing_action.__aexit__(None, None, None)
-                        except Exception as typing_error:
-                            logger.warning(
-                                "Could not stop Telegram typing status (%s)",
-                                type(typing_error).__name__,
-                            )
-                        typing_action_active = False
-                    try:
-                        memory_prompt = build_memory_update_prompt(
-                            player_memory,
-                            context,
-                            event.raw_text or "",
-                            reply,
-                        )
-                        memory_result = await responder._run(
-                            model,
-                            memory_prompt,
-                            GAME_MEMORY_SCHEMA,
-                            timeout_seconds=45,
-                            effort=effort,
-                        )
-                        remember, forget = parse_memory_delta(memory_result)
-                        updated_memory = game_memory_store.update_game_player_memory(
-                            peer_id, remember, forget
-                        )
-                        if updated_memory != player_memory:
-                            store.audit(
-                                peer_id,
-                                "game_player_memory_updated",
-                                f"facts={len(updated_memory)}; added={len(remember)}; removed={len(forget)}",
-                            )
-                        player_memory = updated_memory
-                    except Exception as memory_error:
-                        store.audit(
-                            peer_id,
-                            "game_player_memory_update_failed",
-                            type(memory_error).__name__,
-                        )
-                        logger.warning(
-                            "Could not update Game player memory (%s)",
-                            type(memory_error).__name__,
-                        )
-                    if startup_game_recovery:
-                        startup_game_replies_sent += 1
-                        store.audit(
-                            peer_id,
-                            "startup_game_reply_sent",
-                            f"incoming_message_id={event.message.id}; sent_message_id={sent.id}",
-                        )
-                    try:
-                        question = await game_reply_algorithm.follow_up_question(
-                            event.raw_text or "", context, reply, generate_game_reply
-                        )
-                        if question:
-                            block_reason = await reply_policy_block(
-                                peer_id, force=True, require_game="Game"
-                            )
-                            if not block_reason:
-                                mark_assistant_send(peer_id, question)
-                                follow_up_sent = await event.respond(question)
-                                schedule_game_inactivity_followup(
-                                    peer_id, event.message.id, follow_up_sent
-                                )
-                                store.audit(
-                                    peer_id,
-                                    "sent",
-                                    json.dumps(
-                                        {
-                                            "incoming_message_id": event.message.id,
-                                            "sent_message_id": follow_up_sent.id,
-                                            "algorithm": game_source,
-                                            "follow_up_question": True,
-                                        }
-                                    ),
-                                )
-                    except Exception as exc:
-                        store.audit(
-                            peer_id,
-                            "follow_up_failed",
-                            type(exc).__name__,
-                        )
-                        logger.warning("Could not send Game follow-up question (%s)", type(exc).__name__)
                     return
                 try:
                     context = await live_chat_history(client, event)
@@ -3297,7 +3053,7 @@ async def run() -> None:
             logger.exception("Could not recover interrupted Telegram message %s", message_id)
 
     poller: asyncio.Task[None] | None = None
-    game_followup_poller: asyncio.Task[None] | None = None
+    chatrole_poller: asyncio.Task[None] | None = None
     learning_poller: asyncio.Task[None] | None = None
     black_castle_poller: asyncio.Task[None] | None = None
     calendar_call_poller: asyncio.Task[None] | None = None
@@ -3310,9 +3066,9 @@ async def run() -> None:
                     await gate.refresh(force=True)
 
         poller = asyncio.create_task(poll_bio())
-        game_followup_poller = asyncio.create_task(
-            poll_game_inactivity_followups()
-        )
+        # Legacy game inactivity questions belong to the retired ChatRole game.
+        # Only the event-driven story outbox is allowed to send game messages.
+        chatrole_poller = asyncio.create_task(poll_chatrole_events())
         if learning_bot is not None:
             learning_poller = asyncio.create_task(learning_bot.run_forever())
         if black_castle_bot is not None:
@@ -3414,10 +3170,10 @@ async def run() -> None:
                 await poller
             except asyncio.CancelledError:
                 pass
-        if game_followup_poller:
-            game_followup_poller.cancel()
+        if chatrole_poller:
+            chatrole_poller.cancel()
             try:
-                await game_followup_poller
+                await chatrole_poller
             except asyncio.CancelledError:
                 pass
         if learning_poller:
@@ -3439,7 +3195,8 @@ async def run() -> None:
             except asyncio.CancelledError:
                 pass
         history.close()
-        game_memory_store.close()
+        if chatrole_game is not None:
+            chatrole_game.close()
         if black_castle_store is not None:
             black_castle_store.close()
         store.close()
