@@ -482,7 +482,13 @@ class BlackCastleBot:
         if isinstance(callback, dict):
             callback_id = callback.get("id")
             if isinstance(callback_id, str):
-                await self._call("answerCallbackQuery", {"callback_query_id": callback_id})
+                try:
+                    await self._call("answerCallbackQuery", {"callback_query_id": callback_id})
+                except Exception as exc:
+                    # A callback may expire while Telegram retries a pending update.
+                    # Its navigation can still be applied; a failed acknowledgement
+                    # must not block the polling offset and every later user message.
+                    logger.info("Could not acknowledge BlackCastle button press (%s)", type(exc).__name__)
             sender = callback.get("from") or {}
             player_id = sender.get("id")
             action = str(callback.get("data") or "")
