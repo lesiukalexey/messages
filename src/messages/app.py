@@ -2014,7 +2014,7 @@ async def run() -> None:
                             paragraph = black_castle_store.get_paragraph(1)
                         if paragraph is None:
                             raise RuntimeError("BlackCastle opening paragraph is unavailable")
-                        reply = "Шаг 1" if paragraph_number == 1 else f"Локация {paragraph_number}"
+                        reply = f"Шаг {paragraph_number}"
                         if paragraph.get("body"):
                             reply += f"\n\n{paragraph['body']}"
                         if paragraph.get("question"):

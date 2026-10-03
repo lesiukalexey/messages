@@ -162,7 +162,7 @@ class BlackCastleBot:
             return preface_text, [[{
                 "text": "Продолжить",
                 "callback_data": "blackcastle:continue",
-            }]], False
+            }]], True
 
         if view == "stats":
             values = state["characteristics"]
@@ -203,12 +203,12 @@ class BlackCastleBot:
         if view == "step" and isinstance(step, int):
             paragraph = self.game_store.get_paragraph(step)
             if paragraph is None:
-                heading = "Шаг 1" if step == 1 else f"Локация {step}"
+                heading = f"Шаг {step}"
                 text = f"{heading}\n\nЭта страница ещё не добавлена."
                 keyboard = [[{"text": "К шагу 1", "callback_data": "blackcastle:step:1"}]]
                 return text, keyboard, False
 
-            title = "Шаг 1" if step == 1 else f"Локация {step}"
+            title = f"Шаг {step}"
             body = paragraph.get("body")
             text = title
             if body:
@@ -384,14 +384,7 @@ class BlackCastleBot:
             has_photo = False
 
         part_key = "preface_part" if state.get("view") == "preface" else "page_part"
-        part_index = max(0, min(int(state.get(part_key, 0)), len(parts) - 1))
-        state[part_key] = part_index
-        has_more = part_index + 1 < len(parts)
-        if has_more:
-            callback = "blackcastle:preface_next" if part_key == "preface_part" else "blackcastle:page_next"
-            keyboard = [[{"text": "Продолжить", "callback_data": callback}]]
-        part = parts[part_index]
-        formatted_part = self._format_telegram_text(part)
+        state[part_key] = 0
 
         for old_id in old_ids:
             if not await self._delete_message(chat_id, old_id):
@@ -405,30 +398,33 @@ class BlackCastleBot:
         state["direct_message_has_photo"] = None
         self._save_state(player_id, state)
 
-        if has_photo:
-            sent = await self._call("sendPhoto", {
+        message_ids: list[int] = []
+        for index, part in enumerate(parts):
+            is_first_photo = has_photo and index == 0
+            is_last = index == len(parts) - 1
+            payload: dict[str, Any] = {
                 "chat_id": chat_id,
-                "photo": photo_id,
-                "caption": formatted_part,
                 "parse_mode": "HTML",
-                "reply_markup": {"inline_keyboard": keyboard},
-            })
-        else:
-            sent = await self._call("sendMessage", {
-                "chat_id": chat_id,
-                "text": formatted_part,
-                "parse_mode": "HTML",
-                "reply_markup": {"inline_keyboard": keyboard},
-            })
+            }
+            if is_last:
+                payload["reply_markup"] = {"inline_keyboard": keyboard}
+            formatted_part = self._format_telegram_text(part)
+            if is_first_photo:
+                payload.update({"photo": photo_id, "caption": formatted_part})
+                sent = await self._call("sendPhoto", payload)
+            else:
+                payload["text"] = formatted_part
+                sent = await self._call("sendMessage", payload)
 
-        sent_id = sent.get("message_id")
-        message_ids = [sent_id] if isinstance(sent_id, int) and sent_id > 0 else []
-        if not message_ids:
-            logger.error("BlackCastle screen was sent but Telegram returned no message ID")
-        state["direct_message_ids"] = message_ids
-        state["direct_message_id"] = message_ids[-1] if message_ids else 0
-        state["direct_message_has_photo"] = has_photo if message_ids else None
-        self._save_state(player_id, state)
+            sent_id = sent.get("message_id")
+            if isinstance(sent_id, int) and sent_id > 0:
+                message_ids.append(sent_id)
+            else:
+                logger.error("BlackCastle screen message was sent without a Telegram message ID")
+            state["direct_message_ids"] = list(message_ids)
+            state["direct_message_id"] = message_ids[-1] if message_ids else 0
+            state["direct_message_has_photo"] = bool(message_ids and is_first_photo)
+            self._save_state(player_id, state)
 
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
         text, keyboard = self._inline_screen(state)
@@ -518,7 +514,7 @@ class BlackCastleBot:
             try:
                 target_paragraph = int(action.rsplit(":", 1)[1])
                 if not label_from_message:
-                    label = "К шагу 1" if target_paragraph == 1 else f"Локация {target_paragraph}"
+                    label = "К шагу 1" if target_paragraph == 1 else f"Шаг {target_paragraph}"
             except ValueError:
                 pass
         else:

@@ -104,6 +104,12 @@ class BlackCastleStore:
             )
         if scene_path is not None:
             self.seed_opening_scene(scene_path)
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """UPDATE paragraphs
+                   SET title = CONCAT('Шаг ', paragraph_number)
+                   WHERE title <> CONCAT('Шаг ', paragraph_number)"""
+            )
 
     def seed_opening_scene(self, scene_path: Any) -> None:
         """Create initial book pages once; MySQL remains the source of truth afterward."""
@@ -134,7 +140,7 @@ class BlackCastleStore:
             cursor.executemany(
                 """INSERT IGNORE INTO paragraphs (paragraph_number, title, body)
                    VALUES (%s, %s, NULL)""",
-                [(number, f"Параграф {number}") for number in (86, 110)],
+                [(number, f"Шаг {number}") for number in (86, 110)],
             )
             cursor.executemany(
                 """INSERT IGNORE INTO paragraph_choices
