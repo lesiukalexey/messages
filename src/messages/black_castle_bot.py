@@ -62,6 +62,7 @@ class BlackCastleBot:
             "water_sips": 2,
             "bag_capacity": 7,
             "direct_message_id": 0,
+            "direct_message_ids": [],
         }
 
     def _get_or_create_state(self, player_id: int) -> dict[str, Any]:
@@ -136,10 +137,15 @@ class BlackCastleBot:
                 text += f"\n\n{question}"
 
             choices = self.game_store.get_paragraph_choices(step)
-            keyboard = [[{
-                "text": str(choice["button_text"]),
-                "callback_data": f"blackcastle:step:{int(choice['target_paragraph'])}",
-            }] for choice in choices]
+            keyboard = []
+            for choice in choices:
+                required_item = choice.get("required_item")
+                if required_item and not self._has_item(state, str(required_item)):
+                    continue
+                keyboard.append([{
+                    "text": str(choice["button_text"]),
+                    "callback_data": f"blackcastle:route:{step}:{choice['choice_id']}",
+                }])
             if step == 1:
                 keyboard.extend([
                     [
@@ -153,7 +159,7 @@ class BlackCastleBot:
                     "text": "К шагу 1",
                     "callback_data": "blackcastle:step:1",
                 }])
-            return text, keyboard, step == 1
+            return text, keyboard, True
 
         state["step"] = 1
         state["view"] = "step"
@@ -171,6 +177,41 @@ class BlackCastleBot:
             remaining = remaining[cut:].lstrip()
         parts.append(remaining)
         return parts
+
+    @staticmethod
+    def _has_item(state: dict[str, Any], required_item: str) -> bool:
+        def key(value: str) -> tuple[str, ...]:
+            words = []
+            for word in value.casefold().replace("ё", "е").split():
+                cleaned = "".join(char for char in word if char.isalnum())
+                if cleaned:
+                    words.append(cleaned[:4])
+            return tuple(words)
+
+        needed = key(required_item)
+        for item in state.get("items", []):
+            if isinstance(item, str):
+                available = key(item)
+                if needed and all(any(word.startswith(token[:3]) for word in available) for token in needed):
+                    return True
+        return False
+
+    @staticmethod
+    def _consume_item(state: dict[str, Any], required_item: str) -> bool:
+        items = state.get("items", [])
+        for index, item in enumerate(items):
+            if not isinstance(item, str):
+                continue
+            if BlackCastleBot._has_item({"items": [item]}, required_item):
+                del items[index]
+                return True
+        return False
+
+    def _paragraph_photo(self, paragraph_number: int) -> str:
+        paragraph = self.game_store.get_paragraph(paragraph_number)
+        if paragraph and paragraph.get("photo_file_id"):
+            return str(paragraph["photo_file_id"])
+        return self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
 
     def _inline_screen(
         self, state: dict[str, Any]
@@ -215,37 +256,58 @@ class BlackCastleBot:
     async def _send_direct_screen(
         self, chat_id: int, player_id: int, state: dict[str, Any], previous_message_id: int = 0
     ) -> None:
-        await self._delete_message(chat_id, previous_message_id)
+        previous_ids = state.get("direct_message_ids")
+        if not isinstance(previous_ids, list):
+            previous_ids = [previous_message_id] if previous_message_id else []
+        elif previous_message_id and previous_message_id not in previous_ids:
+            previous_ids.append(previous_message_id)
+        for message_id in previous_ids:
+            if isinstance(message_id, int):
+                await self._delete_message(chat_id, message_id)
+
         text, keyboard, has_photo = self._screen(state)
-        markup = {"inline_keyboard": keyboard}
+        photo_id = self._paragraph_photo(int(state.get("step", 1))) if has_photo else ""
         if has_photo:
-            photo_id = self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
             if not photo_id:
                 await self._send_message(chat_id, "Сцена сейчас недоступна. Попробуй написать позже.")
-                logger.warning("BlackCastle bot has no registered opening photo")
+                logger.warning("BlackCastle bot has no registered fallback or paragraph photo")
                 return
-            message = await self._call("sendPhoto", {
-                "chat_id": chat_id,
-                "photo": photo_id,
-                "caption": text,
-                "reply_markup": markup,
-            })
+        parts = self._preface_parts(text)
+        message_ids: list[int] = []
+        first_payload: dict[str, Any] = {
+            "chat_id": chat_id,
+        }
+        if len(parts) == 1:
+            first_payload["reply_markup"] = {"inline_keyboard": keyboard}
+        if has_photo:
+            first_payload.update({"photo": photo_id, "caption": parts[0]})
+            message = await self._call("sendPhoto", first_payload)
         else:
-            message = await self._call("sendMessage", {
-                "chat_id": chat_id,
-                "text": text,
-                "reply_markup": markup,
-            })
-        state["direct_message_id"] = int(message.get("message_id", 0))
+            first_payload.update({"text": parts[0]})
+            message = await self._call("sendMessage", first_payload)
+        message_ids.append(int(message.get("message_id", 0)))
+        for part_index, part in enumerate(parts[1:], start=1):
+            payload: dict[str, Any] = {"chat_id": chat_id, "text": part}
+            if part_index == len(parts) - 1:
+                payload["reply_markup"] = {"inline_keyboard": keyboard}
+            sent = await self._call("sendMessage", payload)
+            message_ids.append(int(sent.get("message_id", 0)))
+        state["direct_message_ids"] = message_ids
+        state["direct_message_id"] = message_ids[-1]
         self._save_state(player_id, state)
 
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
         text, keyboard = self._inline_screen(state)
-        await self._call("editMessageCaption", {
-            "inline_message_id": inline_message_id,
-            "caption": text,
-            "reply_markup": {"inline_keyboard": keyboard},
-        })
+        payload = {"inline_message_id": inline_message_id, "reply_markup": {"inline_keyboard": keyboard}}
+        if state.get("view") == "step":
+            photo_id = self._paragraph_photo(int(state.get("step", 1)))
+            if not photo_id:
+                raise RuntimeError("BlackCastle has no paragraph or default photo")
+            payload["media"] = {"type": "photo", "media": photo_id, "caption": text}
+            await self._call("editMessageMedia", payload)
+        else:
+            payload["caption"] = text
+            await self._call("editMessageCaption", payload)
 
     async def _answer_inline_query(self, query: dict[str, Any]) -> None:
         query_id = query.get("id")
@@ -258,7 +320,7 @@ class BlackCastleBot:
         except ValueError:
             return
         state = self._get_or_create_state(player_id)
-        photo_id = self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
+        photo_id = self._paragraph_photo(int(state.get("step", 1)))
         results: list[dict[str, Any]] = []
         if photo_id:
             caption, keyboard = self._inline_screen(state)
@@ -311,6 +373,8 @@ class BlackCastleBot:
             elif action.startswith("blackcastle:step:"):
                 try:
                     target_step = int(action.rsplit(":", 1)[1])
+                    if target_step != 1 and (state.get("step") != 1 or target_step not in {86, 110}):
+                        return
                     if self.game_store.get_paragraph(target_step) is None:
                         return
                     state["step"] = target_step
@@ -318,6 +382,26 @@ class BlackCastleBot:
                     state["page_part"] = 0
                 except ValueError:
                     return
+            elif action.startswith("blackcastle:route:"):
+                try:
+                    _, _, source_text, choice_id = action.split(":", 3)
+                    source_step = int(source_text)
+                except ValueError:
+                    return
+                if state.get("view") != "step" or state.get("step") != source_step:
+                    return
+                choice = self.game_store.get_paragraph_choice(source_step, choice_id)
+                if choice is None:
+                    return
+                required_item = choice.get("required_item")
+                if required_item and not self._consume_item(state, str(required_item)):
+                    return
+                target_step = int(choice["target_paragraph"])
+                if self.game_store.get_paragraph(target_step) is None:
+                    return
+                state["step"] = target_step
+                state["view"] = "step"
+                state["page_part"] = 0
             else:
                 return
             self._save_state(player_id, state)
@@ -357,6 +441,12 @@ class BlackCastleBot:
         text = str(message.get("text") or message.get("caption") or "").strip()
         command = text.split(maxsplit=1)[0].split("@", maxsplit=1)[0] if text else ""
         photos = message.get("photo")
+        photo_target = None
+        if command.startswith("/blackcastle_photo") and len(text.split()) == 2:
+            try:
+                photo_target = int(text.split()[1])
+            except ValueError:
+                photo_target = -1
         if (
             command == "/blackcastle_photo"
             and sender_id in self.owner_store.learning_owner_ids()
@@ -365,11 +455,16 @@ class BlackCastleBot:
             and isinstance(photos[-1], dict)
             and isinstance(photos[-1].get("file_id"), str)
         ):
-            self.game_store.set_setting(
-                "kniga_igra_black_castle_photo_file_id", photos[-1]["file_id"]
-            )
-            await self._send_message(chat_id, "Фото для BlackCastle сохранено.")
-            logger.info("Registered the BlackCastle opening photo for the game bot")
+            photo_id = photos[-1]["file_id"]
+            if photo_target is None:
+                self.game_store.set_setting("kniga_igra_black_castle_photo_file_id", photo_id)
+                await self._send_message(chat_id, "Фото по умолчанию для BlackCastle сохранено.")
+                logger.info("Registered the default BlackCastle photo for the game bot")
+            elif photo_target > 0 and self.game_store.set_paragraph_photo(photo_target, photo_id):
+                await self._send_message(chat_id, f"Фото параграфа {photo_target} сохранено.")
+                logger.info("Registered a BlackCastle paragraph photo")
+            else:
+                await self._send_message(chat_id, "Параграф не найден. Укажи номер существующей страницы.")
             return
 
         state = self._get_or_create_state(sender_id)

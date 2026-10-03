@@ -54,6 +54,7 @@ class BlackCastleStore:
                        title VARCHAR(255) NOT NULL,
                        body MEDIUMTEXT NULL,
                        question VARCHAR(1000) NULL,
+                       photo_file_id VARCHAR(255) NULL,
                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                            ON UPDATE CURRENT_TIMESTAMP
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
@@ -73,6 +74,7 @@ class BlackCastleStore:
                        choice_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
                        button_text VARCHAR(128) NOT NULL,
                        target_paragraph INT UNSIGNED NOT NULL,
+                       required_item VARCHAR(128) NULL,
                        sort_order SMALLINT UNSIGNED NOT NULL DEFAULT 0,
                        PRIMARY KEY (paragraph_number, choice_id),
                        UNIQUE KEY paragraph_choice_order (paragraph_number, sort_order)
@@ -152,7 +154,7 @@ class BlackCastleStore:
         self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
-                """SELECT paragraph_number, title, body, question
+                """SELECT paragraph_number, title, body, question, photo_file_id
                    FROM paragraphs WHERE paragraph_number = %s""",
                 (paragraph_number,),
             )
@@ -162,13 +164,33 @@ class BlackCastleStore:
         self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
-                """SELECT choice_id, button_text, target_paragraph
+                """SELECT choice_id, button_text, target_paragraph, required_item
                    FROM paragraph_choices
                    WHERE paragraph_number = %s
                    ORDER BY sort_order, choice_id""",
                 (paragraph_number,),
             )
             return list(cursor.fetchall())
+
+    def get_paragraph_choice(self, paragraph_number: int, choice_id: str) -> dict[str, Any] | None:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT choice_id, button_text, target_paragraph, required_item
+                   FROM paragraph_choices
+                   WHERE paragraph_number = %s AND choice_id = %s""",
+                (paragraph_number, choice_id),
+            )
+            return cursor.fetchone()
+
+    def set_paragraph_photo(self, paragraph_number: int, photo_file_id: str) -> bool:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE paragraphs SET photo_file_id = %s WHERE paragraph_number = %s",
+                (photo_file_id, paragraph_number),
+            )
+            return cursor.rowcount > 0
 
     def get_player_state(self, player_id: int) -> dict[str, Any] | None:
         self.ensure_connected()
