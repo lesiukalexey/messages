@@ -1433,6 +1433,10 @@ async def run() -> None:
     locks: dict[int, asyncio.Lock] = {}
     assistant_send_markers: dict[tuple[int, str], datetime] = {}
     startup_game_recovery_ids: set[tuple[str, int, int]] = set()
+    interrupted_message_keys = {
+        (settings.account_id, peer_id, message_id)
+        for peer_id, message_id in interrupted_messages
+    }
     startup_game_scan_started_at: datetime | None = None
     startup_game_replies_sent = 0
 
@@ -3072,6 +3076,12 @@ async def run() -> None:
             ):
                 continue
             startup_game_recovery_ids.add((settings.account_id, dialog.id, message.id))
+            if (
+                (settings.account_id, dialog.id, message.id) in interrupted_message_keys
+                and not black_castle_folder.contains(dialog.id)
+            ):
+                # Let the ordered interrupted-message recovery below replay it.
+                continue
             try:
                 await on_message(
                     RecoveredMessageEvent(
@@ -3088,7 +3098,16 @@ async def run() -> None:
     for peer_id, message_id in interrupted_messages:
         try:
             if game_contains(peer_id):
-                # Game startup recovery deliberately handles only each dialog's latest message.
+                if black_castle_folder.contains(peer_id):
+                    # Preserve BlackCastle's separate routing and recovery behavior.
+                    continue
+                key = (settings.account_id, peer_id, message_id)
+                startup_game_recovery_ids.add(key)
+                message = await client.get_messages(peer_id, ids=message_id)
+                if message is None or message.out or not (message.raw_text or "").strip():
+                    store.message_state(settings.account_id, peer_id, message_id, "failed")
+                    continue
+                await on_message(RecoveredMessageEvent(client, message))
                 continue
             message = await client.get_messages(peer_id, ids=message_id)
             if message is None or message.out or not (message.raw_text or "").strip():
