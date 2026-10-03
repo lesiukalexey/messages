@@ -1407,10 +1407,6 @@ async def run() -> None:
         selected_game = selected_game_for_peer(
             peer_id, black_castle_folder.contains(peer_id)
         )
-        logger.info(
-            "Incoming message routed (peer_id=%s, message_id=%s, game=%s)",
-            peer_id, event.message.id, selected_game or "none",
-        )
         if require_game is not None:
             return None if selected_game == require_game else f"contact is no longer routed to {require_game}"
         if selected_game is not None:
@@ -1838,6 +1834,10 @@ async def run() -> None:
             return
         selected_game = selected_game_for_peer(
             peer_id, black_castle_folder.contains(peer_id)
+        )
+        logger.info(
+            "Incoming message routed (peer_id=%s, message_id=%s, game=%s)",
+            peer_id, event.message.id, selected_game or "none",
         )
         message_key = (settings.account_id, peer_id, event.message.id)
         startup_game_recovery = (
