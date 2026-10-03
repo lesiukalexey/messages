@@ -28,6 +28,7 @@ from .game_memory import (
 )
 from .game_memory_store import GameMemoryStore
 from .game_routing import selected_game_folder
+from .black_castle_store import BlackCastleStore
 from .llm import Responder
 from .model_selection import (
     BIO_MODEL_SELECTION_SETTING,
@@ -1092,6 +1093,23 @@ async def run() -> None:
     settings.session_path.parent.chmod(0o700)
     store = Store(settings.database_path, settings.account_id)
     store.initialize()
+    black_castle_store: BlackCastleStore | None = None
+    if settings.account_id == "personal" and settings.black_castle_bot_token:
+        try:
+            black_castle_store = BlackCastleStore()
+            black_castle_store.initialize()
+            migrated_players, migrated_settings = black_castle_store.migrate_legacy_sqlite(store)
+            if migrated_players or migrated_settings:
+                logger.info(
+                    "Migrated BlackCastle MySQL state: %d players, %d settings",
+                    migrated_players,
+                    migrated_settings,
+                )
+        except Exception:
+            if black_castle_store is not None:
+                black_castle_store.close()
+                black_castle_store = None
+            logger.exception("Could not initialize the BlackCastle MySQL database")
     game_memory_store = GameMemoryStore(settings.account_id)
     game_memory_store.initialize()
     interrupted_messages = store.recover_interrupted_messages()
@@ -1220,13 +1238,20 @@ async def run() -> None:
         BlackCastleBot(
             settings.black_castle_bot_token,
             store,
+            black_castle_store,
             settings.black_castle_scene_path,
         )
-        if settings.black_castle_bot_token and settings.account_id == "personal"
+        if (
+            settings.black_castle_bot_token
+            and settings.account_id == "personal"
+            and black_castle_store is not None
+        )
         else None
     )
     if settings.account_id == "personal" and not settings.black_castle_bot_token:
         logger.error("BlackCastle replies are disabled until the @KnigaIgraBot token is configured")
+    if settings.account_id == "personal" and settings.black_castle_bot_token and black_castle_store is None:
+        logger.error("BlackCastle replies are disabled until the MySQL database is available")
     if settings.account_id == "personal" and not settings.learning_bot_token:
         logger.warning("Learning bot token is not configured; unknown questions will stay queued")
 
@@ -3307,6 +3332,8 @@ async def run() -> None:
                 pass
         history.close()
         game_memory_store.close()
+        if black_castle_store is not None:
+            black_castle_store.close()
         store.close()
         await client.disconnect()
 

@@ -16,9 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 class BlackCastleBot:
-    def __init__(self, token: str, store: Any, scene_path: Path) -> None:
+    def __init__(
+        self, token: str, owner_store: Any, game_store: Any, scene_path: Path
+    ) -> None:
         self.token = token
-        self.store = store
+        self.owner_store = owner_store
+        self.game_store = game_store
         self.scene_path = scene_path
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Any:
@@ -39,20 +42,8 @@ class BlackCastleBot:
     async def _send_message(self, chat_id: int, text: str) -> Any:
         return await self._call("sendMessage", {"chat_id": chat_id, "text": text})
 
-    @staticmethod
-    def _state_key(player_id: int) -> str:
-        return f"kniga_igra_black_castle_player_{player_id}"
-
     def _load_state(self, player_id: int) -> dict[str, Any] | None:
-        raw = self.store.setting(self._state_key(player_id), "")
-        if not raw:
-            return None
-        try:
-            state = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
-            logger.warning("Ignoring invalid BlackCastle state for player")
-            return None
-        return state if isinstance(state, dict) else None
+        return self.game_store.get_player_state(player_id)
 
     def _new_state(self) -> dict[str, Any]:
         mastery = random.randint(1, 6) + 6
@@ -84,7 +75,7 @@ class BlackCastleBot:
         return state
 
     def _save_state(self, player_id: int, state: dict[str, Any]) -> None:
-        self.store.set_setting(self._state_key(player_id), json.dumps(state, ensure_ascii=False))
+        self.game_store.save_player_state(player_id, state)
 
     def _screen(self, state: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]], bool]:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
@@ -189,7 +180,7 @@ class BlackCastleBot:
         text, keyboard, has_photo = self._screen(state)
         markup = {"inline_keyboard": keyboard}
         if has_photo:
-            photo_id = self.store.setting("kniga_igra_black_castle_photo_file_id", "")
+            photo_id = self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
             if not photo_id:
                 await self._send_message(chat_id, "Сцена сейчас недоступна. Попробуй написать позже.")
                 logger.warning("BlackCastle bot has no registered opening photo")
@@ -228,7 +219,7 @@ class BlackCastleBot:
         except ValueError:
             return
         state = self._get_or_create_state(player_id)
-        photo_id = self.store.setting("kniga_igra_black_castle_photo_file_id", "")
+        photo_id = self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
         results: list[dict[str, Any]] = []
         if photo_id:
             caption, keyboard = self._inline_screen(state)
@@ -322,13 +313,13 @@ class BlackCastleBot:
         photos = message.get("photo")
         if (
             command == "/blackcastle_photo"
-            and sender_id in self.store.learning_owner_ids()
+            and sender_id in self.owner_store.learning_owner_ids()
             and isinstance(photos, list)
             and photos
             and isinstance(photos[-1], dict)
             and isinstance(photos[-1].get("file_id"), str)
         ):
-            self.store.set_setting(
+            self.game_store.set_setting(
                 "kniga_igra_black_castle_photo_file_id", photos[-1]["file_id"]
             )
             await self._send_message(chat_id, "Фото для BlackCastle сохранено.")
@@ -361,7 +352,7 @@ class BlackCastleBot:
 
         while True:
             try:
-                offset = int(self.store.setting("kniga_igra_update_offset", "0") or 0)
+                offset = int(self.game_store.get_setting("kniga_igra_update_offset", "0") or 0)
                 updates = await self._call(
                     "getUpdates",
                     {
@@ -373,7 +364,7 @@ class BlackCastleBot:
                 for update in updates or []:
                     await self.process_update(update)
                     offset = int(update["update_id"]) + 1
-                    self.store.set_setting("kniga_igra_update_offset", str(offset))
+                    self.game_store.set_setting("kniga_igra_update_offset", str(offset))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
