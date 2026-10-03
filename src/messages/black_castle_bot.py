@@ -259,111 +259,52 @@ class BlackCastleBot:
         old_ids = state.get("direct_message_ids")
         if not isinstance(old_ids, list):
             old_ids = []
-        old_ids = list(dict.fromkeys(
-            message_id for message_id in old_ids if isinstance(message_id, int) and message_id > 0
-        ))
+        old_ids = [message_id for message_id in old_ids if isinstance(message_id, int) and message_id > 0]
         fallback_id = state.get("direct_message_id")
         if not old_ids and isinstance(fallback_id, int) and fallback_id > 0:
             old_ids.append(fallback_id)
         if previous_message_id > 0 and previous_message_id not in old_ids:
             old_ids.append(previous_message_id)
+        for old_id in dict.fromkeys(old_ids):
+            await self._delete_message(chat_id, old_id)
 
-        caption, keyboard = self._inline_screen(state)
-        photo_id = self._paragraph_photo(int(state.get("step", 1)))
-        if not photo_id:
-            caption = "Сцена сейчас недоступна. Попробуй написать позже."
+        text, keyboard, has_photo = self._screen(state)
+        parts = self._preface_parts(text)
+        photo_id = self._paragraph_photo(int(state.get("step", 1))) if has_photo else ""
+        if has_photo and not photo_id:
+            parts = ["Сцена сейчас недоступна. Попробуй написать позже."]
             keyboard = [[{"text": "Обновить", "callback_data": "blackcastle:continue"}]]
+            has_photo = False
 
-        message_id = old_ids[0] if old_ids else 0
-        edited = False
-        can_send_new = not message_id
-        if message_id:
-            if photo_id:
-                try:
-                    await self._call("editMessageMedia", {
+        message_ids: list[int] = []
+        try:
+            for part_index, part in enumerate(parts):
+                is_last = part_index == len(parts) - 1
+                markup = {"inline_keyboard": keyboard} if is_last else None
+                if part_index == 0 and has_photo:
+                    payload: dict[str, Any] = {
                         "chat_id": chat_id,
-                        "message_id": message_id,
-                        "media": {"type": "photo", "media": photo_id, "caption": caption},
-                        "reply_markup": {"inline_keyboard": keyboard},
-                    })
-                    edited = True
-                except RuntimeError as exc:
-                    description = str(exc).casefold()
-                    if "message is not modified" in description:
-                        edited = True
-                    elif "there is no media in the message to edit" in description:
-                        # Existing installations may still have a text-only screen.
-                        try:
-                            await self._call("editMessageText", {
-                                "chat_id": chat_id,
-                                "message_id": message_id,
-                                "text": caption,
-                                "reply_markup": {"inline_keyboard": keyboard},
-                            })
-                            edited = True
-                        except RuntimeError as text_exc:
-                            text_description = str(text_exc).casefold()
-                            if "message is not modified" in text_description:
-                                edited = True
-                            elif "message to edit not found" in text_description:
-                                can_send_new = True
-                    elif "message to edit not found" in description:
-                        can_send_new = True
-                    else:
-                        logger.info("Could not edit BlackCastle screen (%s)", type(exc).__name__)
-            else:
-                try:
-                    await self._call("editMessageText", {
-                        "chat_id": chat_id,
-                        "message_id": message_id,
-                        "text": caption,
-                        "reply_markup": {"inline_keyboard": keyboard},
-                    })
-                    edited = True
-                except RuntimeError as exc:
-                    description = str(exc).casefold()
-                    if "message is not modified" in description:
-                        edited = True
-                    elif "there is no text in the message to edit" in description:
-                        try:
-                            await self._call("editMessageCaption", {
-                                "chat_id": chat_id,
-                                "message_id": message_id,
-                                "caption": caption,
-                                "reply_markup": {"inline_keyboard": keyboard},
-                            })
-                            edited = True
-                        except RuntimeError as caption_exc:
-                            caption_description = str(caption_exc).casefold()
-                            if "message is not modified" in caption_description:
-                                edited = True
-                            elif "message to edit not found" in caption_description:
-                                can_send_new = True
-                    elif "message to edit not found" in description:
-                        can_send_new = True
+                        "photo": photo_id,
+                        "caption": part,
+                    }
+                    if markup:
+                        payload["reply_markup"] = markup
+                    sent = await self._call("sendPhoto", payload)
+                else:
+                    payload = {"chat_id": chat_id, "text": part}
+                    if markup:
+                        payload["reply_markup"] = markup
+                    sent = await self._call("sendMessage", payload)
+                sent_id = sent.get("message_id")
+                if isinstance(sent_id, int) and sent_id > 0:
+                    message_ids.append(sent_id)
+        except Exception:
+            for sent_id in message_ids:
+                await self._delete_message(chat_id, sent_id)
+            raise
 
-        if not edited and can_send_new:
-            if photo_id:
-                sent = await self._call("sendPhoto", {
-                    "chat_id": chat_id,
-                    "photo": photo_id,
-                    "caption": caption,
-                    "reply_markup": {"inline_keyboard": keyboard},
-                })
-            else:
-                sent = await self._call("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": caption,
-                    "reply_markup": {"inline_keyboard": keyboard},
-                })
-            message_id = int(sent.get("message_id", 0))
-
-        if edited or can_send_new:
-            for extra_id in old_ids:
-                if extra_id != message_id:
-                    await self._delete_message(chat_id, extra_id)
-            state["direct_message_ids"] = [message_id] if message_id else []
-            state["direct_message_id"] = message_id
+        state["direct_message_ids"] = message_ids
+        state["direct_message_id"] = message_ids[-1] if message_ids else 0
         self._save_state(player_id, state)
 
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
