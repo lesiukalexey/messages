@@ -37,6 +37,8 @@ class Settings:
     reply_api_persona_id: str = "alexey-lesiuk"
     chatrole_engine_path: Path = Path("/game/games/chat_with_role/src/game.py")
     chatrole_test_peer_ids: frozenset[int] = frozenset()
+    chatrole_test_bypass_quiet_hours: bool = False
+    chatrole_test_event_delay_minutes: int = 0
     black_castle_algorithm_path: Path = Path("/game/games/black_castle/src/reply_algorithm.py")
     black_castle_scene_path: Path = Path("/game/games/black_castle/data/opening_scene.json")
     call_reminder_username: str = ""
@@ -72,6 +74,15 @@ class Settings:
             if peer_id <= 0:
                 raise ValueError("CHATROLE_TEST_PEER_IDS values must be positive")
             chatrole_test_ids.add(peer_id)
+
+        raw_chatrole_bypass = os.getenv("CHATROLE_TEST_BYPASS_QUIET_HOURS", "").strip().lower()
+        if raw_chatrole_bypass not in {"", "0", "false", "no", "off", "1", "true", "yes", "on"}:
+            raise ValueError("CHATROLE_TEST_BYPASS_QUIET_HOURS must be a boolean")
+        chatrole_test_bypass_quiet_hours = raw_chatrole_bypass in {"1", "true", "yes", "on"}
+        raw_chatrole_delay = os.getenv("CHATROLE_TEST_EVENT_DELAY_MINUTES", "").strip()
+        if raw_chatrole_delay and raw_chatrole_delay not in {"5", "10"}:
+            raise ValueError("CHATROLE_TEST_EVENT_DELAY_MINUTES must be 5 or 10 when enabled")
+        chatrole_test_event_delay_minutes = int(raw_chatrole_delay or "0")
 
         codex_options = tuple(
             model.strip()
@@ -245,6 +256,8 @@ class Settings:
                 os.getenv("CHATROLE_ENGINE_PATH", "/game/games/chat_with_role/src/game.py")
             ),
             chatrole_test_peer_ids=frozenset(chatrole_test_ids),
+            chatrole_test_bypass_quiet_hours=chatrole_test_bypass_quiet_hours,
+            chatrole_test_event_delay_minutes=chatrole_test_event_delay_minutes,
             black_castle_algorithm_path=Path(
                 os.getenv(
                     "BLACK_CASTLE_ALGORITHM_PATH",

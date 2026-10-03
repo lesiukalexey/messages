@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 
 
-def load_game(engine_path: Path, account_id: str):
+def load_game(
+    engine_path: Path,
+    account_id: str,
+    *,
+    test_peer_ids: frozenset[int] = frozenset(),
+    test_event_delay_minutes: int = 0,
+):
     path = engine_path.resolve()
     if not path.is_file():
         raise FileNotFoundError(f"ChatRole engine file is unavailable: {path}")
@@ -20,6 +26,10 @@ def load_game(engine_path: Path, account_id: str):
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
-    game = module.ChatRoleGame(account_id)
+    game = module.ChatRoleGame(
+        account_id,
+        test_peer_ids=test_peer_ids,
+        test_event_delay_minutes=test_event_delay_minutes,
+    )
     game.initialize()
     return game

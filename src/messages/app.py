@@ -1123,7 +1123,12 @@ async def run() -> None:
             logger.exception("Could not initialize the BlackCastle MySQL database")
     chatrole_game = None
     try:
-        chatrole_game = load_chatrole_game(settings.chatrole_engine_path, settings.account_id)
+        chatrole_game = load_chatrole_game(
+            settings.chatrole_engine_path,
+            settings.account_id,
+            test_peer_ids=settings.chatrole_test_peer_ids,
+            test_event_delay_minutes=settings.chatrole_test_event_delay_minutes,
+        )
         if not settings.chatrole_test_peer_ids:
             logger.warning("ChatRole remains disabled until CHATROLE_TEST_PEER_IDS is configured")
     except Exception as exc:
@@ -1232,6 +1237,12 @@ async def run() -> None:
 
     def chatrole_test_peer_allowed(peer_id: int) -> bool:
         return peer_id in settings.chatrole_test_peer_ids
+
+    def chatrole_quiet_for_peer(peer_id: int) -> bool:
+        return is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone) and not (
+            settings.chatrole_test_bypass_quiet_hours
+            and chatrole_test_peer_allowed(peer_id)
+        )
 
     def selected_game_for_peer(peer_id: int, in_black_castle: bool) -> str | None:
         selected = selected_game_folder(in_black_castle, game_contains(peer_id))
@@ -1728,7 +1739,7 @@ async def run() -> None:
         if (
             chatrole_game is None
             or not chatrole_test_peer_allowed(peer_id)
-            or is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone)
+            or chatrole_quiet_for_peer(peer_id)
         ):
             return
         if await reply_policy_block(peer_id, force=True, require_game="Game"):
@@ -1739,7 +1750,7 @@ async def run() -> None:
         # releasing a burst after quiet hours or a process outage.
         for item in chatrole_game.pending_messages(peer_id, limit=1):
             block_reason = await reply_policy_block(peer_id, force=True, require_game="Game")
-            if block_reason or is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
+            if block_reason or chatrole_quiet_for_peer(peer_id):
                 return
             chatrole_game.mark_delivery(item["delivery_id"], "sending")
             try:
@@ -1771,16 +1782,16 @@ async def run() -> None:
         while True:
             await asyncio.sleep(15)
             try:
-                if is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
-                    continue
                 peer_ids = set(chatrole_game.due_peer_ids())
                 peer_ids.update(settings.chatrole_test_peer_ids)
                 for peer_id in sorted(peer_ids):
                     if not chatrole_test_peer_allowed(peer_id):
                         continue
+                    if chatrole_quiet_for_peer(peer_id):
+                        continue
                     async with locks.setdefault(peer_id, asyncio.Lock()):
-                        # Start the selected test campaign after quiet hours so
-                        # its first response deadline also begins in daytime.
+                        # Start the selected test campaign when its allowlisted
+                        # peer is eligible to progress.
                         if not chatrole_game.has_player(peer_id):
                             chatrole_game.start_campaign(peer_id)
                         chatrole_game.process_due_events(peer_id)
@@ -2056,8 +2067,9 @@ async def run() -> None:
                         store.audit(peer_id, "failed", "asynchronous ChatRole engine is unavailable")
                         return
                     async with locks.setdefault(peer_id, asyncio.Lock()):
-                        # Quiet hours pause the story clock and hold proactive delivery.
-                        if not is_chatrole_quiet_hours(datetime.now(UTC), settings.timezone):
+                        # Quiet hours pause the story clock except for an explicitly
+                        # enabled, allowlisted test peer.
+                        if not chatrole_quiet_for_peer(peer_id):
                             chatrole_game.process_due_events(peer_id)
                             await deliver_chatrole_outbox(peer_id)
                         model, effort, _ = selected_model_settings()
