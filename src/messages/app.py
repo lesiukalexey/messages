@@ -39,7 +39,6 @@ from .model_selection import (
 )
 from .language import check_reply_language, expected_reply_language
 from .black_castle_bot import BOT_USERNAME as BLACK_CASTLE_BOT_USERNAME, BlackCastleBot
-from .black_castle_scene import black_castle_caption_and_keyboard
 from .learning import LearningBot
 from .runtime import load_environment
 from .recruiter_answers import CategoryAnswers, RecruiterAnswers
@@ -1097,7 +1096,7 @@ async def run() -> None:
     if settings.account_id == "personal" and settings.black_castle_bot_token:
         try:
             black_castle_store = BlackCastleStore()
-            black_castle_store.initialize()
+            black_castle_store.initialize(settings.black_castle_scene_path)
             migrated_players, migrated_settings = black_castle_store.migrate_legacy_sqlite(store)
             if migrated_players or migrated_settings:
                 logger.info(
@@ -1989,7 +1988,22 @@ async def run() -> None:
                 )
                 if selected_game == "BlackCastle":
                     try:
-                        reply, _ = black_castle_caption_and_keyboard(settings.black_castle_scene_path)
+                        player_state = black_castle_store.get_player_state(peer_id)
+                        paragraph_number = (
+                            int(player_state.get("step", 1))
+                            if player_state is not None
+                            else 1
+                        )
+                        paragraph = black_castle_store.get_paragraph(paragraph_number)
+                        if paragraph is None:
+                            paragraph = black_castle_store.get_paragraph(1)
+                        if paragraph is None:
+                            raise RuntimeError("BlackCastle opening paragraph is unavailable")
+                        reply = str(paragraph["title"])
+                        if paragraph.get("body"):
+                            reply += f"\n\n{paragraph['body']}"
+                        if paragraph.get("question"):
+                            reply += f"\n\n{paragraph['question']}"
                     except Exception as exc:
                         store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                         store.audit(peer_id, "failed", f"BlackCastle scene is unavailable ({type(exc).__name__})")

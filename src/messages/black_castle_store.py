@@ -37,7 +37,7 @@ class BlackCastleStore:
         except pymysql.err.MySQLError:
             self._connect()
 
-    def initialize(self) -> None:
+    def initialize(self, scene_path: Any | None = None) -> None:
         self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
@@ -49,6 +49,36 @@ class BlackCastleStore:
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
             cursor.execute(
+                """CREATE TABLE IF NOT EXISTS paragraphs (
+                       paragraph_number INT UNSIGNED NOT NULL PRIMARY KEY,
+                       title VARCHAR(255) NOT NULL,
+                       body MEDIUMTEXT NULL,
+                       question VARCHAR(1000) NULL,
+                       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                           ON UPDATE CURRENT_TIMESTAMP
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS book_pages (
+                       page_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+                       title VARCHAR(255) NOT NULL,
+                       body MEDIUMTEXT NOT NULL,
+                       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                           ON UPDATE CURRENT_TIMESTAMP
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS paragraph_choices (
+                       paragraph_number INT UNSIGNED NOT NULL,
+                       choice_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                       button_text VARCHAR(128) NOT NULL,
+                       target_paragraph INT UNSIGNED NOT NULL,
+                       sort_order SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+                       PRIMARY KEY (paragraph_number, choice_id),
+                       UNIQUE KEY paragraph_choice_order (paragraph_number, sort_order)
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            cursor.execute(
                 """CREATE TABLE IF NOT EXISTS settings (
                        setting_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
                        setting_value TEXT NOT NULL,
@@ -56,6 +86,89 @@ class BlackCastleStore:
                            ON UPDATE CURRENT_TIMESTAMP
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
+        if scene_path is not None:
+            self.seed_opening_scene(scene_path)
+
+    def seed_opening_scene(self, scene_path: Any) -> None:
+        """Create initial book pages once; MySQL remains the source of truth afterward."""
+        from pathlib import Path
+
+        scene = json.loads(Path(scene_path).read_text(encoding="utf-8"))
+        choices = scene.get("choices")
+        if not isinstance(choices, list):
+            raise ValueError("BlackCastle opening scene has invalid choices")
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """INSERT IGNORE INTO paragraphs
+                   (paragraph_number, title, body, question)
+                   VALUES (%s, %s, %s, %s)""",
+                (
+                    1,
+                    "Шаг 1",
+                    str(scene.get("caption") or ""),
+                    str(scene.get("question") or ""),
+                ),
+            )
+            cursor.execute(
+                """INSERT IGNORE INTO book_pages (page_key, title, body)
+                   VALUES ('preface', %s, %s)""",
+                ("Книга-игра", str(scene.get("preface") or "")),
+            )
+            cursor.executemany(
+                """INSERT IGNORE INTO paragraphs (paragraph_number, title, body)
+                   VALUES (%s, %s, NULL)""",
+                [(number, f"Параграф {number}") for number in (86, 110)],
+            )
+            cursor.executemany(
+                """INSERT IGNORE INTO paragraph_choices
+                   (paragraph_number, choice_id, button_text, target_paragraph, sort_order)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                [
+                    (
+                        1,
+                        str(choice.get("id") or f"route_{index}"),
+                        str(choice.get("text") or ""),
+                        int(choice["target_step"]),
+                        index,
+                    )
+                    for index, choice in enumerate(choices)
+                    if isinstance(choice, dict)
+                    and isinstance(choice.get("target_step"), int)
+                    and isinstance(choice.get("text"), str)
+                ],
+            )
+
+    def get_book_page(self, page_key: str) -> dict[str, Any] | None:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT page_key, title, body FROM book_pages WHERE page_key = %s",
+                (page_key,),
+            )
+            return cursor.fetchone()
+
+    def get_paragraph(self, paragraph_number: int) -> dict[str, Any] | None:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT paragraph_number, title, body, question
+                   FROM paragraphs WHERE paragraph_number = %s""",
+                (paragraph_number,),
+            )
+            return cursor.fetchone()
+
+    def get_paragraph_choices(self, paragraph_number: int) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT choice_id, button_text, target_paragraph
+                   FROM paragraph_choices
+                   WHERE paragraph_number = %s
+                   ORDER BY sort_order, choice_id""",
+                (paragraph_number,),
+            )
+            return list(cursor.fetchall())
 
     def get_player_state(self, player_id: int) -> dict[str, Any] | None:
         self.ensure_connected()

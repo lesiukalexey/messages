@@ -8,9 +8,6 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from .black_castle_scene import black_castle_caption_and_keyboard
-
-
 BOT_USERNAME = "KnigaIgraBot"
 logger = logging.getLogger(__name__)
 
@@ -81,12 +78,14 @@ class BlackCastleBot:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
         view = state.get("view", "step")
         step = state.get("step", 1)
-        if view == "step" and step == 1:
-            caption, keyboard = black_castle_caption_and_keyboard(self.scene_path)
-            return caption, keyboard, True
-
         if view == "preface":
-            return str(scene["preface"]), [[{
+            preface = self.game_store.get_book_page("preface")
+            preface_text = (
+                str(preface["body"])
+                if preface is not None
+                else str(scene["preface"])
+            )
+            return preface_text, [[{
                 "text": "Продолжить",
                 "callback_data": "blackcastle:continue",
             }]], False
@@ -119,11 +118,42 @@ class BlackCastleBot:
             }]], False
 
         if view == "step" and isinstance(step, int):
-            return (
-                f"Параграф {step}\n\nТекст этого параграфа будет добавлен позже.",
-                [[{"text": "К шагу 1", "callback_data": "blackcastle:step:1"}]],
-                False,
-            )
+            paragraph = self.game_store.get_paragraph(step)
+            if paragraph is None:
+                text = f"Параграф {step}\n\nЭта страница ещё не добавлена."
+                keyboard = [[{"text": "К шагу 1", "callback_data": "blackcastle:step:1"}]]
+                return text, keyboard, False
+
+            title = str(paragraph["title"])
+            body = paragraph.get("body")
+            text = title
+            if body:
+                text += f"\n\n{body}"
+            else:
+                text += "\n\nТекст этого параграфа будет добавлен позже."
+            question = paragraph.get("question")
+            if question:
+                text += f"\n\n{question}"
+
+            choices = self.game_store.get_paragraph_choices(step)
+            keyboard = [[{
+                "text": str(choice["button_text"]),
+                "callback_data": f"blackcastle:step:{int(choice['target_paragraph'])}",
+            }] for choice in choices]
+            if step == 1:
+                keyboard.extend([
+                    [
+                        {"text": "Предисловие", "callback_data": "blackcastle:preface"},
+                        {"text": "Характеристики", "callback_data": "blackcastle:stats"},
+                    ],
+                    [{"text": "Инвентарь", "callback_data": "blackcastle:inventory"}],
+                ])
+            elif not keyboard:
+                keyboard.append([{
+                    "text": "К шагу 1",
+                    "callback_data": "blackcastle:step:1",
+                }])
+            return text, keyboard, step == 1
 
         state["step"] = 1
         state["view"] = "step"
@@ -159,6 +189,15 @@ class BlackCastleBot:
                 keyboard = [[{
                     "text": "Продолжить",
                     "callback_data": "blackcastle:continue",
+                }]]
+        elif state.get("view") == "step":
+            parts = self._preface_parts(text)
+            part = max(0, min(int(state.get("page_part", 0)), len(parts) - 1))
+            text = parts[part]
+            if part + 1 < len(parts):
+                keyboard = [[{
+                    "text": "Продолжить",
+                    "callback_data": "blackcastle:page_next",
                 }]]
         return text, keyboard
 
@@ -259,6 +298,8 @@ class BlackCastleBot:
                 state["preface_part"] = 0
             elif action == "blackcastle:preface_next":
                 state["preface_part"] = int(state.get("preface_part", 0)) + 1
+            elif action == "blackcastle:page_next":
+                state["page_part"] = int(state.get("page_part", 0)) + 1
             elif action == "blackcastle:stats":
                 state["view"] = "stats"
             elif action == "blackcastle:inventory":
@@ -266,10 +307,15 @@ class BlackCastleBot:
             elif action == "blackcastle:continue":
                 state["view"] = "step"
                 state["step"] = 1
+                state["page_part"] = 0
             elif action.startswith("blackcastle:step:"):
                 try:
-                    state["step"] = int(action.rsplit(":", 1)[1])
+                    target_step = int(action.rsplit(":", 1)[1])
+                    if self.game_store.get_paragraph(target_step) is None:
+                        return
+                    state["step"] = target_step
                     state["view"] = "step"
+                    state["page_part"] = 0
                 except ValueError:
                     return
             else:
