@@ -47,6 +47,7 @@ from .telegram_calls import place_short_call
 from .web_search import search_web
 
 RUNTIME_ROOT = Path("/home/admin/messages-runtime")
+GAME_INACTIVITY_FOLLOWUP_DELAY = timedelta(minutes=25)
 NOTIFICATION_BOT_USERNAME = "@NotificationFastBot"
 DEFAULT_STYLE = "Write like a concise, practical, informal Telegram conversation."
 MEETING_SIGNAL = re.compile(
@@ -1287,6 +1288,31 @@ async def run() -> None:
     def mark_assistant_send(peer_id: int, text: str) -> None:
         assistant_send_markers[(peer_id, text)] = datetime.now(UTC) + timedelta(minutes=2)
 
+    def schedule_game_inactivity_followup(
+        peer_id: int, player_message_id: int, bot_message: Any
+    ) -> None:
+        sent_at = bot_message.date or datetime.now(UTC)
+        due_at = sent_at + GAME_INACTIVITY_FOLLOWUP_DELAY
+        try:
+            game_memory_store.schedule_player_followup(
+                peer_id, player_message_id, bot_message.id, due_at
+            )
+            store.audit(
+                peer_id,
+                "game_inactivity_followup_scheduled",
+                json.dumps({
+                    "player_message_id": player_message_id,
+                    "bot_message_id": bot_message.id,
+                    "due_at": due_at.astimezone(UTC).isoformat(),
+                }),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not schedule a Game inactivity follow-up (%s)",
+                type(exc).__name__,
+            )
+            store.audit(peer_id, "game_inactivity_followup_schedule_failed", type(exc).__name__)
+
     async def react_to_incoming(
         event: events.NewMessage.Event,
         peer_id: int,
@@ -1572,6 +1598,173 @@ async def run() -> None:
                 NOTIFICATION_BOT_USERNAME,
             )
 
+    async def poll_game_inactivity_followups() -> None:
+        while True:
+            await asyncio.sleep(15)
+            try:
+                reminder = game_memory_store.claim_due_player_followup()
+            except Exception as exc:
+                logger.warning(
+                    "Could not claim a due Game inactivity follow-up (%s)",
+                    type(exc).__name__,
+                )
+                continue
+            if reminder is None:
+                continue
+
+            peer_id = reminder["peer_id"]
+            player_message_id = reminder["player_message_id"]
+            bot_message_id = reminder["bot_message_id"]
+            async with locks.setdefault(peer_id, asyncio.Lock()):
+                try:
+                    block_reason = await reply_policy_block(
+                        peer_id, force=True, require_game="Game"
+                    )
+                    if block_reason or store.contact_category(peer_id) == "realtors":
+                        game_memory_store.set_player_followup_state(
+                            peer_id, player_message_id, bot_message_id,
+                            "generating", "cancelled",
+                        )
+                        store.audit(
+                            peer_id,
+                            "game_inactivity_followup_skipped",
+                            block_reason or "realtor contact",
+                        )
+                        continue
+
+                    messages = await client.get_messages(peer_id, limit=32)
+                    latest = messages[0] if messages else None
+                    if latest is None or latest.id != bot_message_id or not latest.out:
+                        game_memory_store.set_player_followup_state(
+                            peer_id, player_message_id, bot_message_id,
+                            "generating", "cancelled",
+                        )
+                        store.audit(
+                            peer_id,
+                            "game_inactivity_followup_cancelled",
+                            "conversation changed since the reminder was scheduled",
+                        )
+                        continue
+
+                    context = [
+                        {
+                            "role": "assistant" if item.out else "contact",
+                            "text": (item.message or "").strip(),
+                        }
+                        for item in reversed(messages)
+                        if (item.message or "").strip()
+                    ]
+                    if not any(turn["role"] == "contact" for turn in context):
+                        game_memory_store.set_player_followup_state(
+                            peer_id, player_message_id, bot_message_id,
+                            "generating", "cancelled",
+                        )
+                        continue
+
+                    model, effort, _ = selected_model_settings()
+                    player_memory = game_memory_store.game_player_memory(peer_id)
+
+                    async def generate_inactivity_question(prompt: str) -> str:
+                        return await responder._run(
+                            model,
+                            prompt_with_player_memory(prompt, player_memory),
+                            effort=effort,
+                        )
+
+                    typing_action = client.action(peer_id, "typing")
+                    typing_active = False
+                    try:
+                        try:
+                            await typing_action.__aenter__()
+                            typing_active = True
+                        except Exception as exc:
+                            logger.warning(
+                                "Could not show typing for a Game follow-up (%s)",
+                                type(exc).__name__,
+                            )
+                        question = await game_reply_algorithm.inactivity_question(
+                            context, generate_inactivity_question
+                        )
+                    finally:
+                        if typing_active:
+                            try:
+                                await typing_action.__aexit__(None, None, None)
+                            except Exception:
+                                pass
+
+                    block_reason = await reply_policy_block(
+                        peer_id, force=True, require_game="Game"
+                    )
+                    latest = await client.get_messages(peer_id, limit=1)
+                    latest_message = latest[0] if latest else None
+                    if (
+                        block_reason
+                        or store.contact_category(peer_id) == "realtors"
+                        or latest_message is None
+                        or latest_message.id != bot_message_id
+                        or not latest_message.out
+                    ):
+                        game_memory_store.set_player_followup_state(
+                            peer_id, player_message_id, bot_message_id,
+                            "generating", "cancelled",
+                        )
+                        store.audit(
+                            peer_id,
+                            "game_inactivity_followup_cancelled",
+                            block_reason or "conversation changed before send",
+                        )
+                        continue
+                    if not game_memory_store.set_player_followup_state(
+                        peer_id, player_message_id, bot_message_id,
+                        "generating", "sending",
+                    ):
+                        continue
+                    if not game_memory_store.set_player_followup_state(
+                        peer_id, player_message_id, bot_message_id,
+                        "sending", "sending",
+                    ):
+                        continue
+
+                    mark_assistant_send(peer_id, question)
+                    sent = await client.send_message(peer_id, question)
+                    game_memory_store.set_player_followup_state(
+                        peer_id, player_message_id, bot_message_id,
+                        "sending", "sent",
+                    )
+                    store.audit(
+                        peer_id,
+                        "game_inactivity_followup_sent",
+                        json.dumps({
+                            "player_message_id": player_message_id,
+                            "reply_anchor_id": bot_message_id,
+                            "sent_message_id": sent.id,
+                        }),
+                    )
+                except Exception as exc:
+                    try:
+                        game_memory_store.set_player_followup_state(
+                            peer_id, player_message_id, bot_message_id,
+                            "generating", "failed",
+                        )
+                        game_memory_store.set_player_followup_state(
+                            peer_id, player_message_id, bot_message_id,
+                            "sending", "failed",
+                        )
+                        store.audit(
+                            peer_id,
+                            "game_inactivity_followup_failed",
+                            type(exc).__name__,
+                        )
+                    except Exception as state_error:
+                        logger.warning(
+                            "Could not record a failed Game follow-up (%s)",
+                            type(state_error).__name__,
+                        )
+                    logger.warning(
+                        "Could not send a Game inactivity follow-up (%s)",
+                        type(exc).__name__,
+                    )
+
     @client.on(events.NewMessage(incoming=True))
     async def on_message(event: events.NewMessage.Event) -> None:
         nonlocal startup_game_replies_sent
@@ -1609,6 +1802,15 @@ async def run() -> None:
             and message_key not in startup_game_recovery_ids
         ):
             return
+        if selected_game == "Game":
+            # A newer player message ends any unanswered inactivity cycle.
+            try:
+                game_memory_store.cancel_player_followup(peer_id, event.message.id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not cancel a stale Game follow-up (%s)",
+                    type(exc).__name__,
+                )
         if selected_game != "Game" and (
             is_quiet_hours(datetime.now(UTC), settings.timezone)
             or is_quiet_hours(event.message.date or datetime.now(UTC), settings.timezone)
@@ -1891,6 +2093,7 @@ async def run() -> None:
                             }
                         ),
                     )
+                    schedule_game_inactivity_followup(peer_id, event.message.id, sent)
                     await notify_conversation_started(
                         peer_id, sender, category, session_started_at
                     )
@@ -1956,6 +2159,9 @@ async def run() -> None:
                             if not block_reason:
                                 mark_assistant_send(peer_id, question)
                                 follow_up_sent = await event.respond(question)
+                                schedule_game_inactivity_followup(
+                                    peer_id, event.message.id, follow_up_sent
+                                )
                                 store.audit(
                                     peer_id,
                                     "sent",
@@ -2963,6 +3169,7 @@ async def run() -> None:
             logger.exception("Could not recover interrupted Telegram message %s", message_id)
 
     poller: asyncio.Task[None] | None = None
+    game_followup_poller: asyncio.Task[None] | None = None
     learning_poller: asyncio.Task[None] | None = None
     black_castle_poller: asyncio.Task[None] | None = None
     calendar_call_poller: asyncio.Task[None] | None = None
@@ -2975,6 +3182,9 @@ async def run() -> None:
                     await gate.refresh(force=True)
 
         poller = asyncio.create_task(poll_bio())
+        game_followup_poller = asyncio.create_task(
+            poll_game_inactivity_followups()
+        )
         if learning_bot is not None:
             learning_poller = asyncio.create_task(learning_bot.run_forever())
         if black_castle_bot is not None:
@@ -3074,6 +3284,12 @@ async def run() -> None:
             poller.cancel()
             try:
                 await poller
+            except asyncio.CancelledError:
+                pass
+        if game_followup_poller:
+            game_followup_poller.cancel()
+            try:
+                await game_followup_poller
             except asyncio.CancelledError:
                 pass
         if learning_poller:

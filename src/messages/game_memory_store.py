@@ -59,7 +59,140 @@ class GameMemoryStore:
                        PRIMARY KEY (account_id, peer_id)
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS player_followups (
+                       account_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                       peer_id BIGINT NOT NULL,
+                       player_message_id BIGINT NOT NULL,
+                       bot_message_id BIGINT NOT NULL,
+                       due_at VARCHAR(40) NOT NULL,
+                       state VARCHAR(20) NOT NULL,
+                       updated_at VARCHAR(40) NOT NULL,
+                       PRIMARY KEY (account_id, peer_id),
+                       INDEX player_followups_due (account_id, state, due_at)
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            # A generation interrupted by a process restart has not reached Telegram's send call.
+            cursor.execute(
+                """UPDATE player_followups SET state = 'pending', updated_at = %s
+                   WHERE account_id = %s AND state = 'generating'""",
+                (datetime.now(UTC).isoformat(), self.account_id),
+            )
         self.connection.commit()
+
+    def cancel_player_followup(self, peer_id: int, player_message_id: int) -> bool:
+        """Cancel an unsent reminder when a newer player message arrives."""
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """UPDATE player_followups SET state = 'cancelled', updated_at = %s
+                   WHERE account_id = %s AND peer_id = %s AND bot_message_id < %s
+                     AND state IN ('pending', 'generating', 'sending')""",
+                (
+                    datetime.now(UTC).isoformat(),
+                    self.account_id,
+                    peer_id,
+                    player_message_id,
+                ),
+            )
+        self.connection.commit()
+        return cursor.rowcount == 1
+
+    def schedule_player_followup(
+        self,
+        peer_id: int,
+        player_message_id: int,
+        bot_message_id: int,
+        due_at: datetime,
+    ) -> None:
+        """Start one pending follow-up cycle for the latest successful Game reply."""
+        self.ensure_connected()
+        now = datetime.now(UTC).isoformat()
+        due = due_at.astimezone(UTC) if due_at.tzinfo else due_at.replace(tzinfo=UTC)
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO player_followups
+                       (account_id, peer_id, player_message_id, bot_message_id,
+                        due_at, state, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, 'pending', %s)
+                   AS incoming
+                   ON DUPLICATE KEY UPDATE
+                       player_message_id = incoming.player_message_id,
+                       bot_message_id = incoming.bot_message_id,
+                       due_at = incoming.due_at,
+                       state = 'pending',
+                       updated_at = incoming.updated_at""",
+                (
+                    self.account_id,
+                    peer_id,
+                    player_message_id,
+                    bot_message_id,
+                    due.isoformat(),
+                    now,
+                ),
+            )
+        self.connection.commit()
+
+    def claim_due_player_followup(self, now: datetime | None = None) -> dict[str, Any] | None:
+        """Claim one due reminder; claimed generations can safely resume after restart."""
+        self.ensure_connected()
+        current = now or datetime.now(UTC)
+        current = current.astimezone(UTC) if current.tzinfo else current.replace(tzinfo=UTC)
+        try:
+            self.connection.begin()
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT peer_id, player_message_id, bot_message_id, due_at
+                       FROM player_followups
+                       WHERE account_id = %s AND state = 'pending' AND due_at <= %s
+                       ORDER BY due_at, peer_id LIMIT 1 FOR UPDATE""",
+                    (self.account_id, current.isoformat()),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    self.connection.commit()
+                    return None
+                cursor.execute(
+                    """UPDATE player_followups SET state = 'generating', updated_at = %s
+                       WHERE account_id = %s AND peer_id = %s AND state = 'pending'""",
+                    (current.isoformat(), self.account_id, row["peer_id"]),
+                )
+                if cursor.rowcount != 1:
+                    self.connection.rollback()
+                    return None
+            self.connection.commit()
+            return row
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def set_player_followup_state(
+        self,
+        peer_id: int,
+        player_message_id: int,
+        bot_message_id: int,
+        expected_state: str,
+        new_state: str,
+    ) -> bool:
+        """Transition one exact follow-up cycle without overwriting newer activity."""
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """UPDATE player_followups SET state = %s, updated_at = %s
+                   WHERE account_id = %s AND peer_id = %s
+                     AND player_message_id = %s AND bot_message_id = %s AND state = %s""",
+                (
+                    new_state,
+                    datetime.now(UTC).isoformat(),
+                    self.account_id,
+                    peer_id,
+                    player_message_id,
+                    bot_message_id,
+                    expected_state,
+                ),
+            )
+        self.connection.commit()
+        return cursor.rowcount == 1
 
     @staticmethod
     def _facts(value: Any) -> list[str]:
