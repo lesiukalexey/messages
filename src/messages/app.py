@@ -1935,7 +1935,7 @@ async def run() -> None:
                         notify_on_success=False,
                     )
                     return
-                if random.random() < 0.3:
+                if selected_game is None and random.random() < 0.3:
                     await asyncio.sleep(random.uniform(1.0, 10.0))
                     block_reason = await reply_policy_block(
                         peer_id, force=True, require_game=selected_game
@@ -1979,7 +1979,6 @@ async def run() -> None:
                         "generated",
                         json.dumps({"incoming_message_id": event.message.id, "algorithm": "black_castle_scene"}),
                     )
-                    await asyncio.sleep(max(1.0, sum(char.isalpha() for char in reply) / 10.0))
                     block_reason = await reply_policy_block(
                         peer_id, force=True, require_game="BlackCastle"
                     )
@@ -2066,10 +2065,6 @@ async def run() -> None:
                             }
                         ),
                     )
-                    delay_seconds = max(
-                        1.0, sum(char.isalpha() for char in reply) / 10.0
-                    )
-                    await asyncio.sleep(delay_seconds)
                     block_reason = await reply_policy_block(
                         peer_id, force=True, require_game="Game"
                     )
