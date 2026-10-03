@@ -42,7 +42,7 @@ def migrate(database_path: Path, drop_source: bool) -> tuple[int, bool]:
                 "SELECT account_id, peer_id, facts_json, updated_at FROM game_player_memories"
             ).fetchall()
 
-        target.connection.ping(reconnect=True)
+        target.ensure_connected()
         target.connection.begin()
         with target.connection.cursor() as cursor:
             for row in rows:

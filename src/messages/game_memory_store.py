@@ -21,6 +21,9 @@ class GameMemoryStore:
         self.database = os.getenv("GAME_MEMORY_DATABASE", "game_chat_with_role")
         if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", self.database):
             raise ValueError("GAME_MEMORY_DATABASE must be a simple MySQL database name")
+        self.connection = self._connect()
+
+    def _connect(self) -> pymysql.connections.Connection:
         self.connection = pymysql.connect(
             host=os.getenv("MYSQL_HOST", "127.0.0.1"),
             port=int(os.getenv("MYSQL_PORT", "3306")),
@@ -32,9 +35,20 @@ class GameMemoryStore:
             connect_timeout=10,
             autocommit=True,
         )
+        return self.connection
+
+    def ensure_connected(self) -> None:
+        try:
+            self.connection.ping()
+        except pymysql.err.MySQLError:
+            try:
+                self.connection.close()
+            except pymysql.err.MySQLError:
+                pass
+            self._connect()
 
     def initialize(self) -> None:
-        self.connection.ping(reconnect=True)
+        self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS player_memories (
@@ -65,7 +79,7 @@ class GameMemoryStore:
         ][:MAX_MEMORY_FACTS]
 
     def game_player_memory(self, peer_id: int) -> list[str]:
-        self.connection.ping(reconnect=True)
+        self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """SELECT facts_json FROM player_memories
@@ -79,7 +93,7 @@ class GameMemoryStore:
         self, peer_id: int, remember: list[str], forget: list[str]
     ) -> list[str]:
         """Apply a compact fact delta under a row lock, preserving other players."""
-        self.connection.ping(reconnect=True)
+        self.ensure_connected()
         try:
             self.connection.begin()
             with self.connection.cursor() as cursor:
