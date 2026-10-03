@@ -3,7 +3,9 @@ from pathlib import Path
 from typing import Any
 
 
-def black_castle_caption_and_keyboard(scene_path: Path) -> tuple[str, list[dict[str, Any]]]:
+def black_castle_caption_and_keyboard(
+    scene_path: Path,
+) -> tuple[str, list[list[dict[str, Any]]]]:
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     caption = scene["caption"]
     question = scene["question"]
@@ -15,9 +17,24 @@ def black_castle_caption_and_keyboard(scene_path: Path) -> tuple[str, list[dict[
         or len(choices) != 2
     ):
         raise ValueError("BlackCastle opening scene is invalid")
-    buttons: list[dict[str, Any]] = []
+    choice_rows: list[list[dict[str, Any]]] = []
     for choice in choices:
-        if not isinstance(choice, dict) or not isinstance(choice.get("text"), str):
+        target_step = choice.get("target_step") if isinstance(choice, dict) else None
+        if (
+            not isinstance(choice, dict)
+            or not isinstance(choice.get("text"), str)
+            or not isinstance(target_step, int)
+        ):
             raise ValueError("BlackCastle choice is invalid")
-        buttons.append({"text": choice["text"], "callback_data": "black_castle_noop"})
-    return f"{caption}\n\n{question}", buttons
+        choice_rows.append([{
+            "text": choice["text"],
+            "callback_data": f"blackcastle:step:{target_step}",
+        }])
+    keyboard = choice_rows + [
+        [
+            {"text": "Предисловие", "callback_data": "blackcastle:preface"},
+            {"text": "Характеристики", "callback_data": "blackcastle:stats"},
+        ],
+        [{"text": "Инвентарь", "callback_data": "blackcastle:inventory"}],
+    ]
+    return f"Шаг 1\n\n{caption}\n\n{question}", keyboard

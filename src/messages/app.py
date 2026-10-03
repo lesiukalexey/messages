@@ -1991,11 +1991,11 @@ async def run() -> None:
                         inline_results = await client(functions.messages.GetInlineBotResultsRequest(
                             bot=utils.get_input_user(bot_peer),
                             peer=await event.get_input_chat(),
-                            query="black_castle_opening",
+                            query=f"blackcastle_player_{peer_id}",
                             offset="",
                         ))
                         result = next(
-                            (item for item in inline_results.results if item.id == "black_castle_opening"),
+                            (item for item in inline_results.results if item.id == f"black_castle_player_{peer_id}"),
                             None,
                         )
                         if result is None:
