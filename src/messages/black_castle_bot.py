@@ -597,7 +597,18 @@ class BlackCastleBot:
                             "text": str(option["button_text"]),
                             "callback_data": f"blackcastle:loot:{loot_step}:{loot_id}",
                         }])
-                keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:battle:finish"}])
+                victory_options = battle.get("victory_options")
+                if isinstance(victory_options, list) and len(victory_options) > 1:
+                    for option in victory_options:
+                        keyboard.append([{
+                            "text": self._route_button_text(
+                                str(option.get("button_text") or "Продолжить"),
+                                int(option["target_paragraph"]),
+                            ),
+                            "callback_data": f"blackcastle:battle:finish:{option['choice_id']}",
+                        }])
+                else:
+                    keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:battle:finish"}])
             elif battle.get("status") == "lost":
                 keyboard.append([{"text": "Начать сначала", "callback_data": "blackcastle:battle:restart"}])
             if battle.get("status") == "awaiting_continue":
@@ -771,6 +782,11 @@ class BlackCastleBot:
                     "text": button_text,
                     "callback_data": f"blackcastle:route:{step}:{choice['choice_id']}",
                 }])
+            if enemies and not battle_button_added:
+                keyboard.append([{
+                    "text": battle_button_label,
+                    "callback_data": f"blackcastle:battle:start:auto:{step}",
+                }])
             if step == 1:
                 keyboard.append([{
                     "text": "Предисловие",
@@ -781,10 +797,11 @@ class BlackCastleBot:
                     "text": "К шагу 1",
                     "callback_data": "blackcastle:step:1",
                 }])
-            keyboard.append([{
-                "text": "Характеристики и инвентарь",
-                "callback_data": "blackcastle:status",
-            }])
+            if not enemies:
+                keyboard.append([{
+                    "text": "Характеристики и инвентарь",
+                    "callback_data": "blackcastle:status",
+                }])
             return text, keyboard, True
 
         state["step"] = 1
@@ -1392,9 +1409,34 @@ class BlackCastleBot:
     def _is_battle_route(label: str) -> bool:
         normalized = label.casefold().replace("ё", "е")
         return bool(
-            re.fullmatch(r"если(?: вы)? победили?|вступить в бой", normalized)
-            or re.match(r"если(?: же)?(?: вы)? (?:убили|победили)\b", normalized)
+            re.fullmatch(r"(?:если(?: вы)? )?победили?|вступить в бой", normalized)
+            or re.match(
+                r"^(?:если(?: же)?\s+)?(?:(?:вы|вам)\s+)?"
+                r"(?:(?:удалось|удается|удастся)\s+)?"
+                r"(?:победить|победили|победил|победите|убить|убили|убив|ранить)\b",
+                normalized,
+            )
         )
+
+    @classmethod
+    def _post_battle_choices(cls, choices: list[dict[str, Any]], body: str) -> list[dict[str, Any]]:
+        """Return choices that are available after the current fight."""
+        result = []
+        for choice in choices:
+            label = ROUTE_BUTTON_SUFFIX.sub("", str(choice.get("button_text") or "")).strip()
+            folded = label.casefold().replace("ё", "е")
+            try:
+                target = int(choice["target_paragraph"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (cls._is_escape_choice(label, target, body)
+                    or re.match(r"если\s+(?:нет|не удалось|не получилось)\b", folded)
+                    or re.match(r"если\s+(?:есть|у вас есть|знаете пароль)\b", folded)
+                    or re.search(r"проверить удачу|если вы удачливы|если вам повезло", folded)
+                    or cls._route_spell_options(label, body)):
+                continue
+            result.append(choice)
+        return result
 
     @staticmethod
     def _is_escape_route(label: str) -> bool:
@@ -1754,12 +1796,17 @@ class BlackCastleBot:
                 label = f"Выкинуть: {state['items'][index]}"
         elif action.startswith("blackcastle:battle:start:"):
             try:
-                _, _, _, source_text, choice_id = action.split(":", 4)
-                paragraph_number = int(source_text)
-                choice = self.game_store.get_paragraph_choice(paragraph_number, choice_id)
+                parts = action.split(":")
+                if len(parts) == 5 and parts[3] == "auto":
+                    paragraph_number = int(parts[4])
+                    choice = None
+                else:
+                    _, _, _, source_text, choice_id = action.split(":", 4)
+                    paragraph_number = int(source_text)
+                    choice = self.game_store.get_paragraph_choice(paragraph_number, choice_id)
                 if choice:
                     target_paragraph = int(choice["target_paragraph"])
-                    label = "Вступить в бой"
+                label = "Вступить в бой"
             except (ValueError, TypeError):
                 pass
         elif action.startswith("blackcastle:battle:"):
@@ -1832,6 +1879,7 @@ class BlackCastleBot:
             luck_check_clicked = False
             route_choice = None
             route_source_step = None
+            auto_battle_start = False
             loot_source_step = None
             loot_choice = None
             loot_from_battle = False
@@ -1861,11 +1909,24 @@ class BlackCastleBot:
             elif (action.startswith("blackcastle:battle:continue")
                     and isinstance(battle, dict) and battle.get("status") == "running"):
                 action = "blackcastle:battle:recover_interrupted"
+            if action in {"blackcastle:status", "blackcastle:stats", "blackcastle:inventory"}:
+                if state.get("view") == "battle":
+                    return
+                if state.get("view") == "step" and isinstance(state.get("step"), int):
+                    paragraph = self.game_store.get_paragraph(int(state["step"]))
+                    body = str((paragraph or {}).get("body") or "")
+                    if self._battle_enemies(self._battle_stage_body(int(state["step"]), body, state)):
+                        return
             if action.startswith("blackcastle:battle:start:"):
                 try:
-                    _, _, _, source_text, choice_id = action.split(":", 4)
-                    route_source_step = int(source_text)
-                    route_choice = self.game_store.get_paragraph_choice(route_source_step, choice_id)
+                    parts = action.split(":")
+                    if len(parts) == 5 and parts[3] == "auto":
+                        route_source_step = int(parts[4])
+                        auto_battle_start = True
+                    else:
+                        _, _, _, source_text, choice_id = action.split(":", 4)
+                        route_source_step = int(source_text)
+                        route_choice = self.game_store.get_paragraph_choice(route_source_step, choice_id)
                 except (ValueError, TypeError):
                     route_choice = None
                 battle_started = True
@@ -2250,7 +2311,7 @@ class BlackCastleBot:
                 state["step"] = 1
                 state["page_part"] = 0
             elif action.startswith("blackcastle:battle:start:"):
-                if (route_choice is None or route_source_step is None
+                if (route_source_step is None or (route_choice is None and not auto_battle_start)
                         or state.get("view") != "step" or state.get("step") != route_source_step):
                     logger.warning(
                         "Rejected BlackCastle battle start (step=%s, view=%s, route_step=%s, route_found=%s)",
@@ -2258,12 +2319,29 @@ class BlackCastleBot:
                         route_choice is not None,
                     )
                     return
-                if not self._is_battle_route(ROUTE_BUTTON_SUFFIX.sub(
+                if route_choice is not None and not self._is_battle_route(ROUTE_BUTTON_SUFFIX.sub(
                     "", str(route_choice.get("button_text") or "")
                 ).strip()):
                     return
                 paragraph = self.game_store.get_paragraph(route_source_step)
                 full_body = str((paragraph or {}).get("body") or "")
+                all_choices = self.game_store.get_paragraph_choices(route_source_step)
+                victory_options = [
+                    option for option in self._post_battle_choices(all_choices, full_body)
+                    if (not option.get("required_item")
+                        or self._has_item(state, str(option["required_item"])))
+                ]
+                if route_choice is not None:
+                    selected = next((option for option in victory_options
+                                     if str(option.get("choice_id")) == str(route_choice.get("choice_id"))), None)
+                    if selected is None:
+                        victory_options.insert(0, route_choice)
+                    else:
+                        victory_options.remove(selected)
+                        victory_options.insert(0, selected)
+                if not victory_options:
+                    logger.warning("Rejected BlackCastle battle start without a victory route (step=%s)", route_source_step)
+                    return
                 sequence_chunks = self._battle_sequence_chunks(route_source_step, full_body)
                 sequence_stage_index = int(state.get("battle_sequence_stage", 0)) if sequence_chunks else 0
                 battle_body = self._battle_stage_body(route_source_step, full_body, state)
@@ -2274,13 +2352,14 @@ class BlackCastleBot:
                         route_source_step,
                     )
                     return
-                required_item = route_choice.get("required_item")
+                required_item = route_choice.get("required_item") if route_choice is not None else None
                 if required_item and not self._consume_item(state, str(required_item)):
                     return
                 magic = state.pop("combat_magic_pending", None)
                 battle = {
                     "source_step": route_source_step,
-                    "victory_step": int(route_choice["target_paragraph"]),
+                    "victory_step": int(victory_options[0]["target_paragraph"]),
+                    "victory_options": victory_options,
                     "enemies": enemies,
                     "stage": "copy" if isinstance(magic, dict) and magic.get("spell") == "copy" else "hero",
                     "status": "running",
@@ -2292,7 +2371,11 @@ class BlackCastleBot:
                     "sequence_stage_count": len(sequence_chunks) if sequence_chunks else 1,
                     "escape_options": [
                         choice for choice in self.game_store.get_paragraph_choices(route_source_step)
-                        if self._is_escape_route(str(choice.get("button_text") or ""))
+                        if self._is_escape_choice(
+                            ROUTE_BUTTON_SUFFIX.sub("", str(choice.get("button_text") or "")).strip(),
+                            int(choice["target_paragraph"]),
+                            full_body,
+                        )
                         and (not sequence_chunks or sequence_stage_index > 0)
                     ],
                     "player_attack_penalty": 1 if re.search(
@@ -2381,12 +2464,20 @@ class BlackCastleBot:
             elif action == "blackcastle:battle:recover_interrupted":
                 # Recovery above already finalized the persisted partial round.
                 pass
-            elif action == "blackcastle:battle:finish":
+            elif action == "blackcastle:battle:finish" or action.startswith("blackcastle:battle:finish:"):
                 battle = state.get("battle")
                 if (state.get("view") != "battle" or not isinstance(battle, dict)
                         or battle.get("status") != "won"):
                     return
                 target = int(battle["victory_step"])
+                if action.startswith("blackcastle:battle:finish:"):
+                    choice_id = action.rsplit(":", 1)[-1]
+                    options = battle.get("victory_options", [])
+                    selected = next((option for option in options
+                                     if str(option.get("choice_id")) == choice_id), None)
+                    if selected is None:
+                        return
+                    target = int(selected["target_paragraph"])
                 if self.game_store.get_paragraph(target) is None:
                     return
                 state.pop("battle", None)

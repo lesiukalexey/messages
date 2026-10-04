@@ -388,7 +388,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertNotIn("ГОБЛИН", text)
             self.assertEqual(labels.count("К бою"), 1)
             self.assertFalse(any("143" in label or "239" in label for label in labels))
-            self.assertEqual(labels.count("Характеристики и инвентарь"), 1)
+            self.assertNotIn("Характеристики и инвентарь", labels)
 
             store.state["battle_sequence_stage"] = 1
             text, keyboard, _ = bot._screen(store.state)
@@ -396,6 +396,85 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertIn("ГОБЛИН", text)
             self.assertEqual(labels[:2], ["Попробовать убежать — 143", "К бою"])
             self.assertNotIn("239", labels)
+            self.assertNotIn("Характеристики и инвентарь", labels)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_fight_without_victory_wording_gets_battle_button_and_hides_status(self):
+        bot, store = make_bot()
+        store.paragraphs[6] = {
+            "paragraph_number": 6,
+            "body": "Вам приходится драться с Дровосеками.\n"
+                    "ПЕРВЫЙ ДРОВОСЕК\nМастерство 6\nВыносливость 5",
+            "photo_file_id": "step-photo",
+        }
+        store.choices_by_step[6] = [{
+            "choice_id": "continue", "button_text": "Теперь отправляйтесь дальше — 420",
+            "target_paragraph": 420, "required_item": None,
+        }]
+        store.state.update({"step": 6, "view": "step"})
+        try:
+            _, keyboard, _ = bot._screen(store.state)
+            buttons = [button for row in keyboard for button in row]
+            self.assertIn("Вступить в бой", [button["text"] for button in buttons])
+            self.assertNotIn("Характеристики и инвентарь", [button["text"] for button in buttons])
+            self.assertIn("blackcastle:battle:start:auto:6", [button["callback_data"] for button in buttons])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_stale_status_button_is_rejected_on_combat_step(self):
+        bot, store = make_bot()
+        store.paragraphs[558] = {
+            "paragraph_number": 558,
+            "body": "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 8",
+            "photo_file_id": "step-photo",
+        }
+        store.state.update({"step": 558, "view": "step"})
+        update = {"callback_query": {
+            "id": "stale-status", "from": {"id": 42},
+            "data": "blackcastle:status",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(update))
+            self.assertEqual(store.state["view"], "step")
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_battle_route_recognizes_explicit_victory_phrases(self):
+        for label in (
+            "Если вам удалось победить одного из рыцарей",
+            "Если вам удается победить мага",
+            "Если вы убили Гоблина",
+            "Если убили обоих врагов за 8 раундов атаки",
+        ):
+            with self.subTest(label=label):
+                self.assertTrue(BlackCastleBot._is_battle_route(label))
+
+    def test_automatic_battle_entry_uses_book_continuation_after_victory(self):
+        bot, store = make_bot()
+        store.paragraphs[6] = {
+            "paragraph_number": 6,
+            "body": "Вам приходится драться с Гоблином.\nГОБЛИН\nМастерство 1\nВыносливость 2",
+            "photo_file_id": "step-photo",
+        }
+        store.choices_by_step[6] = [{
+            "choice_id": "continue", "button_text": "Теперь отправляйтесь дальше — 420",
+            "target_paragraph": 420, "required_item": None,
+        }]
+        store.state.update({"step": 6, "view": "step"})
+        update = {"callback_query": {
+            "id": "start-auto-fight", "from": {"id": 42},
+            "data": "blackcastle:battle:start:auto:6",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[6, 6, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(update))
+            self.assertEqual(store.state["view"], "battle")
+            self.assertEqual(store.state["battle"]["status"], "won")
+            self.assertEqual(store.state["battle"]["victory_step"], 420)
         finally:
             bot._test_tempdir.cleanup()
 
