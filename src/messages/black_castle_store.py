@@ -82,6 +82,59 @@ class BlackCastleStore:
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
             cursor.execute(
+                """CREATE TABLE IF NOT EXISTS paragraph_loot_options (
+                       paragraph_number INT UNSIGNED NOT NULL,
+                       loot_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                       button_text VARCHAR(128) NOT NULL,
+                       item_name VARCHAR(128) NULL,
+                       gold_amount SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+                       bag_slots SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+                       sort_order SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+                       PRIMARY KEY (paragraph_number, loot_id),
+                       UNIQUE KEY paragraph_loot_order (paragraph_number, sort_order)
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS paragraph_choice_rewards (
+                       paragraph_number INT UNSIGNED NOT NULL,
+                       choice_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                       item_name VARCHAR(128) NOT NULL,
+                       gold_amount SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+                       bag_slots SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+                       PRIMARY KEY (paragraph_number, choice_id)
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            from .black_castle_loot import PARAGRAPH_CHOICE_REWARDS, iter_paragraph_loot_rows
+
+            cursor.executemany(
+                """INSERT IGNORE INTO paragraph_loot_options
+                   (paragraph_number, loot_id, button_text, item_name, gold_amount, bag_slots, sort_order)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                list(iter_paragraph_loot_rows()),
+            )
+            cursor.executemany(
+                """INSERT IGNORE INTO paragraph_choice_rewards
+                   (paragraph_number, choice_id, item_name, gold_amount, bag_slots)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                PARAGRAPH_CHOICE_REWARDS,
+            )
+            cursor.execute(
+                """INSERT IGNORE INTO paragraph_choices
+                   (paragraph_number, choice_id, button_text, target_paragraph, sort_order)
+                   VALUES (187, 'route_01', 'Теперь возвращайтесь на 47', 47, 0)"""
+            )
+            cursor.execute(
+                """DELETE FROM paragraph_choices
+                   WHERE paragraph_number = 239 AND choice_id = 'route_01'
+                     AND target_paragraph = 2
+                     AND button_text LIKE 'Взять с собой:%'"""
+            )
+            cursor.execute(
+                """DELETE FROM paragraph_choices
+                   WHERE paragraph_number = 457
+                     AND button_text LIKE 'Ее МАСТЕРСТВО%'"""
+            )
+            cursor.execute(
                 """CREATE TABLE IF NOT EXISTS settings (
                        setting_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
                        setting_value TEXT NOT NULL,
@@ -245,6 +298,29 @@ class BlackCastleStore:
                 (paragraph_number,),
             )
             return list(cursor.fetchall())
+
+    def get_paragraph_loot_options(self, paragraph_number: int) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT loot_id, button_text, item_name, gold_amount, bag_slots
+                   FROM paragraph_loot_options
+                   WHERE paragraph_number = %s
+                   ORDER BY sort_order, loot_id""",
+                (paragraph_number,),
+            )
+            return list(cursor.fetchall())
+
+    def get_paragraph_choice_reward(self, paragraph_number: int, choice_id: str) -> dict[str, Any] | None:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT item_name, gold_amount, bag_slots
+                   FROM paragraph_choice_rewards
+                   WHERE paragraph_number = %s AND choice_id = %s""",
+                (paragraph_number, choice_id),
+            )
+            return cursor.fetchone()
 
     def get_paragraph_choice(self, paragraph_number: int, choice_id: str) -> dict[str, Any] | None:
         self.ensure_connected()

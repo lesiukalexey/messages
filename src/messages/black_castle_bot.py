@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from .black_castle_battle_text import ENEMY_BATTLE_TEXT, canonical_enemy_key
+from .black_castle_battle_text import ENEMY_BATTLE_TEXT, GENERIC_BATTLE_TEXT, canonical_enemy_key
+from .black_castle_loot import REPEATABLE_LOOT_IDS
 
 BOT_USERNAME = "KnigaIgraBot"
 ROUTE_BUTTON_MAX_LENGTH = 50
@@ -477,6 +478,20 @@ class BlackCastleBot:
                     callback = "blackcastle:battle:continue"
                     keyboard.append([{"text": label, "callback_data": callback}])
             elif battle.get("status") == "won":
+                get_loot = getattr(self.game_store, "get_paragraph_loot_options", None)
+                loot_step = int(battle.get("source_step", step))
+                loot_options = get_loot(loot_step) if callable(get_loot) else []
+                claimed_by_step = state.get("claimed_loot", {})
+                claimed_ids = set(
+                    claimed_by_step.get(str(loot_step), [])
+                ) if isinstance(claimed_by_step, dict) else set()
+                for option in loot_options:
+                    loot_id = str(option.get("loot_id") or "")
+                    if loot_id and (loot_id not in claimed_ids or loot_id in REPEATABLE_LOOT_IDS):
+                        keyboard.append([{
+                            "text": str(option["button_text"]),
+                            "callback_data": f"blackcastle:loot:{loot_step}:{loot_id}",
+                        }])
                 keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:battle:finish"}])
             elif battle.get("status") == "lost":
                 keyboard.append([{"text": "Начать сначала", "callback_data": "blackcastle:battle:restart"}])
@@ -513,6 +528,16 @@ class BlackCastleBot:
                 text += f"\n\n{question}"
 
             choices = self.game_store.get_paragraph_choices(step)
+            get_loot = getattr(self.game_store, "get_paragraph_loot_options", None)
+            loot_options = get_loot(step) if callable(get_loot) else []
+            claimed_by_step = state.get("claimed_loot", {})
+            claimed_ids = set(claimed_by_step.get(str(step), [])) if isinstance(claimed_by_step, dict) else set()
+            claimed_names = list(dict.fromkeys(
+                str(option.get("button_text") or "").removeprefix("Взять ")
+                for option in loot_options if option.get("loot_id") in claimed_ids
+            ))
+            if claimed_names:
+                text += "\n\nВы уже взяли: " + ", ".join(claimed_names) + "."
             enemies = self._battle_enemies(str(body or ""))
             prepared_magic = state.get("combat_magic_pending")
             if enemies and isinstance(prepared_magic, dict):
@@ -524,6 +549,14 @@ class BlackCastleBot:
                 else None
             )
             keyboard = []
+            if not enemies:
+                for option in loot_options:
+                    loot_id = str(option.get("loot_id") or "")
+                    if loot_id and (loot_id not in claimed_ids or loot_id in REPEATABLE_LOOT_IDS):
+                        keyboard.append([{
+                            "text": str(option["button_text"]),
+                            "callback_data": f"blackcastle:loot:{step}:{loot_id}",
+                        }])
             for choice in choices:
                 required_item = choice.get("required_item")
                 if required_item and not self._has_item(state, str(required_item)):
@@ -686,11 +719,6 @@ class BlackCastleBot:
         } for match in ENEMY_STATS.finditer(body)]
 
     def _battle_phrase(self, enemy_name: str, phase: str, **values: str) -> str:
-        from .black_castle_battle_text import (
-            ENEMY_BATTLE_TEXT,
-            GENERIC_BATTLE_TEXT,
-        )
-
         getter = getattr(self.game_store, "get_battle_narrative_templates", None)
         templates = getter(enemy_name, phase) if callable(getter) else []
         if not templates:
@@ -1400,6 +1428,17 @@ class BlackCastleBot:
                 if not label_from_message:
                     if not action.startswith("blackcastle:cast:"):
                         label = self._route_button_text(str(choice["button_text"]), target_paragraph)
+        elif action.startswith("blackcastle:loot:"):
+            try:
+                _, _, source_text, loot_id = action.split(":", 3)
+                paragraph_number = int(source_text)
+                get_loot = getattr(self.game_store, "get_paragraph_loot_options", None)
+                options = get_loot(paragraph_number) if callable(get_loot) else []
+                option = next((row for row in options if str(row.get("loot_id")) == loot_id), None)
+                if option is not None and not label_from_message:
+                    label = str(option.get("button_text") or label)
+            except (ValueError, TypeError):
+                pass
         elif action.startswith("blackcastle:battle:start:"):
             try:
                 _, _, _, source_text, choice_id = action.split(":", 4)
@@ -1474,9 +1513,14 @@ class BlackCastleBot:
             if isinstance(callback_message, dict):
                 state["direct_message_has_photo"] = isinstance(callback_photo, list) and bool(callback_photo)
             luck_alert = None
+            loot_alert = None
             luck_check_clicked = False
             route_choice = None
             route_source_step = None
+            loot_source_step = None
+            loot_choice = None
+            loot_from_battle = False
+            choice_reward = None
             cast_spell = None
             battle_advance = False
             battle_started = False
@@ -1499,6 +1543,41 @@ class BlackCastleBot:
                 except (ValueError, TypeError):
                     route_choice = None
                 battle_started = True
+            elif action.startswith("blackcastle:loot:"):
+                try:
+                    _, _, source_text, loot_id = action.split(":", 3)
+                    loot_source_step = int(source_text)
+                    get_loot = getattr(self.game_store, "get_paragraph_loot_options", None)
+                    options = get_loot(loot_source_step) if callable(get_loot) else []
+                    loot_choice = next(
+                        (row for row in options if str(row.get("loot_id")) == loot_id), None
+                    )
+                except (ValueError, TypeError):
+                    loot_choice = None
+                claimed = state.get("claimed_loot", {})
+                claimed_ids = claimed.get(str(loot_source_step), []) if isinstance(claimed, dict) else []
+                battle_state = state.get("battle")
+                loot_from_battle = bool(
+                    state.get("view") == "battle" and isinstance(battle_state, dict)
+                    and battle_state.get("status") == "won"
+                    and int(battle_state.get("source_step", -1)) == loot_source_step
+                )
+                loot_paragraph = self.game_store.get_paragraph(loot_source_step)
+                on_loot_step = (
+                    state.get("view") == "step" and state.get("step") == loot_source_step
+                    and not self._battle_enemies(str((loot_paragraph or {}).get("body") or ""))
+                )
+                if (loot_choice is None or not (on_loot_step or loot_from_battle)
+                        or (loot_id in claimed_ids and loot_id not in REPEATABLE_LOOT_IDS)):
+                    loot_choice = None
+                elif loot_choice.get("item_name") and int(loot_choice.get("bag_slots") or 0):
+                    equipment_names = {"меч", "фляга", "заплечный мешок"}
+                    bag_items = [
+                        item for item in state.get("items", [])
+                        if isinstance(item, str) and item.strip().casefold() not in equipment_names
+                    ]
+                    if len(bag_items) + int(loot_choice["bag_slots"]) > int(state.get("bag_capacity", 7)):
+                        loot_alert = "В заплечном мешке недостаточно места для этой вещи."
             elif action.startswith("blackcastle:battle:begin:"):
                 try:
                     battle_target_index = int(action.rsplit(":", 1)[1])
@@ -1531,6 +1610,11 @@ class BlackCastleBot:
                     route_choice = self.game_store.get_paragraph_choice(
                         route_source_step, choice_id
                     )
+                    reward_getter = getattr(self.game_store, "get_paragraph_choice_reward", None)
+                    choice_reward = (
+                        reward_getter(route_source_step, choice_id)
+                        if callable(reward_getter) else None
+                    )
                     if route_choice is not None:
                         source_paragraph = self.game_store.get_paragraph(route_source_step)
                         raw_label = ROUTE_BUTTON_SUFFIX.sub(
@@ -1546,6 +1630,17 @@ class BlackCastleBot:
                             route_choice = None
                 except (ValueError, TypeError):
                     route_choice = None
+                if (choice_reward and route_choice is not None
+                        and state.get("view") == "step"
+                        and state.get("step") == route_source_step
+                        and int(choice_reward.get("bag_slots") or 0) > 0):
+                    equipment_names = {"меч", "фляга", "заплечный мешок"}
+                    bag_items = [
+                        item for item in state.get("items", [])
+                        if isinstance(item, str) and item.strip().casefold() not in equipment_names
+                    ]
+                    if len(bag_items) + int(choice_reward["bag_slots"]) > int(state.get("bag_capacity", 7)):
+                        loot_alert = "В заплечном мешке недостаточно места для этой вещи."
                 if (
                     route_choice is not None
                     and state.get("view") == "step"
@@ -1613,7 +1708,7 @@ class BlackCastleBot:
             if luck_alert:
                 self._save_state(player_id, state)
             if isinstance(callback_id, str):
-                await self._acknowledge_callback(callback_id, luck_alert)
+                await self._acknowledge_callback(callback_id, luck_alert or loot_alert)
             if action == "blackcastle:preface":
                 state["view"] = "preface"
                 state["preface_part"] = 0
@@ -1635,6 +1730,20 @@ class BlackCastleBot:
             elif action == "blackcastle:back":
                 state["view"] = "step"
                 state["page_part"] = 0
+            elif action.startswith("blackcastle:loot:"):
+                if loot_choice is None or loot_source_step is None or loot_alert:
+                    return
+                if loot_choice.get("item_name"):
+                    state.setdefault("items", []).append(str(loot_choice["item_name"]))
+                state["gold"] = int(state.get("gold", 0)) + int(loot_choice.get("gold_amount") or 0)
+                claimed = state.setdefault("claimed_loot", {})
+                claimed.setdefault(str(loot_source_step), []).append(str(loot_choice["loot_id"]))
+                if loot_from_battle:
+                    state["view"] = "battle"
+                else:
+                    state["view"] = "step"
+                    state["step"] = loot_source_step
+                    state["page_part"] = 0
             elif action == "blackcastle:continue":
                 state["view"] = "step"
                 state["step"] = 1
@@ -1894,6 +2003,14 @@ class BlackCastleBot:
                     target_step = int(choice["target_paragraph"])
                     if self.game_store.get_paragraph(target_step) is None:
                         return
+                    if choice_reward:
+                        if loot_alert:
+                            return
+                        if choice_reward.get("item_name"):
+                            state.setdefault("items", []).append(str(choice_reward["item_name"]))
+                        state["gold"] = int(state.get("gold", 0)) + int(
+                            choice_reward.get("gold_amount") or 0
+                        )
                     if cast_spell:
                         state.setdefault("spells", dict(INITIAL_SPELLS))[cast_spell] -= 1
                     if self._is_escape_route(source_label):
