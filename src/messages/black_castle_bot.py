@@ -74,6 +74,7 @@ PREFACE_SPELL_TEXT = """Как и положено в сказках, путеш
 
 Астролог предупредил: уровень вашего МАСТЕРСТВА позволяет вам воспользоваться заклятиями только 10 раз. Поэтому вы можете выбрать любые заклятия и в любом количестве, но всего их должно быть не более десяти. Настройте запас заклятий кнопками ниже."""
 logger = logging.getLogger(__name__)
+NON_DISCARDABLE_ITEMS = frozenset({"меч", "фляга", "заплечный мешок"})
 
 
 class BlackCastleBot:
@@ -466,6 +467,8 @@ class BlackCastleBot:
                 }])
             item_ids = state.get("item_ids", [])
             for index, item in item_entries:
+                if item.strip().casefold() in NON_DISCARDABLE_ITEMS:
+                    continue
                 item_hash = hashlib.sha256(item.encode("utf-8")).hexdigest()[:8]
                 item_id = item_ids[index] if isinstance(item_ids, list) and index < len(item_ids) else None
                 item_ref = str(item_id) if item_id is not None else f"legacy-{index}"
@@ -777,7 +780,7 @@ class BlackCastleBot:
                 _, _, index_text, item_hash = action.split(":", 3)
                 index = int(index_text)
             item = items[index] if isinstance(items, list) and 0 <= index < len(items) else None
-            if (not isinstance(item, str)
+            if (not isinstance(item, str) or item.strip().casefold() in NON_DISCARDABLE_ITEMS
                     or hashlib.sha256(item.encode("utf-8")).hexdigest()[:8] != item_hash):
                 return None
             return index, item_hash

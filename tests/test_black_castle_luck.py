@@ -1269,8 +1269,8 @@ class BlackCastleLuckTest(unittest.TestCase):
         self.assertIn("Фляга: полная (2 глотка)", text)
         labels = [button["text"] for row in keyboard for button in row]
         self.assertIn("Попить из фляги (+2 Выносливости)", labels)
-        self.assertEqual(labels.count("Выкинуть: Меч"), 1)
-        self.assertEqual(labels.count("Выкинуть: Фляга"), 1)
+        self.assertEqual(labels.count("Выкинуть: Меч"), 0)
+        self.assertEqual(labels.count("Выкинуть: Фляга"), 0)
         self.assertEqual(labels.count("Выкинуть: Бриллиант"), 1)
 
         store.state["water_sips"] = 1
@@ -1370,7 +1370,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             BlackCastleBot._discard_reference(state, f"blackcastle:discard:id:99:{armor_hash}")
         )
 
-    def test_discarding_flask_removes_it_and_empties_it(self):
+    def test_flask_cannot_be_discarded_with_an_old_callback(self):
         bot, store = make_bot()
         flask_hash = hashlib.sha256("Фляга".encode()).hexdigest()[:8]
         store.state.update({"view": "status", "items": ["Меч", "Фляга"], "water_sips": 2})
@@ -1381,10 +1381,20 @@ class BlackCastleLuckTest(unittest.TestCase):
         }}
         try:
             asyncio.run(bot.process_update(callback))
-            self.assertNotIn("Фляга", store.state["items"])
-            self.assertEqual(store.state["water_sips"], 0)
+            self.assertIn("Фляга", store.state["items"])
+            self.assertEqual(store.state["water_sips"], 2)
         finally:
             bot._test_tempdir.cleanup()
+
+    def test_sword_and_flask_have_no_discard_reference(self):
+        state = {"items": ["Меч", "Фляга", "Бриллиант"], "item_ids": [1, 2, 3]}
+        for index, name in enumerate(state["items"][:2]):
+            item_hash = hashlib.sha256(name.encode()).hexdigest()[:8]
+            self.assertIsNone(
+                BlackCastleBot._discard_reference(
+                    state, f"blackcastle:discard:id:{state['item_ids'][index]}:{item_hash}"
+                )
+            )
 
     def test_direct_battle_keeps_step_illustration_and_tracks_text_message(self):
         template_bot, store = make_bot()
