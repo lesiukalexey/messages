@@ -254,15 +254,43 @@ class BlackCastleBot:
                 text += f"\n\n{question}"
 
             choices = self.game_store.get_paragraph_choices(step)
+            luck_checks = state.get("luck_checks")
+            luck_result = (
+                luck_checks.get(str(step))
+                if isinstance(luck_checks, dict)
+                else None
+            )
             keyboard = []
             for choice in choices:
                 required_item = choice.get("required_item")
                 if required_item and not self._has_item(state, str(required_item)):
                     continue
+                target = int(choice["target_paragraph"])
+                source_label = ROUTE_BUTTON_SUFFIX.sub(
+                    "", str(choice["button_text"])
+                ).strip()
+                is_luck_success_route = bool(
+                    re.fullmatch(
+                        r"Если(?: вы)? удачливы|Проверить удачу",
+                        source_label,
+                        re.IGNORECASE,
+                    )
+                ) and bool(
+                    body
+                    and re.search(r"ПРОВЕРЬТЕ СВОЮ УДАЧУ", body, re.IGNORECASE)
+                )
+                if is_luck_success_route and isinstance(luck_result, dict):
+                    if not luck_result.get("lucky"):
+                        continue
+                    button_text = self._route_button_text(
+                        f"Удача улыбнулась вам", target
+                    )
+                else:
+                    button_text = self._route_button_text(
+                        str(choice["button_text"]), target
+                    )
                 keyboard.append([{
-                    "text": self._route_button_text(
-                        str(choice["button_text"]), int(choice["target_paragraph"])
-                    ),
+                    "text": button_text,
                     "callback_data": f"blackcastle:route:{step}:{choice['choice_id']}",
                 }])
             if step == 1:
@@ -336,8 +364,10 @@ class BlackCastleBot:
     @staticmethod
     def _route_button_text(label: str, target_paragraph: int) -> str:
         wording = ROUTE_BUTTON_SUFFIX.sub("", str(label)).strip() or "Продолжить"
-        if wording.casefold().startswith("если вы удачливы"):
+        if re.match(r"если(?: вы)? удачливы", wording, re.IGNORECASE):
             wording = "Проверить удачу"
+        if re.search(r"\bпобед(?:ил|или)\w*\b", wording, re.IGNORECASE):
+            wording = "Вступить в бой"
         spell = re.fullmatch(
             r"(?:заклинание|заклятие)?\s*(левитации|огня|иллюзии|силы|слабости|копии|исцеления|плавания)",
             wording,
@@ -357,6 +387,47 @@ class BlackCastleBot:
                 clipped = wording[:wording_limit - 1]
             wording = f"{clipped.rstrip()}…"
         return f"{wording}{suffix}"
+
+    @staticmethod
+    def _resolve_luck_check(
+        state: dict[str, Any], step: int, *, check: bool
+    ) -> str | None:
+        checks = state.setdefault("luck_checks", {})
+        if not isinstance(checks, dict):
+            checks = {}
+            state["luck_checks"] = checks
+        key = str(step)
+        if key in checks:
+            return None
+
+        characteristics = state.get("characteristics")
+        if not isinstance(characteristics, dict):
+            characteristics = {"luck": 0}
+            state["characteristics"] = characteristics
+        try:
+            luck = max(0, int(characteristics.get("luck", 0)))
+        except (TypeError, ValueError):
+            luck = 0
+            characteristics["luck"] = luck
+        roll = random.randint(1, 6) + random.randint(1, 6) if check and luck else None
+        lucky = roll is not None and roll <= luck
+        if luck:
+            characteristics["luck"] = luck - 1
+        checks[key] = {"luck_before": luck, "roll": roll, "lucky": lucky}
+
+        if roll is None:
+            reason = "проверка пропущена" if check else "проверка не проводилась"
+            if check and not luck:
+                reason = "удача равна нулю"
+            return (
+                f"Ваша удача: {luck}. Проверка удачи: {reason}. "
+                "Результат: Вас настигла неудача."
+            )
+        outcome = "Удача улыбнулась вам." if lucky else "Вас настигла неудача."
+        return (
+            f"Ваша удача: {luck}. Проверка удачи выпала: {roll}. "
+            f"Результат: {outcome}"
+        )
 
     def _paged_screen(
         self, state: dict[str, Any], limit: int = 950
@@ -576,18 +647,12 @@ class BlackCastleBot:
         callback = update.get("callback_query")
         if isinstance(callback, dict):
             callback_id = callback.get("id")
-            if isinstance(callback_id, str):
-                try:
-                    await self._call("answerCallbackQuery", {"callback_query_id": callback_id})
-                except Exception as exc:
-                    # A callback may expire while Telegram retries a pending update.
-                    # Its navigation can still be applied; a failed acknowledgement
-                    # must not block the polling offset and every later user message.
-                    logger.info("Could not acknowledge BlackCastle button press (%s)", type(exc).__name__)
             sender = callback.get("from") or {}
             player_id = sender.get("id")
             action = str(callback.get("data") or "")
             if not isinstance(player_id, int) or not action.startswith("blackcastle:"):
+                if isinstance(callback_id, str):
+                    await self._acknowledge_callback(callback_id)
                 return
             state = self._get_or_create_state(player_id)
             callback_message = callback.get("message") or {}
@@ -595,6 +660,64 @@ class BlackCastleBot:
             callback_photo = callback_message.get("photo")
             if isinstance(callback_message, dict):
                 state["direct_message_has_photo"] = isinstance(callback_photo, list) and bool(callback_photo)
+            luck_alert = None
+            luck_check_clicked = False
+            route_choice = None
+            route_source_step = None
+            if action.startswith("blackcastle:route:"):
+                try:
+                    _, _, source_text, choice_id = action.split(":", 3)
+                    route_source_step = int(source_text)
+                    route_choice = self.game_store.get_paragraph_choice(
+                        route_source_step, choice_id
+                    )
+                except (ValueError, TypeError):
+                    route_choice = None
+                if (
+                    route_choice is not None
+                    and state.get("view") == "step"
+                    and state.get("step") == route_source_step
+                    and (
+                        not route_choice.get("required_item")
+                        or self._has_item(state, str(route_choice["required_item"]))
+                    )
+                ):
+                    paragraph = self.game_store.get_paragraph(route_source_step)
+                    has_luck_prompt = bool(
+                        paragraph
+                        and paragraph.get("body")
+                        and re.search(
+                            r"ПРОВЕРЬТЕ СВОЮ УДАЧУ",
+                            str(paragraph["body"]),
+                            re.IGNORECASE,
+                        )
+                    )
+                    button_label = ROUTE_BUTTON_SUFFIX.sub(
+                        "", str(route_choice.get("button_text") or "")
+                    ).strip()
+                    is_luck_route = bool(
+                        re.fullmatch(
+                            r"Если(?: вы)? удачливы|Проверить удачу",
+                            button_label,
+                            re.IGNORECASE,
+                        )
+                    )
+                    checks = state.get("luck_checks")
+                    has_checked = isinstance(checks, dict) and str(route_source_step) in checks
+                    if has_luck_prompt and is_luck_route and not has_checked:
+                        luck_alert = self._resolve_luck_check(
+                            state, route_source_step, check=True
+                        )
+                        luck_check_clicked = luck_alert is not None
+                    elif has_luck_prompt and not is_luck_route and not has_checked:
+                        luck_alert = self._resolve_luck_check(
+                            state, route_source_step, check=False
+                        )
+
+            if luck_alert:
+                self._save_state(player_id, state)
+            if isinstance(callback_id, str):
+                await self._acknowledge_callback(callback_id, luck_alert)
             if action == "blackcastle:preface":
                 state["view"] = "preface"
                 state["preface_part"] = 0
@@ -633,25 +756,57 @@ class BlackCastleBot:
                 except ValueError:
                     return
             elif action.startswith("blackcastle:route:"):
-                try:
-                    _, _, source_text, choice_id = action.split(":", 3)
-                    source_step = int(source_text)
-                except ValueError:
+                if route_choice is None or route_source_step is None:
                     return
+                source_step = route_source_step
                 if state.get("view") != "step" or state.get("step") != source_step:
                     return
-                choice = self.game_store.get_paragraph_choice(source_step, choice_id)
-                if choice is None:
-                    return
-                required_item = choice.get("required_item")
-                if required_item and not self._consume_item(state, str(required_item)):
-                    return
-                target_step = int(choice["target_paragraph"])
-                if self.game_store.get_paragraph(target_step) is None:
-                    return
-                state["step"] = target_step
-                state["view"] = "step"
-                state["page_part"] = 0
+                choice = route_choice
+                if luck_check_clicked:
+                    state["page_part"] = 0
+                    state["view"] = "step"
+                    state["step"] = source_step
+                else:
+                    source_paragraph = self.game_store.get_paragraph(source_step)
+                    source_label = ROUTE_BUTTON_SUFFIX.sub(
+                        "", str(choice.get("button_text") or "")
+                    ).strip()
+                    is_luck_success_route = bool(
+                        re.fullmatch(
+                            r"Если(?: вы)? удачливы|Проверить удачу",
+                            source_label,
+                            re.IGNORECASE,
+                        )
+                    ) and bool(
+                        source_paragraph
+                        and source_paragraph.get("body")
+                        and re.search(
+                            r"ПРОВЕРЬТЕ СВОЮ УДАЧУ",
+                            str(source_paragraph["body"]),
+                            re.IGNORECASE,
+                        )
+                    )
+                    checks = state.get("luck_checks")
+                    luck_result = (
+                        checks.get(str(source_step))
+                        if isinstance(checks, dict)
+                        else None
+                    )
+                    if (
+                        is_luck_success_route
+                        and isinstance(luck_result, dict)
+                        and not luck_result.get("lucky")
+                    ):
+                        return
+                    required_item = choice.get("required_item")
+                    if required_item and not self._consume_item(state, str(required_item)):
+                        return
+                    target_step = int(choice["target_paragraph"])
+                    if self.game_store.get_paragraph(target_step) is None:
+                        return
+                    state["step"] = target_step
+                    state["view"] = "step"
+                    state["page_part"] = 0
             else:
                 return
             if state.get("view") in {"preface", "step"}:
@@ -729,6 +884,21 @@ class BlackCastleBot:
             state,
             previous_message_id if isinstance(previous_message_id, int) else 0,
         )
+
+    async def _acknowledge_callback(
+        self, callback_id: str, alert: str | None = None
+    ) -> None:
+        payload: dict[str, Any] = {"callback_query_id": callback_id}
+        if alert:
+            payload.update({"text": alert, "show_alert": True})
+        try:
+            await self._call("answerCallbackQuery", payload)
+        except Exception as exc:
+            # A failed acknowledgement must not block later game updates.
+            logger.info(
+                "Could not acknowledge BlackCastle button press (%s)",
+                type(exc).__name__,
+            )
 
     async def run_forever(self) -> None:
         try:
