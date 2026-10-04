@@ -899,7 +899,7 @@ class BlackCastleBot:
             narration_lines = self._battle_narration_lines(log)
             while battle["narration_visible_count"] < len(narration_lines):
                 if battle["narration_visible_count"]:
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)
                 battle["narration_visible_count"] += 1
                 await self._edit_battle_progress(
                     player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
