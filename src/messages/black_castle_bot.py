@@ -432,7 +432,7 @@ class BlackCastleBot:
                         for spell in spell_options:
                             if int(state.get("spells", INITIAL_SPELLS).get(spell, 0)) > 0:
                                 keyboard.append([{
-                                    "text": f"Заклинание {SPELL_LABELS[spell]}",
+                                    "text": self._spell_button_label(spell, combat=True),
                                     "callback_data": f"blackcastle:cast:{step}:{choice['choice_id']}:{spell}",
                                 }])
                     if self._is_battle_route(source_label):
@@ -813,6 +813,13 @@ class BlackCastleBot:
             )
 
     @staticmethod
+    def _spell_button_label(spell: str, *, combat: bool = False) -> str:
+        label = f"Заклинание {SPELL_LABELS.get(spell, spell)}"
+        if combat and spell in {"strength", "weakness", "copy"}:
+            label += " (усиление боя)"
+        return label
+
+    @staticmethod
     def _route_spell_options(label: str, body: str) -> list[str]:
         normalized = label.casefold().replace("ё", "е")
         found = [key for key, pattern in SPELL_PATTERNS.items() if pattern.search(label)]
@@ -1108,10 +1115,10 @@ class BlackCastleBot:
                     )
                     if in_battle:
                         target_paragraph = None
-                        label = f"Заклинание {SPELL_LABELS.get(spell_key, spell_key)}"
+                        label = self._spell_button_label(spell_key, combat=True)
                     else:
                         label = self._route_button_text(
-                            f"Заклинание {SPELL_LABELS.get(spell_key, spell_key)}", target_paragraph
+                            self._spell_button_label(spell_key), target_paragraph
                         )
                 if not label_from_message:
                     if not action.startswith("blackcastle:cast:"):

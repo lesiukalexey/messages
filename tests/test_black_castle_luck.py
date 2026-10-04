@@ -182,7 +182,10 @@ class BlackCastleLuckTest(unittest.TestCase):
         _, keyboard, _ = bot._screen(store.state)
         labels = [button["text"].replace("\u00a0", " ") for row in keyboard for button in row]
         self.assertEqual(labels[:4], [
-            "Заклинание Силы", "Заклинание Слабости", "Заклинание Копии", "Вступить в бой",
+            "Заклинание Силы (усиление боя)",
+            "Заклинание Слабости (усиление боя)",
+            "Заклинание Копии (усиление боя)",
+            "Вступить в бой",
         ])
         callback = {"callback_query": {
             "id": "cast-copy", "from": {"id": 42},
