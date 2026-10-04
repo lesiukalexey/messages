@@ -292,7 +292,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
-    def test_direct_continue_keeps_the_same_message_and_previous_battle_log(self):
+    def test_direct_continue_replaces_the_previous_round_text_in_the_same_message(self):
         bot, store = make_bot()
         body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 8\nЕсли вы победили, то 189."
         store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
@@ -309,7 +309,7 @@ class BlackCastleLuckTest(unittest.TestCase):
                 "stage": "hero",
                 "status": "awaiting_continue",
                 "round": 1,
-                "log": ["Старый удар остаётся в журнале."],
+                "log": ["Старый раунд больше не должен отображаться."],
                 "magic": None,
                 "escape_options": [],
                 "target_index": 0,
@@ -338,8 +338,56 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertFalse(any(method in {"deleteMessage", "sendMessage", "sendPhoto"}
                                  for method, _ in bot.calls))
             self.assertTrue(all(payload["message_id"] == 20 for payload in edits))
-            self.assertTrue(all("Старый удар остаётся в журнале." in payload["text"]
+            self.assertTrue(all("Старый раунд больше не должен отображаться." not in payload["text"]
                                 for payload in edits))
+            self.assertIn("Гигантский Паук", edits[-1]["text"])
+            self.assertEqual(store.state["battle"]["round"], 2)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_inline_read_continuation_replaces_the_previous_round_caption(self):
+        bot, store = make_bot()
+        body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 8\nЕсли вы победили, то 189."
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.state.update({
+            "step": 558,
+            "view": "battle",
+            "battle": {
+                "source_step": 558,
+                "victory_step": 189,
+                "enemies": [{"name": "ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 8}],
+                "stage": "hero",
+                "status": "awaiting_continue",
+                "round": 1,
+                "log": ["Текст завершившегося раунда удаляется из сообщения."],
+                "magic": None,
+                "escape_options": [],
+                "target_index": 0,
+                "inline_message": True,
+            },
+        })
+        callback = {"callback_query": {
+            "id": "continue-inline",
+            "from": {"id": 42},
+            "inline_message_id": "inline-battle",
+            "data": "blackcastle:page_next",
+        }}
+
+        async def edit_inline(inline_message_id, state):
+            await BlackCastleBot._edit_inline_screen(bot, inline_message_id, state)
+            bot.visible_state = json.loads(json.dumps(state))
+
+        bot._edit_inline_screen = edit_inline
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(callback))
+
+            captions = [payload["caption"] for method, payload in bot.calls
+                        if method == "editMessageCaption" and "caption" in payload]
+            self.assertEqual(len(captions), 8)
+            self.assertTrue(all("Текст завершившегося раунда" not in caption for caption in captions))
+            self.assertIn("Гигантский Паук", captions[-1])
             self.assertEqual(store.state["battle"]["round"], 2)
         finally:
             bot._test_tempdir.cleanup()

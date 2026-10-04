@@ -672,6 +672,9 @@ class BlackCastleBot:
             )
             for i in active_enemy_indexes
         )
+        round_intro = battle.pop("round_intro", None)
+        if round_intro:
+            opening = f"{round_intro}\n{opening}"
         enemy_attack_text = "; ".join(
             f"{display_names[i]} атакует с СИЛОЙ УДАРА {enemy_attacks[i]} "
             f"({enemy_rolls[i]} + {enemies[i]['mastery']})"
@@ -1193,6 +1196,10 @@ class BlackCastleBot:
             cast_spell = None
             battle_advance = False
             battle_target_index = None
+            battle = state.get("battle")
+            if (action == "blackcastle:page_next" and state.get("view") == "battle"
+                    and isinstance(battle, dict) and battle.get("status") == "awaiting_continue"):
+                action = "blackcastle:battle:continue"
             if action.startswith("blackcastle:battle:start:"):
                 try:
                     _, _, _, source_text, choice_id = action.split(":", 4)
@@ -1437,15 +1444,17 @@ class BlackCastleBot:
                 if (state.get("view") != "battle" or not isinstance(battle, dict)
                         or battle.get("status") != "awaiting_continue"):
                     return
+                battle["log"] = []
+                state["page_part"] = 0
                 if battle.get("stage") == "copy_lost":
                     battle["stage"] = "hero"
-                    battle.setdefault("log", []).append("Копия исчезла. Теперь вы сражаетесь с оставшимися противниками.")
+                    battle["round_intro"] = "Очертания Копии тают в воздухе. Теперь противник снова перед вами."
                     battle["target_index"] = 0
                     battle["status"] = "running"
                     battle_advance = True
                 elif battle.get("stage") == "copy_won":
                     battle["stage"] = "hero"
-                    battle.setdefault("log", []).append("Копия исчезла. Теперь вы сражаетесь с оставшимися противниками.")
+                    battle["round_intro"] = "Копия исчезает после победы. Выступаете против оставшихся врагов."
                     if len(battle.get("enemies", [])) > 1:
                         battle["status"] = "choose_target"
                         battle_advance = False
