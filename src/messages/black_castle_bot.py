@@ -189,7 +189,7 @@ class BlackCastleBot:
 
         title = title.strip()
         is_heading = bool(re.fullmatch(
-            r"Шаг \d+|Характеристики|Инвентарь|Характеристики и инвентарь|Книга-игра",
+            r"Шаг \d+|Характеристики|Инвентарь|Характеристики и инвентарь|Книга-игра|Битва",
             title,
         ))
         if not is_heading:
@@ -201,6 +201,7 @@ class BlackCastleBot:
             "Инвентарь": "🎒",
             "Характеристики и инвентарь": "🎲",
             "Книга-игра": "📚",
+            "Битва": "⚔️",
         }
         icon = icons.get(title, "📖")
         formatted = [f"{icon} <b>{html.escape(title)}</b>"] if is_heading else []
@@ -217,6 +218,9 @@ class BlackCastleBot:
                 continue
 
             lines = block.splitlines()
+            if title == "Битва":
+                formatted.append("\n".join(html.escape(line) for line in lines))
+                continue
             if is_list_screen and len(lines) > 1:
                 formatted_lines = []
                 for line in lines:
@@ -630,22 +634,22 @@ class BlackCastleBot:
         battle["round"] = int(battle.get("round", 0)) + 1
         log = battle.setdefault("log", [])
         event_lines = [
-            "Действие 1-е. СИЛА УДАРА противников: " + "; ".join(
+            "1) СИЛА УДАРА противников: " + "; ".join(
                 (f"{enemy['name']} — {enemy_rolls[i]} + {enemy['mastery']} = {enemy_attacks[i]}"
                  if enemy_rolls[i] is not None else f"{enemy['name']} уже повержен")
                 for i, enemy in enumerate(enemies)
             ) + ".",
-            f"Действие 2-е. СИЛА УДАРА {'Копии' if acting_copy else 'игрока'}: "
+            f"2) СИЛА УДАРА {'Копии' if acting_copy else 'игрока'}: "
             f"{player_roll} + {player_mastery}"
             f"{' + 2' if strength_bonus else ''}"
             f"{' - ' + str(attack_penalty) if attack_penalty else ''} = {player_attack}.",
-            (f"Действие 3-е. Ваш удар сильнее удара {target['name']}."
-             if player_wins else f"Действие 3-е. Удар {target['name']} сильнее вашего."
-             if player_attack < selected_attack else "Действие 3-е. СИЛА УДАРА равна: противник парирует удар."),
-            (f"Действие 4-е. Вы ранили {target['name']}; его ВЫНОСЛИВОСТЬ уменьшена на 2."
-             if player_wins else "Действие 4-е. Противник не ранен."),
-            ("Действие 5-е. Вас ранили: " + ", ".join(enemies[i]["name"] for i in enemy_hits) + "."
-             if enemy_hits else "Действие 5-е. Вы не получили ранений."),
+            (f"3) Ваш удар сильнее удара {target['name']}."
+             if player_wins else f"3) Удар {target['name']} сильнее вашего."
+             if player_attack < selected_attack else "3) СИЛА УДАРА равна: противник парирует удар."),
+            (f"4) Вы ранили {target['name']}; его ВЫНОСЛИВОСТЬ уменьшена на 2."
+             if player_wins else "4) Противник не ранен."),
+            ("5) Вас ранили: " + ", ".join(enemies[i]["name"] for i in enemy_hits) + "."
+             if enemy_hits else "5) Вы не получили ранений."),
         ]
 
         for action_number in range(1, 8):
@@ -660,31 +664,31 @@ class BlackCastleBot:
                 line = event_lines[action_number - 1]
             elif action_number == 6:
                 actor_name = "Копия" if acting_copy else "Вы"
-                line = f"Действие 6-е. ВЫНОСЛИВОСТЬ: {actor_name} — {actor['stamina']}; " + "; ".join(
+                line = f"6) ВЫНОСЛИВОСТЬ: {actor_name} — {actor['stamina']}; " + "; ".join(
                     f"{enemy['name']} — {enemy['stamina']}" for enemy in enemies
                 ) + "."
             else:
                 if not acting_copy and int(actor["stamina"]) <= 0:
                     battle["status"] = "lost"
-                    line = "Действие 7-е. Выносливость равна нулю. Путешествие окончено."
+                    line = "7) Выносливость равна нулю. Путешествие окончено."
                 elif acting_copy and int(actor["stamina"]) <= 0:
                     battle["status"] = "awaiting_continue"
                     battle["stage"] = "copy_lost"
-                    line = "Действие 7-е. Копия повержена; теперь с врагом предстоит драться вам."
+                    line = "7) Копия повержена; теперь с врагом предстоит драться вам."
                 elif acting_copy and int(target["stamina"]) <= 0:
                     if all(int(enemy["stamina"]) <= 0 for enemy in enemies):
                         battle["status"] = "won"
-                        line = "Действие 7-е. Копия победила противника. Вы победили."
+                        line = "7) Копия победила противника. Вы победили."
                     else:
                         battle["status"] = "awaiting_continue"
                         battle["stage"] = "copy_won"
-                        line = "Действие 7-е. Копия победила противника и исчезла. С остальными врагами предстоит драться вам."
+                        line = "7) Копия победила противника и исчезла. С остальными врагами предстоит драться вам."
                 elif all(int(enemy["stamina"]) <= 0 for enemy in enemies):
                     battle["status"] = "won"
-                    line = "Действие 7-е. Противники повержены. Вы победили."
+                    line = "7) Противники повержены. Вы победили."
                 else:
                     battle["status"] = "awaiting_continue"
-                    line = "Действие 7-е. Битва продолжается."
+                    line = "7) Битва продолжается."
             log.append(line)
             if len(log) > 24:
                 del log[:-24]
@@ -1057,6 +1061,12 @@ class BlackCastleBot:
                     await self._acknowledge_callback(callback_id)
                 return
             state = self._get_or_create_state(player_id)
+            logger.info(
+                "BlackCastle callback received (action=%s, view=%s, step=%s)",
+                action,
+                state.get("view"),
+                state.get("step"),
+            )
             callback_message = callback.get("message") or {}
             self._record_button_press(callback, player_id, state, action)
             callback_photo = callback_message.get("photo")
@@ -1217,6 +1227,11 @@ class BlackCastleBot:
             elif action.startswith("blackcastle:battle:start:"):
                 if (route_choice is None or route_source_step is None
                         or state.get("view") != "step" or state.get("step") != route_source_step):
+                    logger.warning(
+                        "Rejected BlackCastle battle start (step=%s, view=%s, route_step=%s, route_found=%s)",
+                        state.get("step"), state.get("view"), route_source_step,
+                        route_choice is not None,
+                    )
                     return
                 if not self._is_battle_route(ROUTE_BUTTON_SUFFIX.sub(
                     "", str(route_choice.get("button_text") or "")
@@ -1225,6 +1240,10 @@ class BlackCastleBot:
                 paragraph = self.game_store.get_paragraph(route_source_step)
                 enemies = self._battle_enemies(str((paragraph or {}).get("body") or ""))
                 if not enemies:
+                    logger.warning(
+                        "Rejected BlackCastle battle start because no enemy stats were parsed (step=%s)",
+                        route_source_step,
+                    )
                     return
                 required_item = route_choice.get("required_item")
                 if required_item and not self._consume_item(state, str(required_item)):
@@ -1608,9 +1627,10 @@ class BlackCastleBot:
                         # A stale inline message or other per-update failure must
                         # not hold every later player message behind it.
                         logger.warning(
-                            "BlackCastle update processing failed (update %s, %s)",
+                            "BlackCastle update processing failed (update %s, %s: %s)",
                             update.get("update_id"),
                             type(exc).__name__,
+                            str(exc).replace(self.token, "<redacted>")[:240],
                         )
                     self.game_store.set_setting("kniga_igra_update_offset", str(offset))
             except asyncio.CancelledError:

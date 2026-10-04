@@ -195,7 +195,12 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(len(store.state["battle"]["log"]), 7)
             self.assertEqual(pause.await_count, 7)
             self.assertIn("12 + 8 + 2 - 1 = 21", store.state["battle"]["log"][1])
-            self.assertIn("Действие 7-е", store.state["battle"]["log"][-1])
+            self.assertIn("7)", store.state["battle"]["log"][-1])
+            self.assertTrue(all(
+                line.startswith(f"{index})")
+                for index, line in enumerate(store.state["battle"]["log"], start=1)
+            ))
+            self.assertFalse(any("Действие " in line for line in store.state["battle"]["log"]))
             finish = {"callback_query": {
                 "id": "finish-fight", "from": {"id": 42},
                 "data": "blackcastle:battle:finish",
@@ -204,6 +209,40 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot.process_update(finish))
             self.assertEqual(store.state["step"], 189)
             self.assertEqual(bot.visible_state["step"], 189)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_inline_battle_edits_caption_once_per_numbered_action(self):
+        bot, store = make_bot()
+        body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 2\nЕсли вы победили, то 189."
+        choice = {"choice_id": "route_01", "button_text": "Вступить в бой — 189",
+                  "target_paragraph": 189, "required_item": None}
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[558] = [choice]
+        store.state.update({"step": 558, "view": "step"})
+
+        async def edit_inline(inline_message_id, state):
+            await BlackCastleBot._edit_inline_screen(bot, inline_message_id, state)
+            bot.visible_state = json.loads(json.dumps(state))
+
+        bot._edit_inline_screen = edit_inline
+        start = {"callback_query": {
+            "id": "inline-fight", "from": {"id": 42},
+            "inline_message_id": "inline-message-1",
+            "data": "blackcastle:battle:start:558:route_01",
+        }}
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(start))
+
+            captions = [payload["caption"] for method, payload in bot.calls
+                        if method == "editMessageCaption"]
+            self.assertEqual(len(captions), 8)  # battle screen, then each of seven actions
+            for index, caption in enumerate(captions[1:], start=1):
+                lines = caption.splitlines()
+                self.assertTrue(lines[-1].startswith(f"{index})"))
+            self.assertEqual(store.state["battle"]["status"], "won")
         finally:
             bot._test_tempdir.cleanup()
 
