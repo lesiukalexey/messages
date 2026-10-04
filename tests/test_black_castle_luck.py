@@ -129,7 +129,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         for line in descriptions:
             with self.subTest(line=line):
                 self.assertEqual(
-                    BlackCastleBot._format_battle_line(line), f"<b>{line}</b>"
+                    BlackCastleBot._format_battle_line(line), f"<blockquote>{line}</blockquote>"
                 )
 
         plain_lines = (
@@ -147,6 +147,19 @@ class BlackCastleLuckTest(unittest.TestCase):
                 formatted = BlackCastleBot._format_battle_line(line)
                 self.assertNotIn("<b>", formatted)
                 self.assertNotIn("<i>", formatted)
+
+        self.assertEqual(
+            BlackCastleBot._format_battle_line("ВЫНОСЛИВОСТЬ Гигантский Паук: 20 → 18"),
+            "Выносливость Гигантский Паук: 20 ❤️ → 18 ❤️",
+        )
+        self.assertEqual(
+            BlackCastleBot._format_battle_line("Ваша ВЫНОСЛИВОСТЬ: 20 → 18"),
+            "Выносливость: 20 ❤️ → 18 ❤️",
+        )
+        self.assertEqual(
+            BlackCastleBot._format_battle_line("ВЫНОСЛИВОСТЬ Копии: 20 → 18"),
+            "Выносливость Копии: 20 ❤️ → 18 ❤️",
+        )
 
     def test_battle_phrase_bank_covers_every_book_enemy_and_generic_phase(self):
         book_enemy_keys = {
@@ -348,8 +361,9 @@ class BlackCastleLuckTest(unittest.TestCase):
             captions = [payload["caption"] for method, payload in bot.calls
                         if method == "editMessageCaption"]
             self.assertEqual(len(captions), 8)  # battle screen, then each of seven actions
-            self.assertRegex(captions[1], r"<b>Гигантский Паук (резко бросается|стремительно перебирает)")
+            self.assertRegex(captions[1], r"<blockquote>Гигантский Паук (резко бросается|стремительно перебирает)")
             self.assertNotIn("<i>", "".join(captions))
+            self.assertNotIn("<b>", "".join(captions))
             self.assertNotIn("<b>Битва", captions[0])
             self.assertNotIn("<b>Мастерство", captions[1])
             self.assertNotIn("<b>СИЛА УДАРА", captions[1])
@@ -358,10 +372,10 @@ class BlackCastleLuckTest(unittest.TestCase):
                 captions[1],
             )
             self.assertIn("20 против 10", captions[3])
-            self.assertRegex(captions[2], r"<b>Вы (смещаетесь|перехватываете|уходите)")
+            self.assertRegex(captions[2], r"<blockquote>Вы (смещаетесь|перехватываете|уходите)")
             self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", captions[2])
             self.assertNotIn("<b>Ваш бросок", captions[2])
-            self.assertIn("Выносливость Гигантский Паук: 2 → 0 ❤️", captions[4])
+            self.assertIn("Выносливость Гигантский Паук: 2 ❤️ → 0 ❤️", captions[4])
             self.assertIn("ВЫНОСЛИВОСТЬ после раунда:\nВы — 18 ❤️\nГигантский Паук — 0 ❤️", captions[6])
             self.assertIn("Вы — 18 ❤️", captions[6])
             self.assertNotIn("<b>ВЫНОСЛИВОСТЬ после раунда:", captions[6])

@@ -295,9 +295,14 @@ class BlackCastleBot:
         )
         if stamina_change:
             who = stamina_change.group(1)
-            is_player = who in {"Ваша ВЫНОСЛИВОСТЬ", "ВЫНОСЛИВОСТЬ Копии"}
-            label = "Выносливость" if is_player else f"Выносливость {who.removeprefix('ВЫНОСЛИВОСТЬ ')}"
-            return f"{html.escape(label)}: {stamina_change.group(2)} → {stamina_change.group(3)} ❤️"
+            if who == "Ваша ВЫНОСЛИВОСТЬ":
+                label = "Выносливость"
+            else:
+                label = f"Выносливость {who.removeprefix('ВЫНОСЛИВОСТЬ ')}"
+            return (
+                f"{html.escape(label)}: {stamina_change.group(2)} ❤️ → "
+                f"{stamina_change.group(3)} ❤️"
+            )
 
         escaped = html.escape(line)
         is_formula_or_stat = (
@@ -307,7 +312,7 @@ class BlackCastleBot:
             or re.search(r"\b\d+\s+против\s+\d+\b", line, re.IGNORECASE)
             or line.startswith("Выберите противника")
         )
-        return escaped if is_formula_or_stat else f"<b>{escaped}</b>"
+        return escaped if is_formula_or_stat else f"<blockquote>{escaped}</blockquote>"
 
     def _screen(self, state: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]], bool]:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
