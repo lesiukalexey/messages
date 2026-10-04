@@ -16,6 +16,7 @@ class BlackCastleStore:
         if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", self.database):
             raise ValueError("BLACK_CASTLE_DATABASE must be a simple MySQL database name")
         self.connection = self._connect()
+        self._battle_narrative_cache: dict[tuple[str, str], list[str]] | None = None
 
     def _connect(self) -> pymysql.connections.Connection:
         self.connection = pymysql.connect(
@@ -102,6 +103,27 @@ class BlackCastleStore:
                        KEY player_pressed_at (player_id, pressed_at_utc)
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS battle_narrative_templates (
+                       enemy_key VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                       phase VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                       variant_no SMALLINT UNSIGNED NOT NULL,
+                       template_text TEXT NOT NULL,
+                       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                           ON UPDATE CURRENT_TIMESTAMP,
+                       PRIMARY KEY (enemy_key, phase, variant_no),
+                       KEY battle_template_phase (phase, enemy_key)
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            from .black_castle_battle_text import iter_battle_text_rows
+
+            cursor.executemany(
+                """INSERT IGNORE INTO battle_narrative_templates
+                   (enemy_key, phase, variant_no, template_text)
+                   VALUES (%s, %s, %s, %s)""",
+                list(iter_battle_text_rows()),
+            )
+            self._battle_narrative_cache = None
         if scene_path is not None:
             self.seed_opening_scene(scene_path)
         with self.connection.cursor() as cursor:
@@ -202,6 +224,30 @@ class BlackCastleStore:
                 (paragraph_number, choice_id),
             )
             return cursor.fetchone()
+
+    def get_battle_narrative_templates(self, enemy_name: str, phase: str) -> list[str]:
+        """Return the enemy-specific phrase bank or the generic fallback bank."""
+        from .black_castle_battle_text import canonical_enemy_key
+
+        self.ensure_connected()
+        if self._battle_narrative_cache is None:
+            cache: dict[tuple[str, str], list[str]] = {}
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT enemy_key, phase, template_text
+                       FROM battle_narrative_templates
+                       ORDER BY enemy_key, phase, variant_no"""
+                )
+                for row in cursor.fetchall():
+                    cache.setdefault((row["enemy_key"], row["phase"]), []).append(
+                        str(row["template_text"])
+                    )
+            self._battle_narrative_cache = cache
+        key = canonical_enemy_key(enemy_name)
+        return (
+            self._battle_narrative_cache.get((key, phase))
+            or self._battle_narrative_cache.get(("*", phase), [])
+        )
 
     def record_button_press(
         self,
