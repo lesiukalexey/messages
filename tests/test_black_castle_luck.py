@@ -21,7 +21,11 @@ class FakeGameStore:
         self.state = json.loads(json.dumps(state))
 
     def get_paragraph(self, number):
-        return self.paragraph if number == 54 else {"paragraph_number": number, "body": ""}
+        return self.paragraph if number == 54 else {
+            "paragraph_number": number,
+            "body": "",
+            "photo_file_id": "step-photo",
+        }
 
     def get_paragraph_choices(self, number):
         return self.choices if number == 54 else []
@@ -31,6 +35,9 @@ class FakeGameStore:
 
     def record_button_press(self, *args):
         pass
+
+    def get_setting(self, key, default=""):
+        return "default-photo"
 
 
 class LuckBot(BlackCastleBot):
@@ -45,10 +52,17 @@ class LuckBot(BlackCastleBot):
         self.visible_state = json.loads(json.dumps(state))
 
 
+class PhotoBot(BlackCastleBot):
+    async def _call(self, method, payload):
+        self.calls.append((method, payload))
+        return {"message_id": 10}
+
+
 def make_bot(luck=8):
     paragraph = {
         "paragraph_number": 54,
         "body": "ПРОВЕРЬТЕ СВОЮ УДАЧУ. Если вы удачливы, то 558.",
+        "photo_file_id": "step-photo",
     }
     choices = [
         {"choice_id": "route_01", "button_text": "Если вы удачливы — 558", "target_paragraph": 558, "required_item": None},
@@ -121,6 +135,27 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot.process_update(make_callback("route_01", "callback-2")))
             self.assertEqual(store.state["step"], 558)
             self.assertEqual(store.state["characteristics"]["luck"], 7)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_combined_status_screen_uses_default_photo_in_direct_and_inline_delivery(self):
+        template_bot, store = make_bot()
+        bot = PhotoBot("token", None, store, template_bot.scene_path)
+        bot._test_tempdir = template_bot._test_tempdir
+        bot.calls = []
+        state = store.state
+        state["view"] = "status"
+        try:
+            _, _, has_photo = bot._screen(state)
+            self.assertTrue(has_photo)
+            asyncio.run(bot._send_direct_screen(42, 42, state))
+            direct_call = next(call for call in bot.calls if call[0] == "sendPhoto")
+            self.assertEqual(direct_call[1]["photo"], "default-photo")
+
+            bot.calls.clear()
+            asyncio.run(bot._edit_inline_screen("inline-1", state))
+            inline_call = next(call for call in bot.calls if call[0] == "editMessageMedia")
+            self.assertEqual(inline_call[1]["media"]["media"], "default-photo")
         finally:
             bot._test_tempdir.cleanup()
 

@@ -232,7 +232,7 @@ class BlackCastleBot:
             return text, [[{
                 "text": f"К шагу {step}",
                 "callback_data": "blackcastle:back",
-            }]], False
+            }]], view == "status"
 
         if view == "step" and isinstance(step, int):
             paragraph = self.game_store.get_paragraph(step)
@@ -359,6 +359,9 @@ class BlackCastleBot:
         paragraph = self.game_store.get_paragraph(paragraph_number)
         if paragraph and paragraph.get("photo_file_id"):
             return str(paragraph["photo_file_id"])
+        return self._default_photo()
+
+    def _default_photo(self) -> str:
         return self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
 
     @staticmethod
@@ -487,7 +490,14 @@ class BlackCastleBot:
 
         text, keyboard, first_part = self._paged_screen(state, limit=950)
         _, _, has_photo = self._screen(state)
-        photo_id = self._paragraph_photo(int(state.get("step", 1))) if has_photo and first_part else ""
+        if has_photo and first_part:
+            photo_id = (
+                self._default_photo()
+                if state.get("view") == "status"
+                else self._paragraph_photo(int(state.get("step", 1)))
+            )
+        else:
+            photo_id = ""
         if has_photo and first_part and not photo_id:
             text = "Сцена сейчас недоступна. Попробуй написать позже."
             keyboard = [[{"text": "Обновить", "callback_data": "blackcastle:continue"}]]
@@ -528,8 +538,12 @@ class BlackCastleBot:
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
         text, keyboard = self._inline_screen(state)
         payload = {"inline_message_id": inline_message_id, "reply_markup": {"inline_keyboard": keyboard}}
-        if state.get("view") == "step":
-            photo_id = self._paragraph_photo(int(state.get("step", 1)))
+        if state.get("view") in {"step", "status"}:
+            photo_id = (
+                self._default_photo()
+                if state.get("view") == "status"
+                else self._paragraph_photo(int(state.get("step", 1)))
+            )
             if not photo_id:
                 raise RuntimeError("BlackCastle has no paragraph or default photo")
             payload["media"] = {
