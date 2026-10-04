@@ -812,6 +812,66 @@ class BlackCastleBot:
                 player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
             )
 
+    def _recover_interrupted_battle(self, state: dict[str, Any]) -> None:
+        """Restore a continue button when Telegram redelivers an interrupted round callback."""
+        battle = state.get("battle")
+        if not isinstance(battle, dict) or battle.get("status") != "running":
+            return
+        log = battle.setdefault("log", [])
+        if len(log) < 4:
+            log.clear()
+            battle["round_intro"] = "Схватка прервалась до обмена ударами. Противник вновь готовится атаковать."
+            battle["status"] = "awaiting_continue"
+            return
+
+        enemies = battle.get("enemies", [])
+        if not enemies:
+            battle["status"] = "awaiting_continue"
+            log.clear()
+            log.append("Схватка прервалась. Противник готовится атаковать снова.")
+            return
+        display_names = [re.sub(r"\s+", " ", enemy["name"]).strip().title() for enemy in enemies]
+        acting_copy = battle.get("stage") == "copy"
+        actor = battle.get("copy") if acting_copy else state["characteristics"]
+        if len(log) < 6:
+            if acting_copy:
+                log.append(
+                    f"ВЫНОСЛИВОСТЬ после раунда:\nВы — {state['characteristics']['stamina']}\n"
+                    f"Копия — {actor['stamina']}"
+                )
+            else:
+                log.append("ВЫНОСЛИВОСТЬ после раунда:\n" + "\n".join(
+                    [f"Вы — {actor['stamina']}"]
+                    + [f"{display_names[i]} — {enemy['stamina']}" for i, enemy in enumerate(enemies)]
+                ))
+
+        if not acting_copy and int(actor["stamina"]) <= 0:
+            battle["status"] = "lost"
+            log.append("Вы падаете от полученных ран. ВЫНОСЛИВОСТЬ равна нулю — путешествие окончено.")
+        elif acting_copy and int(actor["stamina"]) <= 0:
+            battle["status"] = "awaiting_continue"
+            battle["stage"] = "copy_lost"
+            log.append("Копия пала; её очертания тают в воздухе. Теперь с противником предстоит драться вам.")
+        elif acting_copy and int(enemies[0]["stamina"]) <= 0:
+            if all(int(enemy["stamina"]) <= 0 for enemy in enemies):
+                battle["status"] = "won"
+                log.append("Копия одолевает последнего противника и исчезает. Битва окончена, победа за вами.")
+            else:
+                battle["status"] = "awaiting_continue"
+                battle["stage"] = "copy_won"
+                log.append("Копия одолевает противника и исчезает. С оставшимися врагами предстоит драться вам.")
+        elif all(int(enemy["stamina"]) <= 0 for enemy in enemies):
+            battle["status"] = "won"
+            log.append("Последний противник повержен. Битва окончена, победа за вами.")
+        else:
+            battle["status"] = "awaiting_continue"
+            remaining = [display_names[i] for i, enemy in enumerate(enemies) if enemy["stamina"] > 0]
+            if len(remaining) == 1:
+                enemy = next(enemy for enemy in enemies if int(enemy["stamina"]) > 0)
+                log.append(self._battle_phrase(enemy["name"], "survives", enemy=remaining[0]))
+            else:
+                log.append(f"Оставшиеся противники не отступают: {', '.join(remaining)}. Они готовятся к следующей атаке.")
+
     @staticmethod
     def _spell_button_label(spell: str, *, combat: bool = False) -> str:
         label = f"Заклинание {SPELL_LABELS.get(spell, spell)}"
@@ -1205,8 +1265,14 @@ class BlackCastleBot:
             battle_target_index = None
             battle = state.get("battle")
             if (action == "blackcastle:page_next" and state.get("view") == "battle"
-                    and isinstance(battle, dict) and battle.get("status") == "awaiting_continue"):
-                action = "blackcastle:battle:continue"
+                    and isinstance(battle, dict)):
+                if battle.get("status") == "awaiting_continue":
+                    action = "blackcastle:battle:continue"
+                elif battle.get("status") == "running":
+                    action = "blackcastle:battle:recover_interrupted"
+            elif (action.startswith("blackcastle:battle:continue")
+                    and isinstance(battle, dict) and battle.get("status") == "running"):
+                action = "blackcastle:battle:recover_interrupted"
             if action.startswith("blackcastle:battle:start:"):
                 try:
                     _, _, _, source_text, choice_id = action.split(":", 4)
@@ -1230,6 +1296,8 @@ class BlackCastleBot:
                     battle_target_index = int(action.rsplit(":", 1)[1]) if action.count(":") > 2 else None
                 except ValueError:
                     battle_target_index = None
+            elif action == "blackcastle:battle:recover_interrupted":
+                self._recover_interrupted_battle(state)
             if action.startswith("blackcastle:cast:"):
                 try:
                     _, _, source_text, choice_id, cast_spell = action.split(":", 4)
@@ -1474,6 +1542,9 @@ class BlackCastleBot:
                 if battle.get("status") != "choose_target":
                     battle["status"] = "running"
                     battle_advance = True
+            elif action == "blackcastle:battle:recover_interrupted":
+                # Recovery above already finalized the persisted partial round.
+                pass
             elif action == "blackcastle:battle:finish":
                 battle = state.get("battle")
                 if (state.get("view") != "battle" or not isinstance(battle, dict)

@@ -395,6 +395,56 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_interrupted_inline_battle_restores_continue_button_without_reroll(self):
+        bot, store = make_bot()
+        store.state.update({
+            "step": 558,
+            "view": "battle",
+            "characteristics": {"mastery": 8, "stamina": 15, "luck": 8},
+            "battle": {
+                "source_step": 558,
+                "victory_step": 189,
+                "enemies": [{"name": "ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 6}],
+                "stage": "hero",
+                "status": "running",
+                "round": 2,
+                "log": [
+                    "Паук атакует.",
+                    "Вы готовите выпад.",
+                    "Паук опережает вас.",
+                    "Удар не достигает цели.",
+                    "Вы теряете 2 ВЫНОСЛИВОСТИ: 17 → 15",
+                ],
+                "magic": None,
+                "escape_options": [],
+                "target_index": 0,
+                "inline_message": True,
+            },
+        })
+        callback = {"callback_query": {
+            "id": "recover-inline",
+            "from": {"id": 42},
+            "inline_message_id": "inline-battle",
+            "data": "blackcastle:page_next",
+        }}
+
+        try:
+            with patch("messages.black_castle_bot.random.randint") as roll, \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(callback))
+
+            roll.assert_not_called()
+            battle = store.state["battle"]
+            self.assertEqual(battle["status"], "awaiting_continue")
+            self.assertEqual(len(battle["log"]), 7)
+            self.assertEqual(battle["log"][4], "Вы теряете 2 ВЫНОСЛИВОСТИ: 17 → 15")
+            self.assertIn("Вы — 15", battle["log"][5])
+            self.assertTrue(any("Паук" in line for line in battle["log"][6:]))
+            _, keyboard, _ = bot._screen(store.state)
+            self.assertEqual(keyboard[0][0]["text"], "Продолжить битву")
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_weakness_reduces_enemy_mastery_for_the_battle(self):
         bot, store = make_bot()
         body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 2\nЕсли вы победили, то 189."
