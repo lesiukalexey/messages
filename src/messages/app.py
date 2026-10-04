@@ -1791,8 +1791,6 @@ async def run() -> None:
                 for peer_id in sorted(peer_ids):
                     if not chatrole_test_peer_allowed(peer_id):
                         continue
-                    if chatrole_quiet_for_peer(peer_id):
-                        continue
                     if not await black_castle_folder.refresh(force=True):
                         continue
                     if black_castle_folder.contains(peer_id):
@@ -1817,7 +1815,10 @@ async def run() -> None:
                                 model, prompt, schema, timeout_seconds=20, effort=effort
                             )
 
-                        await chatrole_game.process_due_events(peer_id, generate_chatrole_event)
+                        await chatrole_game.process_due_events(
+                            peer_id, generate_chatrole_event,
+                            quiet_hours=chatrole_quiet_for_peer(peer_id),
+                        )
                         await deliver_chatrole_outbox(peer_id)
             except Exception as exc:
                 logger.exception("ChatRole event scheduler failed (%s)", type(exc).__name__)
@@ -2112,12 +2113,20 @@ async def run() -> None:
                             model, prompt, schema, timeout_seconds=20, effort=effort
                         )
 
-                    result = await chatrole_game.handle_player_message(
-                        peer_id, event.raw_text or "", generate_chatrole
+                    received_at = event.message.date or datetime.now(UTC)
+                    await chatrole_game.process_due_events(
+                        peer_id, generate_chatrole, now=received_at,
+                        quiet_hours=chatrole_quiet_for_peer(peer_id),
+                        physical_only=True,
                     )
-                    # Apply the player's message before overdue deadlines so a
-                    # response sent before a deadline can still cancel it after
-                    # the worker has recovered from an outage.
+                    result = await chatrole_game.handle_player_message(
+                        peer_id, event.raw_text or "", generate_chatrole,
+                        now=received_at,
+                    )
+                    # Resolve short physical deadlines up to the Telegram
+                    # message timestamp first; the player cannot open a door
+                    # after its visitor has already left. Slower overdue story
+                    # events follow the player's action.
                     if not chatrole_quiet_for_peer(peer_id):
                         await chatrole_game.process_due_events(peer_id, generate_chatrole)
                         await deliver_chatrole_outbox(peer_id)
