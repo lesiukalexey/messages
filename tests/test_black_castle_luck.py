@@ -246,6 +246,58 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_direct_continue_keeps_the_same_message_and_previous_battle_log(self):
+        bot, store = make_bot()
+        body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 8\nЕсли вы победили, то 189."
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.state.update({
+            "step": 558,
+            "view": "battle",
+            "direct_message_id": 20,
+            "direct_message_ids": [20],
+            "direct_message_has_photo": False,
+            "battle": {
+                "source_step": 558,
+                "victory_step": 189,
+                "enemies": [{"name": "ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 8}],
+                "stage": "hero",
+                "status": "awaiting_continue",
+                "round": 1,
+                "log": ["1) Предыдущий текст боя сохраняется."],
+                "magic": None,
+                "escape_options": [],
+                "target_index": 0,
+            },
+        })
+
+        async def send_direct(chat_id, player_id, state, previous_message_id=0):
+            await BlackCastleBot._send_direct_screen(
+                bot, chat_id, player_id, state, previous_message_id
+            )
+
+        bot._send_direct_screen = send_direct
+        continue_fight = {"callback_query": {
+            "id": "continue-direct",
+            "from": {"id": 42},
+            "data": "blackcastle:battle:continue",
+            "message": {"message_id": 20, "chat": {"id": 42}},
+        }}
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(continue_fight))
+
+            edits = [payload for method, payload in bot.calls if method == "editMessageText"]
+            self.assertEqual(len(edits), 8)  # refresh current screen plus seven actions
+            self.assertFalse(any(method in {"deleteMessage", "sendMessage", "sendPhoto"}
+                                 for method, _ in bot.calls))
+            self.assertTrue(all(payload["message_id"] == 20 for payload in edits))
+            self.assertTrue(all("Предыдущий текст боя сохраняется." in payload["text"]
+                                for payload in edits))
+            self.assertEqual(store.state["battle"]["round"], 2)
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_weakness_reduces_enemy_mastery_for_the_battle(self):
         bot, store = make_bot()
         body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 2\nЕсли вы победили, то 189."

@@ -336,7 +336,8 @@ class BlackCastleBot:
 
         if view == "battle":
             battle = state.get("battle", {})
-            log = "\n".join(battle.get("log", []))[-850:]
+            log_limit = 850 if battle.get("inline_message") else 3600
+            log = "\n".join(battle.get("log", []))[-log_limit:]
             text = "Битва"
             if log:
                 text += f"\n\n{log}"
@@ -582,7 +583,7 @@ class BlackCastleBot:
         message_id = state.get("direct_message_id")
         if not isinstance(chat_id, int) or not isinstance(message_id, int):
             return
-        text, keyboard, _ = self._paged_screen(state, limit=950)
+        text, keyboard, _ = self._paged_screen(state, limit=950 if inline_message_id else 3900)
         await self._call("editMessageText", {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -851,7 +852,8 @@ class BlackCastleBot:
             old_ids.append(previous_message_id)
         old_ids = list(dict.fromkeys(old_ids))
 
-        text, keyboard, first_part = self._paged_screen(state, limit=950)
+        screen_limit = 3900 if state.get("view") == "battle" else 950
+        text, keyboard, first_part = self._paged_screen(state, limit=screen_limit)
         _, _, has_photo = self._screen(state)
         if has_photo and first_part:
             photo_id = (
@@ -1255,6 +1257,7 @@ class BlackCastleBot:
                     "enemies": enemies,
                     "stage": "copy" if isinstance(magic, dict) and magic.get("spell") == "copy" else "hero",
                     "status": "running",
+                    "inline_message": isinstance(callback.get("inline_message_id"), str),
                     "round": 0,
                     "log": [],
                     "magic": magic,
@@ -1505,12 +1508,25 @@ class BlackCastleBot:
             chat_id = chat.get("id")
             previous_message_id = message.get("message_id")
             if isinstance(chat_id, int):
-                await self._send_direct_screen(
-                    chat_id,
-                    player_id,
-                    state,
-                    previous_message_id if isinstance(previous_message_id, int) else 0,
-                )
+                if (
+                    state.get("view") == "battle"
+                    and not state.get("direct_message_has_photo")
+                    and isinstance(previous_message_id, int)
+                    and previous_message_id > 0
+                ):
+                    state["direct_message_ids"] = [previous_message_id]
+                    state["direct_message_id"] = previous_message_id
+                    state["direct_message_has_photo"] = False
+                    await self._edit_battle_progress(
+                        player_id, state, inline_message_id=None, chat_id=chat_id
+                    )
+                else:
+                    await self._send_direct_screen(
+                        chat_id,
+                        player_id,
+                        state,
+                        previous_message_id if isinstance(previous_message_id, int) else 0,
+                    )
                 if battle_advance:
                     await self._advance_battle_round(
                         player_id,
