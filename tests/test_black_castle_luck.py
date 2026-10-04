@@ -242,11 +242,11 @@ class BlackCastleLuckTest(unittest.TestCase):
         self.assertEqual(set(ENEMY_BATTLE_TEXT), book_enemy_keys)
         for enemy, phases in ENEMY_BATTLE_TEXT.items():
             for phase in ("opening", "wounded", "hit", "survives"):
-                self.assertEqual(len(phases[phase]), 3, f"{enemy} {phase} must have 3 variants")
-                self.assertEqual(len(set(phases[phase])), 3, f"{enemy} {phase} variants must differ")
+                self.assertEqual(len(phases[phase]), 10, f"{enemy} {phase} must have 10 variants")
+                self.assertEqual(len(set(phases[phase])), 10, f"{enemy} {phase} variants must differ")
         for phase, variants in GENERIC_BATTLE_TEXT.items():
-            self.assertEqual(len(variants), 3, f"generic {phase} must have 3 variants")
-            self.assertEqual(len(set(variants)), 3, f"generic {phase} variants must differ")
+            self.assertEqual(len(variants), 10, f"generic {phase} must have 10 variants")
+            self.assertEqual(len(set(variants)), 10, f"generic {phase} variants must differ")
         rows = list(iter_battle_text_rows())
         self.assertTrue(all(row[0] == "*" or row[0] in book_enemy_keys for row in rows))
         banks = {}
@@ -254,9 +254,9 @@ class BlackCastleLuckTest(unittest.TestCase):
             banks.setdefault((enemy_key, phase), []).append(variant_no)
         for key, phases in ENEMY_BATTLE_TEXT.items():
             for phase in phases:
-                self.assertEqual(banks[(key, phase)], [1, 2, 3])
+                self.assertEqual(banks[(key, phase)], list(range(1, 11)))
         for phase in GENERIC_BATTLE_TEXT:
-            self.assertEqual(banks[("*", phase)], [1, 2, 3])
+            self.assertEqual(banks[("*", phase)], list(range(1, 11)))
         for _, _, _, template in rows:
             rendered = template.format(
                 enemy="Гоблин", victim="вас", counterattack="Ваш удар",
@@ -264,11 +264,22 @@ class BlackCastleLuckTest(unittest.TestCase):
                 enemies="Гоблин, Орк",
             )
             self.assertNotIn("{", rendered)
+            for victim, victim_dative in (("вас", "вам"), ("Копию", "Копии")):
+                rendered = template.format(
+                    enemy="Гоблин", victim=victim, victim_dative=victim_dative,
+                    counterattack="Ваш удар", actor="Путник", actor_genitive="путника",
+                    enemies="Гоблин, Орк",
+                )
+                self.assertNotIn("к вас", rendered)
+                self.assertNotIn("к Копию", rendered)
+                self.assertNotIn("за спиной вас", rendered)
+                self.assertNotIn("за спиной Копию", rendered)
+                self.assertNotIn("вокруг Копию", rendered)
 
-    def test_battle_phrase_selects_randomly_from_three_variants(self):
+    def test_battle_phrase_selects_randomly_from_ten_variants(self):
         bot, store = make_bot()
         variants = store.get_battle_narrative_templates("ГИГАНТСКИЙ ПАУК", "opening")
-        self.assertEqual(len(variants), 3)
+        self.assertEqual(len(variants), 10)
         with patch("messages.black_castle_bot.random.choice", side_effect=lambda items: items[-1]) as choose:
             rendered = bot._battle_phrase(
                 "ГИГАНТСКИЙ ПАУК", "opening", enemy="Гигантский Паук", victim="вас"
@@ -1090,7 +1101,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertIn("+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве)", player_roll)
             self.assertIn("= 21 ⚔️", player_roll)
             self.assertEqual(player_roll.count("Ваш бросок"), 1)
-            self.assertRegex(store.state["battle"]["log"][0], r"(резко бросается|стремительно перебирает)")
+            self.assertRegex(store.state["battle"]["log"][0], r"Гигантский Паук .+")
             self.assertIn("21 ⚔️ против 10 ⚔️", store.state["battle"]["log"][2])
             self.assertIn("ВЫНОСЛИВОСТЬ Гигантский Паук: 2 → 0", store.state["battle"]["log"][3])
             self.assertIn("побед", store.state["battle"]["log"][-1].casefold())
@@ -1202,7 +1213,7 @@ class BlackCastleLuckTest(unittest.TestCase):
                         if method == "editMessageCaption"]
             narrated_count = battle_quote_sentence_count(store.state["battle"]["log"])
             self.assertEqual(len(captions), narrated_count + 2)  # initial, each quote line, final details
-            self.assertRegex(captions[1], r"<blockquote>Гигантский Паук (резко бросается|стремительно перебирает)")
+            self.assertRegex(captions[1], r"<blockquote>Гигантский Паук .+</blockquote>")
             self.assertNotIn("<i>", "".join(captions))
             self.assertNotIn("<b>", "".join(captions))
             self.assertNotIn("<b>Битва", captions[0])
