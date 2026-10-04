@@ -296,8 +296,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(len(captions), 8)  # battle screen, then each of seven actions
             self.assertRegex(captions[1], r"(резко бросается|стремительно перебирает)")
             self.assertIn("20 против 10", captions[3])
-            self.assertIn("🕷️ <i>Выносливость Гигантский Паук: 2 → 0</i>", captions[4])
-            self.assertIn("❤️ <b>Выносливость: 18</b>", captions[6])
+            self.assertIn("<i>Выносливость Гигантский Паук: 2 → 0 ❤️</i>", captions[4])
+            self.assertIn("<b>ВЫНОСЛИВОСТЬ после раунда:</b>", captions[6])
+            self.assertIn("Вы — 18 ❤️", captions[6])
+            self.assertIn("<i>Гигантский Паук — 0 ❤️</i>", captions[6])
             self.assertIn("<i>Гигантский Паук", captions[1])
             self.assertIn("<b>Мастерство</b>: 8", captions[1])
             self.assertIn("победа за вами", captions[-1])

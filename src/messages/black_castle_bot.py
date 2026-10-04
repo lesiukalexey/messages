@@ -280,15 +280,15 @@ class BlackCastleBot:
         line = line.strip()
         stamina = re.fullmatch(r"ВЫНОСЛИВОСТЬ после раунда:", line, re.IGNORECASE)
         if stamina:
-            return "<b>Итог раунда</b>"
+            return "<b>ВЫНОСЛИВОСТЬ после раунда:</b>"
         player_stamina = re.fullmatch(r"Вы — (\d+)", line, re.IGNORECASE)
         if player_stamina:
-            return f"❤️ <b>Выносливость: {player_stamina.group(1)}</b>"
+            return f"Вы — {player_stamina.group(1)} ❤️"
         enemy_stamina = re.fullmatch(r"(.+?) — (\d+)", line)
         if enemy_stamina:
             return (
-                f"🕷️ <i>{html.escape(enemy_stamina.group(1))}: "
-                f"{enemy_stamina.group(2)} выносливости</i>"
+                f"<i>{html.escape(enemy_stamina.group(1))} — "
+                f"{enemy_stamina.group(2)} ❤️</i>"
             )
         stamina_change = re.fullmatch(
             r"(Ваша ВЫНОСЛИВОСТЬ|ВЫНОСЛИВОСТЬ (?:Копии|.+?)): (\d+) → (\d+)", line
@@ -297,9 +297,11 @@ class BlackCastleBot:
             who = stamina_change.group(1)
             is_player = who in {"Ваша ВЫНОСЛИВОСТЬ", "ВЫНОСЛИВОСТЬ Копии"}
             label = "Выносливость" if is_player else f"Выносливость {who.removeprefix('ВЫНОСЛИВОСТЬ ')}"
-            icon = "❤️ " if who == "Ваша ВЫНОСЛИВОСТЬ" else "🕷️ " if not is_player else ""
             emphasis = "b" if is_player else "i"
-            return f"{icon}<{emphasis}>{label}: {stamina_change.group(2)} → {stamina_change.group(3)}</{emphasis}>"
+            return (
+                f"<{emphasis}>{label}: {stamina_change.group(2)} → "
+                f"{stamina_change.group(3)} ❤️</{emphasis}>"
+            )
 
         escaped = html.escape(line)
         for label in (
