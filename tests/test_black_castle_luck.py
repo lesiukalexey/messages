@@ -1779,11 +1779,9 @@ class BlackCastleLuckTest(unittest.TestCase):
             "luck": 12, "max_luck": 12,
         })
         full_text, _, _ = bot._screen(store.state)
-        self.assertIn("МАСТЕРСТВО: 12\n", full_text)
-        self.assertIn("ВЫНОСЛИВОСТЬ: 24\n", full_text)
-        self.assertIn("УДАЧА: 12\n", full_text)
-        self.assertNotIn("Максимум 12", full_text)
-        self.assertNotIn("Максимум 24", full_text)
+        self.assertIn("МАСТЕРСТВО: 12 (Максимум 12)", full_text)
+        self.assertIn("ВЫНОСЛИВОСТЬ: 24 (Максимум 24)", full_text)
+        self.assertIn("УДАЧА: 12 (Максимум 12)", full_text)
         bot._test_tempdir.cleanup()
 
     def test_carried_wine_and_food_can_be_used_from_status_screen(self):

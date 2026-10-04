@@ -465,9 +465,7 @@ class BlackCastleBot:
                 initial = self._personal_characteristic_maximum(values, key)
                 current_text = str(value) if value >= initial else f"{value} из {initial}"
                 theoretical_maximum = CHARACTERISTIC_MAXIMUMS[key]
-                if value < theoretical_maximum:
-                    current_text += f" (Максимум {theoretical_maximum})"
-                return current_text
+                return f"{current_text} (Максимум {theoretical_maximum})"
 
             mastery_line = characteristic_text("mastery")
             if self._has_item(state, "Меч Зеленого рыцаря"):
