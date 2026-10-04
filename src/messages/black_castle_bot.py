@@ -206,7 +206,10 @@ class BlackCastleBot:
             "Битва": "⚔️",
         }
         icon = icons.get(title, "📖")
-        formatted = [f"{icon} <b>{html.escape(title)}</b>"] if is_heading else []
+        if is_heading and title == "Битва":
+            formatted = [f"{icon} {html.escape(title)}"]
+        else:
+            formatted = [f"{icon} <b>{html.escape(title)}</b>"] if is_heading else []
         is_list_screen = title in {
             "Характеристики", "Инвентарь", "Характеристики и инвентарь"
         } and is_heading
@@ -280,16 +283,13 @@ class BlackCastleBot:
         line = line.strip()
         stamina = re.fullmatch(r"ВЫНОСЛИВОСТЬ после раунда:", line, re.IGNORECASE)
         if stamina:
-            return "<b>ВЫНОСЛИВОСТЬ после раунда:</b>"
-        player_stamina = re.fullmatch(r"Вы — (\d+)", line, re.IGNORECASE)
+            return "ВЫНОСЛИВОСТЬ после раунда:"
+        player_stamina = re.fullmatch(r"Вы — (\d+)(?: ❤️)?", line, re.IGNORECASE)
         if player_stamina:
             return f"Вы — {player_stamina.group(1)} ❤️"
-        enemy_stamina = re.fullmatch(r"(.+?) — (\d+)", line)
+        enemy_stamina = re.fullmatch(r"(.+?) — (\d+)(?: ❤️)?", line)
         if enemy_stamina:
-            return (
-                f"<i>{html.escape(enemy_stamina.group(1))} — "
-                f"{enemy_stamina.group(2)} ❤️</i>"
-            )
+            return f"{html.escape(enemy_stamina.group(1))} — {enemy_stamina.group(2)} ❤️"
         stamina_change = re.fullmatch(
             r"(Ваша ВЫНОСЛИВОСТЬ|ВЫНОСЛИВОСТЬ (?:Копии|.+?)): (\d+) → (\d+)", line
         )
@@ -297,36 +297,25 @@ class BlackCastleBot:
             who = stamina_change.group(1)
             is_player = who in {"Ваша ВЫНОСЛИВОСТЬ", "ВЫНОСЛИВОСТЬ Копии"}
             label = "Выносливость" if is_player else f"Выносливость {who.removeprefix('ВЫНОСЛИВОСТЬ ')}"
-            emphasis = "b" if is_player else "i"
-            return (
-                f"<{emphasis}>{label}: {stamina_change.group(2)} → "
-                f"{stamina_change.group(3)} ❤️</{emphasis}>"
-            )
+            return f"{html.escape(label)}: {stamina_change.group(2)} → {stamina_change.group(3)} ❤️"
 
-        escaped = html.escape(line)
-        for label in (
-            "СИЛОЙ УДАРА", "СИЛА УДАРА", "Мастерство", "ВЫНОСЛИВОСТЬ",
-            "Бросок", "штраф за бой на дереве", "заклинание Силы",
-        ):
-            escaped = re.sub(
-                re.escape(html.escape(label)),
-                lambda match: f"<b>{match.group(0)}</b>",
-                escaped,
-                flags=re.IGNORECASE,
-            )
-        enemy_names = tuple(ENEMY_BATTLE_TEXT)
-        starts_with_enemy = any(
-            canonical_enemy_key(escaped).startswith(name)
-            for name in enemy_names
-            if name != "*"
-        )
-        is_enemy_line = (
-            ("СИЛА УДАРА:" in line and "Мастерство:" in line)
+        enemy_names = tuple(name for name in ENEMY_BATTLE_TEXT if name != "*")
+        starts_with_enemy = any(canonical_enemy_key(line).startswith(name) for name in enemy_names)
+        is_formula_or_stat = (
+            "Мастерство:" in line or "УДАРА" in line
+            or line.startswith("ВЫНОСЛИВОСТЬ")
             or "получает 2 урона" in line
-            or line.startswith(("Оставшиеся противники", "Последний противник"))
-            or starts_with_enemy
         )
-        return f"<i>{escaped}</i>" if is_enemy_line else escaped
+        is_narrative = (
+            starts_with_enemy
+            or line.startswith((
+                "Удар не достигает цели", "Защита ", "Клинок ",
+                "Удар приходится", "Противники расходятся", "Оставшиеся противники",
+                "Вы теряете", "Копия теряет",
+            ))
+        ) and not is_formula_or_stat
+        escaped = html.escape(line)
+        return f"<b>{escaped}</b>" if is_narrative else escaped
 
     def _screen(self, state: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]], bool]:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))

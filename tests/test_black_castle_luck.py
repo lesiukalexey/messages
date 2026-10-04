@@ -116,6 +116,34 @@ def make_callback(choice_id, callback_id="callback-1"):
 
 
 class BlackCastleLuckTest(unittest.TestCase):
+    def test_battle_formatter_bolds_only_narrative_descriptions(self):
+        descriptions = (
+            "Гигантский Паук резко бросается вперёд, выбрасывая навстречу вас длинные когтистые лапы.",
+            "Удар не достигает цели: Гигантский Паук уклоняется и сохраняет равновесие.",
+            "Паук всё же достаёт вас когтистой лапой.",
+            "Вы теряете 2 ВЫНОСЛИВОСТИ:",
+            "Гигантский Паук пригибается к земле, покачивая лапами, и готовится к следующему броску.",
+        )
+        for line in descriptions:
+            with self.subTest(line=line):
+                self.assertEqual(
+                    BlackCastleBot._format_battle_line(line), f"<b>{line}</b>"
+                )
+
+        plain_lines = (
+            "Гигантский Паук атакует с СИЛОЙ УДАРА 17 (9 + 8).",
+            "СИЛА УДАРА игрока — 12 (5 + 8 - 1)",
+            "ВЫНОСЛИВОСТЬ после раунда:",
+            "Вы — 18 ❤️",
+            "Гигантский Паук — 4 ❤️",
+            "ВЫНОСЛИВОСТЬ: 20 → 18",
+        )
+        for line in plain_lines:
+            with self.subTest(line=line):
+                formatted = BlackCastleBot._format_battle_line(line)
+                self.assertNotIn("<b>", formatted)
+                self.assertNotIn("<i>", formatted)
+
     def test_battle_phrase_bank_covers_every_book_enemy_and_generic_phase(self):
         book_enemy_keys = {
             "дровосек", "летучая мышь", "орк", "гоблин", "дракон", "гигантский паук",
@@ -294,14 +322,16 @@ class BlackCastleLuckTest(unittest.TestCase):
             captions = [payload["caption"] for method, payload in bot.calls
                         if method == "editMessageCaption"]
             self.assertEqual(len(captions), 8)  # battle screen, then each of seven actions
-            self.assertRegex(captions[1], r"(резко бросается|стремительно перебирает)")
+            self.assertRegex(captions[1], r"<b>Гигантский Паук (резко бросается|стремительно перебирает)")
+            self.assertNotIn("<i>", "".join(captions))
+            self.assertNotIn("<b>Мастерство", captions[1])
+            self.assertNotIn("<b>СИЛА УДАРА", captions[1])
             self.assertIn("20 против 10", captions[3])
-            self.assertIn("<i>Выносливость Гигантский Паук: 2 → 0 ❤️</i>", captions[4])
-            self.assertIn("<b>ВЫНОСЛИВОСТЬ после раунда:</b>", captions[6])
+            self.assertIn("Выносливость Гигантский Паук: 2 → 0 ❤️", captions[4])
+            self.assertIn("ВЫНОСЛИВОСТЬ после раунда:\nВы — 18 ❤️\nГигантский Паук — 0 ❤️", captions[6])
             self.assertIn("Вы — 18 ❤️", captions[6])
-            self.assertIn("<i>Гигантский Паук — 0 ❤️</i>", captions[6])
-            self.assertIn("<i>Гигантский Паук", captions[1])
-            self.assertIn("<b>Мастерство</b>: 8", captions[1])
+            self.assertNotIn("<b>ВЫНОСЛИВОСТЬ после раунда:", captions[6])
+            self.assertNotIn("<b>Вы — 18", captions[6])
             self.assertIn("победа за вами", captions[-1])
             self.assertEqual(store.state["battle"]["status"], "won")
         finally:
