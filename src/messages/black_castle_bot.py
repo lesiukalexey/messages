@@ -543,8 +543,7 @@ class BlackCastleBot:
             keyboard = []
             if battle.get("status") == "stage_won":
                 return text, keyboard, False
-            if (battle.get("display_phase") == "narration"
-                    and battle.get("status") in {"running", "choose_target"}):
+            if battle.get("display_phase") == "narration":
                 return text, keyboard, False
             if battle.get("status") == "choose_target":
                 for index, enemy in enumerate(battle.get("enemies", [])):

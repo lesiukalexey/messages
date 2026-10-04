@@ -1035,6 +1035,41 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_battle_actions_are_hidden_until_full_round_details_are_visible(self):
+        bot, store = make_bot()
+        store.state.update({
+            "step": 558,
+            "view": "battle",
+            "battle": {
+                "source_step": 558,
+                "status": "awaiting_continue",
+                "stage": "hero",
+                "display_phase": "narration",
+                "narration_visible_count": 1,
+                "log": [
+                    "Паук бросается вперёд.",
+                    "Расшифровка битвы:",
+                    "ВЫНОСЛИВОСТЬ после раунда:",
+                ],
+                "enemies": [{"name": "ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 6}],
+                "escape_options": [],
+            },
+        })
+        try:
+            text, keyboard, _ = bot._screen(store.state)
+            self.assertIn("Паук бросается вперёд.", text)
+            self.assertNotIn("Расшифровка битвы:", text)
+            self.assertEqual(keyboard, [])
+
+            store.state["battle"]["display_phase"] = "complete"
+            text, keyboard, _ = bot._screen(store.state)
+            labels = [button["text"] for row in keyboard for button in row]
+            self.assertIn("Расшифровка битвы:", text)
+            self.assertIn("ВЫНОСЛИВОСТЬ после раунда:", text)
+            self.assertIn("Продолжить битву", labels)
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_player_message_recovers_interrupted_battle_for_direct_screen(self):
         bot, store = make_bot()
         store.state.update({
