@@ -190,6 +190,9 @@ class BlackCastleBot:
             return html.escape(text)
 
         title = title.strip()
+        if title == "Битва":
+            return BlackCastleBot._format_battle_screen(body)
+
         is_heading = bool(re.fullmatch(
             r"Шаг \d+|Характеристики|Инвентарь|Характеристики и инвентарь|Книга-игра|Битва",
             title,
@@ -281,6 +284,8 @@ class BlackCastleBot:
     @staticmethod
     def _format_battle_line(line: str) -> str:
         line = line.strip()
+        if re.match(r"Вы теряете \d+ ВЫНОСЛИВОСТИ:", line, re.IGNORECASE):
+            return html.escape(line)
         stamina = re.fullmatch(r"ВЫНОСЛИВОСТЬ после раунда:", line, re.IGNORECASE)
         if stamina:
             return "ВЫНОСЛИВОСТЬ после раунда:"
@@ -313,6 +318,27 @@ class BlackCastleBot:
             or line.startswith("Выберите противника")
         )
         return escaped if is_formula_or_stat else f"<blockquote>{escaped}</blockquote>"
+
+    @staticmethod
+    def _format_battle_screen(body: str) -> str:
+        narration: list[str] = []
+        breakdown: list[str] = []
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            formatted = BlackCastleBot._format_battle_line(line)
+            if formatted.startswith("<blockquote>") and formatted.endswith("</blockquote>"):
+                narration.append(formatted[len("<blockquote>"):-len("</blockquote>")])
+            else:
+                breakdown.append(formatted)
+
+        sections = ["⚔️ Битва"]
+        if narration:
+            sections.append("<blockquote>" + "\n".join(narration) + "</blockquote>")
+        if breakdown:
+            sections.append("Расшифровка битвы:\n" + "\n".join(breakdown))
+        return "\n\n".join(sections)
 
     def _screen(self, state: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]], bool]:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))

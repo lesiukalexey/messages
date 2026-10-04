@@ -122,12 +122,17 @@ def make_callback(choice_id, callback_id="callback-1"):
 
 
 class BlackCastleLuckTest(unittest.TestCase):
-    def test_battle_formatter_bolds_only_narrative_descriptions(self):
+    def test_battle_formatter_quotes_narrative_and_keeps_breakdown_plain(self):
+        first_failed_wound = next(
+            template for enemy, phase, variant, template in iter_battle_text_rows()
+            if enemy == "*" and phase == "failed_wound" and variant == 1
+        )
+        self.assertTrue(first_failed_wound.startswith("Ваш удар не достигает цели:"))
+
         descriptions = (
             "Гигантский Паук резко бросается вперёд, выбрасывая навстречу вас длинные когтистые лапы.",
-            "Удар не достигает цели: Гигантский Паук уклоняется и сохраняет равновесие.",
+            "Ваш удар не достигает цели: Гигантский Паук уклоняется и сохраняет равновесие.",
             "Паук всё же достаёт вас когтистой лапой.",
-            "Вы теряете 2 ВЫНОСЛИВОСТИ:",
             "Гигантский Паук пригибается к земле, покачивая лапами, и готовится к следующему броску.",
             "Вы смещаетесь в сторону и готовите ответный выпад.",
             "Удары встречаются и расходятся; в этом обмене никто не ранен.",
@@ -166,6 +171,32 @@ class BlackCastleLuckTest(unittest.TestCase):
             BlackCastleBot._format_battle_line("ВЫНОСЛИВОСТЬ Копии: 20 → 18"),
             "Выносливость Копии: 20 ❤️ → 18 ❤️",
         )
+
+    def test_battle_screen_groups_all_narration_before_plain_breakdown(self):
+        rendered = BlackCastleBot._format_telegram_text(
+            "Битва\n\n"
+            "Паук бросается вперёд.\n"
+            "Паук атакует с СИЛОЙ УДАРА 14.\n"
+            "Ваш выпад оказывается быстрее — 17 против 14.\n"
+            "Ваш удар не достигает цели: Паук уклоняется.\n"
+            "Вы теряете 2 ВЫНОСЛИВОСТИ:\n"
+            "Ваша ВЫНОСЛИВОСТЬ: 20 → 18\n"
+            "Паук пригибается и готовится к новой атаке."
+        )
+
+        self.assertEqual(rendered.count("<blockquote>"), 1)
+        self.assertEqual(rendered.count("</blockquote>"), 1)
+        quote = rendered.split("<blockquote>", 1)[1].split("</blockquote>", 1)[0]
+        self.assertIn("Паук бросается вперёд.", quote)
+        self.assertIn("Ваш удар не достигает цели:", quote)
+        self.assertIn("Паук пригибается", quote)
+        self.assertNotIn("Расшифровка битвы:", quote)
+        breakdown = rendered.split("Расшифровка битвы:\n", 1)[1]
+        self.assertIn("Паук атакует с СИЛОЙ УДАРА 14.", breakdown)
+        self.assertIn("Вы теряете 2 ВЫНОСЛИВОСТИ:", breakdown)
+        self.assertIn("Выносливость: 20 ❤️ → 18 ❤️", breakdown)
+        self.assertNotIn("<blockquote>", breakdown)
+        self.assertLess(rendered.index("<blockquote>"), rendered.index("Расшифровка битвы:"))
 
     def test_battle_phrase_bank_covers_every_book_enemy_and_generic_phase(self):
         book_enemy_keys = {
@@ -378,8 +409,9 @@ class BlackCastleLuckTest(unittest.TestCase):
                 captions[1],
             )
             self.assertIn("20 против 10", captions[3])
-            self.assertRegex(captions[2], r"<blockquote>Вы (смещаетесь|перехватываете|уходите)")
+            self.assertRegex(captions[2], r"\nВы (смещаетесь|перехватываете|уходите).*</blockquote>")
             self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", captions[2])
+            self.assertIn("Расшифровка битвы:", captions[2])
             self.assertNotIn("<b>Ваш бросок", captions[2])
             self.assertIn("Выносливость Гигантский Паук: 2 ❤️ → 0 ❤️", captions[4])
             self.assertIn("ВЫНОСЛИВОСТЬ после раунда:\nВы — 18 ❤️\nГигантский Паук — 0 ❤️", captions[6])

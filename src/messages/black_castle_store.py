@@ -123,6 +123,16 @@ class BlackCastleStore:
                    VALUES (%s, %s, %s, %s)""",
                 list(iter_battle_text_rows()),
             )
+            cursor.execute(
+                """UPDATE battle_narrative_templates
+                   SET template_text = %s
+                   WHERE enemy_key = '*' AND phase = 'failed_wound'
+                     AND variant_no = 1 AND template_text = %s""",
+                (
+                    "Ваш удар не достигает цели: {enemy} уклоняется и сохраняет равновесие.",
+                    "Удар не достигает цели: {enemy} уклоняется и сохраняет равновесие.",
+                ),
+            )
             self._battle_narrative_cache = None
         if scene_path is not None:
             self.seed_opening_scene(scene_path)
