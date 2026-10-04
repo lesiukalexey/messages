@@ -363,15 +363,18 @@ class BlackCastleLuckTest(unittest.TestCase):
     def test_step_33_reveals_goblin_only_after_orc_and_shows_flee_or_fight(self):
         bot, store = make_bot()
         body = (
-            "Орк-часовой бросается на вас и вам приходится драться с ним.\n"
+            "Вы входите внутрь и понимаете, что попали на Заставу, поставленную здесь специально "
+            "для того, чтобы не пропускать таких, как вы. Орк-часовой бросается на вас так "
+            "стремительно, что вы не успеваете применить заклятия, и вам приходится драться с ним.\n"
             "ОРК\nМастерство 6\nВыносливость 8\n"
-            "Если вы убили его, из погреба поднимается Гоблин.\n"
+            "Если вы убили его, то сделали это как раз вовремя: из погреба с бутылкой вина "
+            "поднимается Гоблин. Увидев вас, он бросает бутылку и хватается за боевой топор.\n"
             "ГОБЛИН\nМастерство 7\nВыносливость 5\n"
-            "Во время этого боя можно попробовать убежать (143). "
+            "Во время этого боя вы, если хотите, можете попробовать убежать (143). "
             "Если же вы убили Гоблина, то 239."
         )
         choices = [
-            {"choice_id": "flee", "button_text": "Попробовать убежать — 143",
+            {"choice_id": "flee", "button_text": "Во время этого боя вы, если хотите, можете попробовать… — 143",
              "target_paragraph": 143},
             {"choice_id": "fight_goblin", "button_text": "Если же вы убили Гоблина — 239",
              "target_paragraph": 239},
@@ -383,8 +386,9 @@ class BlackCastleLuckTest(unittest.TestCase):
             text, keyboard, _ = bot._screen(store.state)
             labels = [button["text"].replace("\u00a0", " ") for row in keyboard for button in row]
             self.assertNotIn("ГОБЛИН", text)
-            self.assertEqual(labels[:1], ["К бою"])
+            self.assertEqual(labels.count("К бою"), 1)
             self.assertFalse(any("143" in label or "239" in label for label in labels))
+            self.assertEqual(labels.count("Характеристики и инвентарь"), 1)
 
             store.state["battle_sequence_stage"] = 1
             text, keyboard, _ = bot._screen(store.state)

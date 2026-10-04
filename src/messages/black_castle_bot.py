@@ -646,6 +646,7 @@ class BlackCastleBot:
             )
             keyboard = []
             battle_button_label = "К бою" if sequence_chunks else "Вступить в бой"
+            battle_button_added = False
             if not enemies:
                 for option in loot_options:
                     loot_id = str(option.get("loot_id") or "")
@@ -662,8 +663,20 @@ class BlackCastleBot:
                 source_label = ROUTE_BUTTON_SUFFIX.sub(
                     "", str(choice["button_text"])
                 ).strip()
-                if sequence_chunks and sequence_stage == 0 and self._is_escape_route(source_label):
+                choice_is_for_later_stage = bool(sequence_chunks) and any(
+                    stage_index > sequence_stage
+                    and re.search(rf"(?<!\d){target}(?!\d)", stage_body)
+                    for stage_index, stage_body in enumerate(sequence_chunks)
+                )
+                if choice_is_for_later_stage and not self._is_battle_route(source_label):
                     continue
+                choice_stage_body = next((
+                    stage_body for stage_body in sequence_chunks
+                    if re.search(rf"(?<!\d){target}(?!\d)", stage_body)
+                ), display_body)
+                choice_is_escape = self._is_escape_choice(
+                    source_label, target, choice_stage_body
+                )
                 spell_options = self._route_spell_options(source_label, display_body)
                 if enemies and spell_options:
                     if not isinstance(prepared_magic, dict):
@@ -673,17 +686,20 @@ class BlackCastleBot:
                                     "text": self._spell_button_label(spell, combat=True),
                                     "callback_data": f"blackcastle:cast:{step}:{choice['choice_id']}:{spell}",
                                 }])
-                    if self._is_battle_route(source_label):
+                    if self._is_battle_route(source_label) and not battle_button_added:
                         keyboard.append([{
                             "text": battle_button_label,
                             "callback_data": f"blackcastle:battle:start:{step}:{choice['choice_id']}",
                         }])
+                        battle_button_added = True
                     continue
                 if enemies and self._is_battle_route(source_label):
-                    keyboard.append([{
-                        "text": battle_button_label,
-                        "callback_data": f"blackcastle:battle:start:{step}:{choice['choice_id']}",
-                    }])
+                    if not battle_button_added:
+                        keyboard.append([{
+                            "text": battle_button_label,
+                            "callback_data": f"blackcastle:battle:start:{step}:{choice['choice_id']}",
+                        }])
+                        battle_button_added = True
                     continue
                 if spell_options:
                     available = [
@@ -724,7 +740,7 @@ class BlackCastleBot:
                 else:
                     wording = (
                         "Попробовать убежать"
-                        if sequence_chunks and sequence_stage > 0 and self._is_escape_route(source_label)
+                        if sequence_chunks and sequence_stage > 0 and choice_is_escape
                         else str(choice["button_text"])
                     )
                     button_text = self._route_button_text(wording, target)
@@ -1335,6 +1351,18 @@ class BlackCastleBot:
     @staticmethod
     def _is_escape_route(label: str) -> bool:
         return bool(re.search(r"убежать|бежать|сбежать|отступить|бегств", label, re.IGNORECASE))
+
+    @classmethod
+    def _is_escape_choice(cls, label: str, target: int, body: str) -> bool:
+        if cls._is_escape_route(label):
+            return True
+        destination = rf"(?:\({target}\)|[—–-]\s*{target}\b)"
+        escape = r"(?:убежать|бежать|сбежать|отступить|бегств)"
+        return bool(re.search(
+            rf"(?:{escape}[^.!?\n]{{0,80}}{destination}|{destination}[^.!?\n]{{0,80}}{escape})",
+            body,
+            re.IGNORECASE,
+        ))
 
     @staticmethod
     def _route_button_text(label: str, target_paragraph: int) -> str:
