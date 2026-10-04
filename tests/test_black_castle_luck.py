@@ -1909,6 +1909,21 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_preface_button_switches_to_preface_screen(self):
+        bot, store = make_bot()
+        callback = {"callback_query": {
+            "id": "preface-callback", "from": {"id": 42},
+            "data": "blackcastle:preface",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["view"], "preface")
+            self.assertIn("Старое предисловие", bot._screen(store.state)[0])
+            self.assertEqual(bot.visible_state["view"], "preface")
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_preface_cannot_continue_with_unallocated_spell_uses(self):
         bot, store = make_bot()
         store.state["view"] = "preface"

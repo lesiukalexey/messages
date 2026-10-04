@@ -953,6 +953,18 @@ class BlackCastleBot:
     def _default_photo(self) -> str:
         return self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
 
+    def _screen_photo(self, state: dict[str, Any]) -> str:
+        view = state.get("view")
+        if view == "preface":
+            return self.game_store.get_setting(
+                "kniga_igra_black_castle_preface_photo_file_id"
+            ) or self._default_photo()
+        if view == "status":
+            return self.game_store.get_setting(
+                "kniga_igra_black_castle_status_photo_file_id"
+            ) or self._default_photo()
+        return self._paragraph_photo(int(state.get("step", 1)))
+
     @staticmethod
     def _battle_enemies(body: str) -> list[dict[str, Any]]:
         stronger_merchant_blow = bool(re.search(
@@ -1648,11 +1660,7 @@ class BlackCastleBot:
             # battle log in a separate text message below it.
             photo_id = self._paragraph_photo(int(state.get("step", 1)))
         elif has_photo and first_part:
-            photo_id = (
-                self._default_photo()
-                if state.get("view") in {"status", "preface"}
-                else self._paragraph_photo(int(state.get("step", 1)))
-            )
+            photo_id = self._screen_photo(state)
         else:
             photo_id = ""
         if has_photo and first_part and not photo_id:
@@ -1718,11 +1726,7 @@ class BlackCastleBot:
         text, keyboard = self._inline_screen(state)
         payload = {"inline_message_id": inline_message_id, "reply_markup": {"inline_keyboard": keyboard}}
         if state.get("view") in {"step", "status", "preface"}:
-            photo_id = (
-                self._default_photo()
-                if state.get("view") in {"status", "preface"}
-                else self._paragraph_photo(int(state.get("step", 1)))
-            )
+            photo_id = self._screen_photo(state)
             if not photo_id:
                 raise RuntimeError("BlackCastle has no paragraph or default photo")
             payload["media"] = {
@@ -1753,7 +1757,7 @@ class BlackCastleBot:
                 and battle.get("status") == "running"):
             self._recover_interrupted_battle(state)
             self._save_state(player_id, state)
-        photo_id = self._default_photo() if state.get("view") == "preface" else self._paragraph_photo(int(state.get("step", 1)))
+        photo_id = self._screen_photo(state)
         results: list[dict[str, Any]] = []
         if photo_id:
             text, keyboard = self._inline_screen(state)
@@ -2855,12 +2859,16 @@ class BlackCastleBot:
         text = str(message.get("text") or message.get("caption") or "").strip()
         command = text.split(maxsplit=1)[0].split("@", maxsplit=1)[0] if text else ""
         photos = message.get("photo")
-        photo_target = None
-        if command.startswith("/blackcastle_photo") and len(text.split()) == 2:
-            try:
-                photo_target = int(text.split()[1])
-            except ValueError:
-                photo_target = -1
+        photo_target: int | str | None = None
+        if command == "/blackcastle_photo" and len(text.split()) == 2:
+            raw_target = text.split()[1].casefold()
+            if raw_target in {"preface", "status"}:
+                photo_target = raw_target
+            else:
+                try:
+                    photo_target = int(raw_target)
+                except ValueError:
+                    photo_target = -1
         if (
             command == "/blackcastle_photo"
             and sender_id in self.owner_store.learning_owner_ids()
@@ -2874,7 +2882,15 @@ class BlackCastleBot:
                 self.game_store.set_setting("kniga_igra_black_castle_photo_file_id", photo_id)
                 await self._send_message(chat_id, "Фото по умолчанию для BlackCastle сохранено.")
                 logger.info("Registered the default BlackCastle photo for the game bot")
-            elif photo_target > 0 and self.game_store.set_paragraph_photo(photo_target, photo_id):
+            elif photo_target == "preface":
+                self.game_store.set_setting("kniga_igra_black_castle_preface_photo_file_id", photo_id)
+                await self._send_message(chat_id, "Фото предисловия BlackCastle сохранено.")
+                logger.info("Registered the BlackCastle preface photo")
+            elif photo_target == "status":
+                self.game_store.set_setting("kniga_igra_black_castle_status_photo_file_id", photo_id)
+                await self._send_message(chat_id, "Фото характеристик и инвентаря BlackCastle сохранено.")
+                logger.info("Registered the BlackCastle status and inventory photo")
+            elif isinstance(photo_target, int) and photo_target > 0 and self.game_store.set_paragraph_photo(photo_target, photo_id):
                 await self._send_message(chat_id, f"Фото параграфа {photo_target} сохранено.")
                 logger.info("Registered a BlackCastle paragraph photo")
             else:
