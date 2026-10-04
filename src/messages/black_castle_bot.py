@@ -777,7 +777,7 @@ class BlackCastleBot:
             die_one, die_two = enemy_dice[i] or (0, 0)
             formula = (
                 f"{die_one} 🎲 + {die_two} 🎲 + "
-                f"{mastery_base} (база: Мастерство)"
+                f"{mastery_base} 🎯 (база: Мастерство)"
             )
             if mastery_reduction:
                 formula += f" - {mastery_reduction} (заклинание Слабости)"
@@ -789,7 +789,7 @@ class BlackCastleBot:
         mastery_owner = "Мастерство Копии" if acting_copy else "ваше Мастерство"
         player_formula = (
             f"{roll_owner}: {player_die_one} 🎲 + {player_die_two} 🎲 + "
-            f"{player_mastery} (база: {mastery_owner})"
+            f"{player_mastery} 🎯 (база: {mastery_owner})"
         )
         if strength_bonus:
             player_formula += " + 2 (бонус заклинания Силы)"
