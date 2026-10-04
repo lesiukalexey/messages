@@ -360,6 +360,84 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_step_33_reveals_goblin_only_after_orc_and_shows_flee_or_fight(self):
+        bot, store = make_bot()
+        body = (
+            "Орк-часовой бросается на вас и вам приходится драться с ним.\n"
+            "ОРК\nМастерство 6\nВыносливость 8\n"
+            "Если вы убили его, из погреба поднимается Гоблин.\n"
+            "ГОБЛИН\nМастерство 7\nВыносливость 5\n"
+            "Во время этого боя можно попробовать убежать (143). "
+            "Если же вы убили Гоблина, то 239."
+        )
+        choices = [
+            {"choice_id": "flee", "button_text": "Попробовать убежать — 143",
+             "target_paragraph": 143},
+            {"choice_id": "fight_goblin", "button_text": "Если же вы убили Гоблина — 239",
+             "target_paragraph": 239},
+        ]
+        store.paragraphs[33] = {"paragraph_number": 33, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[33] = choices
+        store.state.update({"step": 33, "view": "step"})
+        try:
+            text, keyboard, _ = bot._screen(store.state)
+            labels = [button["text"].replace("\u00a0", " ") for row in keyboard for button in row]
+            self.assertNotIn("ГОБЛИН", text)
+            self.assertEqual(labels[:1], ["К бою"])
+            self.assertFalse(any("143" in label or "239" in label for label in labels))
+
+            store.state["battle_sequence_stage"] = 1
+            text, keyboard, _ = bot._screen(store.state)
+            labels = [button["text"].replace("\u00a0", " ") for row in keyboard for button in row]
+            self.assertIn("ГОБЛИН", text)
+            self.assertEqual(labels[:2], ["Попробовать убежать — 143", "К бою"])
+            self.assertNotIn("239", labels)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_winning_first_step_33_battle_opens_the_goblin_stage(self):
+        bot, store = make_bot()
+        body = (
+            "Орк-часовой бросается на вас и вам приходится драться с ним.\n"
+            "ОРК\nМастерство 6\nВыносливость 8\n"
+            "Если вы убили его, из погреба поднимается Гоблин.\n"
+            "ГОБЛИН\nМастерство 7\nВыносливость 5\n"
+            "Во время этого боя можно попробовать убежать (143). "
+            "Если же вы убили Гоблина, то 239."
+        )
+        store.paragraphs[33] = {"paragraph_number": 33, "body": body, "photo_file_id": "step-photo"}
+        store.state.update({
+            "step": 33, "view": "battle",
+            "battle": {
+                "source_step": 33, "status": "running", "stage": "hero",
+                "sequence_stage_index": 0, "sequence_stage_count": 2,
+                "enemies": [{"name": "ОРК", "mastery": 6, "stamina": 2}],
+                "round": 0, "log": [], "magic": None,
+            },
+        })
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot._advance_battle_round(
+                    42, store.state, inline_message_id="inline-33", chat_id=None
+                ))
+            self.assertNotIn("battle", store.state)
+            self.assertEqual(store.state["view"], "step")
+            self.assertEqual(store.state["battle_sequence_stage"], 1)
+            self.assertIn("ГОБЛИН", bot._screen(store.state)[0])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_step_539_keeps_both_goblins_in_one_battle(self):
+        body = (
+            "Гоблин успевает позвать на помощь. Вам же приходится обнажать меч и драться.\n"
+            "ГОБЛИН\nМастерство 4\nВыносливость 7\n"
+            "Как только вы убиваете Гоблина, из дома появляется еще один.\n"
+            "ВТОРОЙ ГОБЛИН\nМастерство 8\nВыносливость 9"
+        )
+        self.assertEqual(BlackCastleBot._battle_sequence_chunks(539, body), [])
+        self.assertEqual(len(BlackCastleBot._battle_enemies(body)), 2)
+
     def test_all_take_anything_pages_offer_each_loot_choice_and_keep_their_routes(self):
         bot, store = make_bot()
         expected_routes = {187: 47, 189: 19, 335: 46, 484: 308, 573: 561}
@@ -1333,6 +1411,68 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(store.state["characteristics"]["stamina"], 24)
             self.assertEqual(store.state["water_sips"], 2)
             self.assertIn("глоток не потрачен", bot.calls[0][1]["text"])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_healing_spell_is_available_on_status_screen_and_restores_eight_stamina(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "status", "spells": {"healing": 1},
+            "characteristics": {"mastery": 8, "stamina": 18, "luck": 8},
+        })
+        try:
+            _, keyboard, _ = bot._screen(store.state)
+            healing = [button for row in keyboard for button in row
+                       if button["callback_data"] == "blackcastle:spell:healing"]
+            self.assertEqual(len(healing), 1)
+            self.assertEqual(healing[0]["text"], "Заклинание Исцеления (+8 Выносливости)")
+            callback = {"callback_query": {
+                "id": "heal-once", "from": {"id": 42},
+                "data": "blackcastle:spell:healing",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 24)
+            self.assertEqual(store.state["spells"]["healing"], 0)
+            self.assertFalse(any(
+                button["callback_data"] == "blackcastle:spell:healing"
+                for row in bot._screen(store.state)[1] for button in row
+            ))
+            self.assertIn("восстановило 6", bot.calls[0][1]["text"])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_healing_spell_is_safe_at_maximum_and_unavailable_during_battle(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "status", "spells": {"healing": 1},
+            "characteristics": {"mastery": 8, "stamina": 24, "luck": 8},
+        })
+        try:
+            self.assertTrue(any(
+                button["callback_data"] == "blackcastle:spell:healing"
+                for row in bot._screen(store.state)[1] for button in row
+            ))
+            callback = {"callback_query": {
+                "id": "heal-at-max", "from": {"id": 42},
+                "data": "blackcastle:spell:healing",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 24)
+            self.assertEqual(store.state["spells"]["healing"], 1)
+            self.assertIn("заклинание не потрачено", bot.calls[0][1]["text"])
+            store.state["battle"] = {"status": "awaiting_continue"}
+            store.state["characteristics"]["stamina"] = 12
+            self.assertFalse(any(
+                button["callback_data"] == "blackcastle:spell:healing"
+                for row in bot._screen(store.state)[1] for button in row
+            ))
+            callback["callback_query"]["id"] = "heal-during-battle"
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 12)
+            self.assertEqual(store.state["spells"]["healing"], 1)
+            self.assertIn("Во время сражения", bot.calls[1][1]["text"])
         finally:
             bot._test_tempdir.cleanup()
 
