@@ -324,7 +324,7 @@ class BlackCastleBot:
     @staticmethod
     def _route_button_text(label: str, target_paragraph: int) -> str:
         wording = ROUTE_BUTTON_SUFFIX.sub("", str(label)).strip() or "Продолжить"
-        suffix = f" — {target_paragraph}"
+        suffix = f"\u00a0—\u00a0{target_paragraph}"
         wording_limit = ROUTE_BUTTON_MAX_LENGTH - len(suffix)
         if len(wording) > wording_limit:
             clipped = wording[:wording_limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
