@@ -336,6 +336,19 @@ class BlackCastleBot:
     @staticmethod
     def _route_button_text(label: str, target_paragraph: int) -> str:
         wording = ROUTE_BUTTON_SUFFIX.sub("", str(label)).strip() or "Продолжить"
+        if wording.casefold().startswith("если вы удачливы"):
+            wording = "Проверить удачу"
+        spell = re.fullmatch(
+            r"(?:заклинание|заклятие)?\s*(левитации|огня|иллюзии|силы|слабости|копии|исцеления|плавания)",
+            wording,
+            re.IGNORECASE,
+        ) or re.search(
+            r"(?:заклин\w*|заклят\w*)\s+(левитации|огня|иллюзии|силы|слабости|копии|исцеления|плавания)\b",
+            wording,
+            re.IGNORECASE,
+        )
+        if spell:
+            wording = f"Заклинание {spell.group(1).capitalize()}"
         suffix = f"\u00a0—\u00a0{target_paragraph}"
         wording_limit = ROUTE_BUTTON_MAX_LENGTH - len(suffix)
         if len(wording) > wording_limit:
