@@ -658,8 +658,10 @@ class BlackCastleBot:
                 text += "\n\nВы уже использовали или взяли: " + ", ".join(claimed_names) + "."
             enemies = self._battle_enemies(display_body)
             prepared_magic = state.get("combat_magic_pending")
-            if enemies and isinstance(prepared_magic, dict):
-                text += f"\n\nПодготовлено заклинание: {SPELL_LABELS.get(prepared_magic.get('spell'), prepared_magic.get('spell'))}."
+            prepared_spells = self._prepared_combat_spells(prepared_magic)
+            if enemies and prepared_spells:
+                labels = ", ".join(SPELL_LABELS[spell] for spell in prepared_spells)
+                text += f"\n\nПодготовлены заклинания: {labels}."
             luck_checks = state.get("luck_checks")
             luck_result = (
                 luck_checks.get(str(step))
@@ -711,13 +713,13 @@ class BlackCastleBot:
                 )
                 spell_options = self._route_spell_options(source_label, display_body)
                 if enemies and spell_options:
-                    if not isinstance(prepared_magic, dict):
-                        for spell in spell_options:
-                            if int(state.get("spells", INITIAL_SPELLS).get(spell, 0)) > 0:
-                                keyboard.append([{
-                                    "text": self._spell_button_label(spell, combat=True),
-                                    "callback_data": f"blackcastle:cast:{step}:{choice['choice_id']}:{spell}",
-                                }])
+                    for spell in spell_options:
+                        if (spell not in prepared_spells
+                                and int(state.get("spells", INITIAL_SPELLS).get(spell, 0)) > 0):
+                            keyboard.append([{
+                                "text": self._spell_button_label(spell, combat=True),
+                                "callback_data": f"blackcastle:cast:{step}:{choice['choice_id']}:{spell}",
+                            }])
                     if self._is_battle_route(source_label) and not battle_button_added:
                         keyboard.append([{
                             "text": battle_button_label,
@@ -1083,7 +1085,11 @@ class BlackCastleBot:
         weapon_bonus = (
             1 if not acting_copy and self._has_item(state, "Меч Зеленого рыцаря") else 0
         )
-        strength_bonus = 2 if not acting_copy and (battle.get("magic") or {}).get("spell") == "strength" else 0
+        strength_bonus = (
+            2 if not acting_copy
+            and "strength" in self._prepared_combat_spells(battle.get("magic"))
+            else 0
+        )
         attack_penalty = 0 if acting_copy else int(battle.get("player_attack_penalty", 0))
         player_attack = player_roll + player_mastery + weapon_bonus + strength_bonus - attack_penalty
         selected_attack = enemy_attacks[target_index]
@@ -1382,6 +1388,22 @@ class BlackCastleBot:
         if combat and spell in {"strength", "weakness", "copy"}:
             label += " (усиление боя)"
         return label
+
+    @staticmethod
+    def _prepared_combat_spells(magic: Any) -> list[str]:
+        """Normalize current and legacy spell-preparation state."""
+        if isinstance(magic, dict):
+            spells = magic.get("spells")
+            if not isinstance(spells, list):
+                spells = [magic.get("spell")]
+        elif isinstance(magic, list):
+            spells = magic
+        else:
+            spells = []
+        return list(dict.fromkeys(
+            spell for spell in spells
+            if isinstance(spell, str) and spell in INITIAL_SPELLS
+        ))
 
     @staticmethod
     def _route_spell_options(label: str, body: str) -> list[str]:
@@ -2354,17 +2376,18 @@ class BlackCastleBot:
                 if required_item and not self._consume_item(state, str(required_item)):
                     return
                 magic = state.pop("combat_magic_pending", None)
+                magic_spells = self._prepared_combat_spells(magic)
                 battle = {
                     "source_step": route_source_step,
                     "victory_step": int(victory_options[0]["target_paragraph"]),
                     "victory_options": victory_options,
                     "enemies": enemies,
-                    "stage": "copy" if isinstance(magic, dict) and magic.get("spell") == "copy" else "hero",
+                    "stage": "copy" if "copy" in magic_spells else "hero",
                     "status": "running",
                     "inline_message": isinstance(callback.get("inline_message_id"), str),
                     "round": 0,
                     "log": [],
-                    "magic": magic,
+                    "magic": {"spells": magic_spells} if magic_spells else None,
                     "sequence_stage_index": sequence_stage_index,
                     "sequence_stage_count": len(sequence_chunks) if sequence_chunks else 1,
                     "escape_options": [
@@ -2382,7 +2405,7 @@ class BlackCastleBot:
                         re.IGNORECASE,
                     ) else 0,
                 }
-                if isinstance(magic, dict) and magic.get("spell") == "weakness":
+                if "weakness" in magic_spells:
                     for enemy in battle["enemies"]:
                         enemy["mastery"] = max(0, enemy["mastery"] - 2)
                 if battle["stage"] == "copy":
@@ -2546,10 +2569,15 @@ class BlackCastleBot:
                     and self._battle_enemies(str((self.game_store.get_paragraph(source_step) or {}).get("body") or ""))
                 )
                 if is_battle_spell:
-                    if state.get("combat_magic_pending"):
+                    prepared_spells = self._prepared_combat_spells(
+                        state.get("combat_magic_pending")
+                    )
+                    if cast_spell in prepared_spells:
                         return
                     state["spells"][cast_spell] -= 1
-                    state["combat_magic_pending"] = {"spell": cast_spell}
+                    state["combat_magic_pending"] = {
+                        "spells": prepared_spells + [cast_spell],
+                    }
                     state["view"] = "step"
                     state["page_part"] = 0
                 elif luck_check_clicked:

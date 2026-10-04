@@ -346,7 +346,12 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot.process_update(callback))
             self.assertEqual(store.state["step"], 558)
             self.assertEqual(store.state["spells"]["copy"], 0)
-            self.assertEqual(store.state["combat_magic_pending"], {"spell": "copy"})
+            self.assertEqual(store.state["combat_magic_pending"], {"spells": ["copy"]})
+            _, prepared_keyboard, _ = bot._screen(store.state)
+            prepared_labels = [button["text"] for row in prepared_keyboard for button in row]
+            self.assertIn("Заклинание Силы (усиление боя)", prepared_labels)
+            self.assertIn("Заклинание Слабости (усиление боя)", prepared_labels)
+            self.assertIn("Вступить в бой", prepared_labels)
 
             fight = {"callback_query": {
                 "id": "fight-callback", "from": {"id": 42},
@@ -1625,12 +1630,29 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot.process_update(cast))
             self.assertEqual(store.state["step"], 54)
             self.assertEqual(store.state["spells"]["strength"], 0)
-            self.assertEqual(store.state["combat_magic_pending"], {"spell": "strength"})
+            self.assertEqual(store.state["combat_magic_pending"], {"spells": ["strength"]})
+            _, prepared_keyboard, _ = bot._screen(store.state)
+            prepared_labels = [button["text"] for row in prepared_keyboard for button in row]
+            self.assertIn("Заклинание Слабости (усиление боя)", prepared_labels)
+            self.assertFalse(any("Заклинание Силы" in label for label in prepared_labels))
             self.assertEqual(store.state["characteristics"]["luck"], 4)
+
+            cast_weakness = {"callback_query": {
+                "id": "prepare-weakness", "from": {"id": 42},
+                "data": "blackcastle:cast:54:route_03:weakness",
+                "message": {"message_id": 11, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(cast_weakness))
+            self.assertEqual(store.state["spells"]["weakness"], 0)
+            self.assertEqual(
+                store.state["combat_magic_pending"],
+                {"spells": ["strength", "weakness"]},
+            )
             with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
                     patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
                 asyncio.run(bot.process_update(fight))
             self.assertEqual(store.state["battle"]["player_attack_penalty"], 1)
+            self.assertEqual(store.state["battle"]["enemies"][0]["mastery"], 6)
             self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 🎯 (база)", store.state["battle"]["log"][1])
             self.assertIn(
                 "+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве) = 21 ⚔️",
