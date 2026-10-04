@@ -108,7 +108,10 @@ class BlackCastleBot:
             return html.escape(text)
 
         title = title.strip()
-        is_heading = bool(re.fullmatch(r"Шаг \d+|Характеристики|Инвентарь|Книга-игра", title))
+        is_heading = bool(re.fullmatch(
+            r"Шаг \d+|Характеристики|Инвентарь|Характеристики и инвентарь|Книга-игра",
+            title,
+        ))
         if not is_heading:
             body = text
 
@@ -116,11 +119,14 @@ class BlackCastleBot:
             "Шаг 1": "📖",
             "Характеристики": "🎲",
             "Инвентарь": "🎒",
+            "Характеристики и инвентарь": "🎲",
             "Книга-игра": "📚",
         }
         icon = icons.get(title, "📖")
         formatted = [f"{icon} <b>{html.escape(title)}</b>"] if is_heading else []
-        is_list_screen = title in {"Характеристики", "Инвентарь"} and is_heading
+        is_list_screen = title in {
+            "Характеристики", "Инвентарь", "Характеристики и инвентарь"
+        } and is_heading
 
         for block in re.split(r"\n\s*\n", body.strip()):
             block = block.strip()
@@ -199,20 +205,8 @@ class BlackCastleBot:
                 "callback_data": "blackcastle:continue",
             }]], True
 
-        if view == "stats":
+        if view in {"stats", "inventory", "status"}:
             values = state["characteristics"]
-            text = (
-                "Характеристики\n\n"
-                f"МАСТЕРСТВО: {values['mastery']}\n"
-                f"ВЫНОСЛИВОСТЬ: {values['stamina']}\n"
-                f"УДАЧА: {values['luck']}"
-            )
-            return text, [[{
-                "text": "К шагу 1",
-                "callback_data": "blackcastle:continue",
-            }]], False
-
-        if view == "inventory":
             carried_items = [
                 item for item in state.get("items", []) if isinstance(item, str)
             ]
@@ -223,7 +217,12 @@ class BlackCastleBot:
             ]
             bag_listing = "\n".join(f"• {item}" for item in bag_items) or "Пусто"
             text = (
-                "Инвентарь\n\n"
+                "Характеристики и инвентарь\n\n"
+                "Характеристики:\n"
+                f"МАСТЕРСТВО: {values['mastery']}\n"
+                f"ВЫНОСЛИВОСТЬ: {values['stamina']}\n"
+                f"УДАЧА: {values['luck']}\n\n"
+                "Инвентарь:\n"
                 "Снаряжение: меч\n"
                 f"Фляга: {state['water_sips']} глотка; каждый восстанавливает 2 ВЫНОСЛИВОСТИ.\n"
                 f"Заплечный мешок: {len(bag_items)}/{state['bag_capacity']} предметов:\n"
@@ -231,8 +230,8 @@ class BlackCastleBot:
                 f"Золотые: {state['gold']}"
             )
             return text, [[{
-                "text": "К шагу 1",
-                "callback_data": "blackcastle:continue",
+                "text": f"К шагу {step}",
+                "callback_data": "blackcastle:back",
             }]], False
 
         if view == "step" and isinstance(step, int):
@@ -267,18 +266,19 @@ class BlackCastleBot:
                     "callback_data": f"blackcastle:route:{step}:{choice['choice_id']}",
                 }])
             if step == 1:
-                keyboard.extend([
-                    [
-                        {"text": "Предисловие", "callback_data": "blackcastle:preface"},
-                        {"text": "Характеристики", "callback_data": "blackcastle:stats"},
-                    ],
-                    [{"text": "Инвентарь", "callback_data": "blackcastle:inventory"}],
-                ])
+                keyboard.append([{
+                    "text": "Предисловие",
+                    "callback_data": "blackcastle:preface",
+                }])
             elif not keyboard:
                 keyboard.append([{
                     "text": "К шагу 1",
                     "callback_data": "blackcastle:step:1",
                 }])
+            keyboard.append([{
+                "text": "Характеристики и инвентарь",
+                "callback_data": "blackcastle:status",
+            }])
             return text, keyboard, True
 
         state["step"] = 1
@@ -537,6 +537,8 @@ class BlackCastleBot:
                 "blackcastle:preface": "Предисловие",
                 "blackcastle:stats": "Характеристики",
                 "blackcastle:inventory": "Инвентарь",
+                "blackcastle:status": "Характеристики и инвентарь",
+                "blackcastle:back": f"К шагу {state.get('step', 1)}",
                 "blackcastle:continue": "Продолжить",
                 "blackcastle:preface_next": "Читать продолжение",
                 "blackcastle:page_next": "Читать продолжение",
@@ -595,6 +597,12 @@ class BlackCastleBot:
                 state["view"] = "stats"
             elif action == "blackcastle:inventory":
                 state["view"] = "inventory"
+            elif action == "blackcastle:status":
+                state["view"] = "status"
+                state["page_part"] = 0
+            elif action == "blackcastle:back":
+                state["view"] = "step"
+                state["page_part"] = 0
             elif action == "blackcastle:continue":
                 state["view"] = "step"
                 state["step"] = 1
