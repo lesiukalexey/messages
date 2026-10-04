@@ -43,6 +43,10 @@ SPELL_PATTERNS = {
     "healing": re.compile(r"\bисцел\w*", re.IGNORECASE),
     "swimming": re.compile(r"\bплаван\w*", re.IGNORECASE),
 }
+ENEMY_STATS = re.compile(
+    r"(?P<name>^[А-ЯЁ][А-ЯЁ \t-]{1,79})[ \t]*\n[ \t]*Мастерство\s*:?[ \t]*(?P<mastery>\d+)[ \t]*\n[ \t]*Выносливость\s*:?[ \t]*(?P<stamina>\d+)",
+    re.IGNORECASE | re.MULTILINE,
+)
 PREFACE_SPELL_TEXT = """Как и положено в сказках, путешествие начинается перед королевским дворцом. Узнав, зачем вы пришли, стражники провожают вас в Тронный зал, и вы предстаете перед Королем. Обрадованный тем, что есть еще в его королевстве герои, готовые рискнуть даже своей жизнью ради его дочери, он отправляет вас к придворному астрологу и волшебнику, лучшему в королевстве знатоку Белой магии — Майлину. Ведь вам придется сражаться не только с воинами, но и со злыми духами — без волшебства в дороге не обойтись.
 
 Однако даже Майлин не может предвидеть всего могущества Барлада Дэрта, да и времени на учебу у вас совсем мало. Он лишь успевает научить вас самым необходимым заклятиям и дать несколько советов. Вот заклятия, которые вы изучили:
@@ -326,6 +330,56 @@ class BlackCastleBot:
                 "callback_data": "blackcastle:back",
             }]], view == "status"
 
+        if view == "battle":
+            battle = state.get("battle", {})
+            log = "\n".join(battle.get("log", []))[-850:]
+            text = "Битва"
+            if log:
+                text += f"\n\n{log}"
+            else:
+                text += "\n\nПодготовка к бою."
+            keyboard = []
+            if battle.get("status") == "choose_target":
+                for index, enemy in enumerate(battle.get("enemies", [])):
+                    keyboard.append([{
+                        "text": f"Начать бой: {enemy['name']}",
+                        "callback_data": f"blackcastle:battle:begin:{index}",
+                    }])
+            elif battle.get("status") == "awaiting_continue":
+                if battle.get("stage") == "copy_lost":
+                    label = "Продолжить бой за героя"
+                    callback = "blackcastle:battle:continue"
+                    keyboard.append([{"text": label, "callback_data": callback}])
+                elif battle.get("stage") == "copy_won":
+                    keyboard.append([{"text": "Продолжить бой", "callback_data": "blackcastle:battle:continue"}])
+                elif battle.get("stage") == "hero" and len(battle.get("enemies", [])) > 1:
+                    for index, enemy in enumerate(battle["enemies"]):
+                        if enemy.get("stamina", 0) > 0:
+                            keyboard.append([{
+                                "text": f"Продолжить: {enemy['name']}",
+                                "callback_data": f"blackcastle:battle:continue:{index}",
+                            }])
+                else:
+                    label = "Продолжить битву"
+                    callback = "blackcastle:battle:continue"
+                    keyboard.append([{"text": label, "callback_data": callback}])
+            elif battle.get("status") == "won":
+                keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:battle:finish"}])
+            elif battle.get("status") == "lost":
+                keyboard.append([{"text": "Начать сначала", "callback_data": "blackcastle:battle:restart"}])
+            if battle.get("status") == "awaiting_continue":
+                for index, escape in enumerate(battle.get("escape_options", [])):
+                    keyboard.append([{
+                        "text": self._route_button_text(str(escape["button_text"]), int(escape["target_paragraph"])),
+                        "callback_data": f"blackcastle:battle:flee:{index}",
+                    }])
+            return text, keyboard, False
+
+        if view == "game_over":
+            return "Путешествие окончено. Выносливость упала до нуля. Начните игру сначала.", [[{
+                "text": "Начать сначала", "callback_data": "blackcastle:game:restart",
+            }]], False
+
         if view == "step" and isinstance(step, int):
             paragraph = self.game_store.get_paragraph(step)
             if paragraph is None:
@@ -346,6 +400,10 @@ class BlackCastleBot:
                 text += f"\n\n{question}"
 
             choices = self.game_store.get_paragraph_choices(step)
+            enemies = self._battle_enemies(str(body or ""))
+            prepared_magic = state.get("combat_magic_pending")
+            if enemies and isinstance(prepared_magic, dict):
+                text += f"\n\nПодготовлено заклинание: {SPELL_LABELS.get(prepared_magic.get('spell'), prepared_magic.get('spell'))}."
             luck_checks = state.get("luck_checks")
             luck_result = (
                 luck_checks.get(str(step))
@@ -362,6 +420,26 @@ class BlackCastleBot:
                     "", str(choice["button_text"])
                 ).strip()
                 spell_options = self._route_spell_options(source_label, str(body or ""))
+                if enemies and spell_options:
+                    if not isinstance(prepared_magic, dict):
+                        for spell in spell_options:
+                            if int(state.get("spells", INITIAL_SPELLS).get(spell, 0)) > 0:
+                                keyboard.append([{
+                                    "text": f"Заклинание {SPELL_LABELS[spell]}",
+                                    "callback_data": f"blackcastle:cast:{step}:{choice['choice_id']}:{spell}",
+                                }])
+                    if self._is_battle_route(source_label):
+                        keyboard.append([{
+                            "text": "Вступить в бой",
+                            "callback_data": f"blackcastle:battle:start:{step}:{choice['choice_id']}",
+                        }])
+                    continue
+                if enemies and self._is_battle_route(source_label):
+                    keyboard.append([{
+                        "text": "Вступить в бой",
+                        "callback_data": f"blackcastle:battle:start:{step}:{choice['choice_id']}",
+                    }])
+                    continue
                 if spell_options:
                     available = [
                         spell for spell in spell_options
@@ -478,6 +556,143 @@ class BlackCastleBot:
         return self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
 
     @staticmethod
+    def _battle_enemies(body: str) -> list[dict[str, Any]]:
+        return [{
+            "name": re.sub(r"\s+", " ", match.group("name")).strip(),
+            "mastery": int(match.group("mastery")),
+            "stamina": int(match.group("stamina")),
+        } for match in ENEMY_STATS.finditer(body)]
+
+    async def _edit_battle_progress(
+        self,
+        player_id: int,
+        state: dict[str, Any],
+        *,
+        inline_message_id: str | None,
+        chat_id: int | None,
+    ) -> None:
+        self._save_state(player_id, state)
+        if inline_message_id:
+            await self._edit_inline_screen(inline_message_id, state)
+            return
+        message_id = state.get("direct_message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return
+        text, keyboard, _ = self._paged_screen(state, limit=950)
+        await self._call("editMessageText", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": self._format_telegram_text(text),
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": keyboard},
+        })
+
+    async def _advance_battle_round(
+        self,
+        player_id: int,
+        state: dict[str, Any],
+        *,
+        inline_message_id: str | None,
+        chat_id: int | None,
+    ) -> None:
+        battle = state.get("battle")
+        if not isinstance(battle, dict) or battle.get("status") != "running":
+            return
+        enemies = battle.get("enemies", [])
+        if not enemies:
+            return
+        stage = battle.get("stage", "hero")
+        acting_copy = stage == "copy"
+        actor = battle.get("copy") if acting_copy else state["characteristics"]
+        target_index = 0 if acting_copy else int(battle.get("target_index", 0))
+        if target_index >= len(enemies) or enemies[target_index].get("stamina", 0) <= 0:
+            target_index = next((i for i, enemy in enumerate(enemies) if enemy.get("stamina", 0) > 0), 0)
+        target = enemies[target_index]
+        active_enemy_indexes = [0] if acting_copy else [
+            i for i, enemy in enumerate(enemies) if int(enemy.get("stamina", 0)) > 0
+        ]
+        enemy_rolls: list[int | None] = [None] * len(enemies)
+        enemy_attacks = [-1] * len(enemies)
+        for i in active_enemy_indexes:
+            enemy_rolls[i] = random.randint(1, 6) + random.randint(1, 6)
+            enemy_attacks[i] = enemy_rolls[i] + enemies[i]["mastery"]
+        player_roll = random.randint(1, 6) + random.randint(1, 6)
+        player_mastery = actor["mastery"]
+        strength_bonus = 2 if not acting_copy and (battle.get("magic") or {}).get("spell") == "strength" else 0
+        attack_penalty = 0 if acting_copy else int(battle.get("player_attack_penalty", 0))
+        player_attack = player_roll + player_mastery + strength_bonus - attack_penalty
+        selected_attack = enemy_attacks[target_index]
+        player_wins = player_attack > selected_attack
+        enemy_hits = [
+            i for i, enemy_attack in enumerate(enemy_attacks)
+            if enemy_attack > player_attack and enemies[i].get("stamina", 0) > 0
+        ]
+        battle["round"] = int(battle.get("round", 0)) + 1
+        log = battle.setdefault("log", [])
+        event_lines = [
+            "Действие 1-е. СИЛА УДАРА противников: " + "; ".join(
+                (f"{enemy['name']} — {enemy_rolls[i]} + {enemy['mastery']} = {enemy_attacks[i]}"
+                 if enemy_rolls[i] is not None else f"{enemy['name']} уже повержен")
+                for i, enemy in enumerate(enemies)
+            ) + ".",
+            f"Действие 2-е. СИЛА УДАРА {'Копии' if acting_copy else 'игрока'}: "
+            f"{player_roll} + {player_mastery}"
+            f"{' + 2' if strength_bonus else ''}"
+            f"{' - ' + str(attack_penalty) if attack_penalty else ''} = {player_attack}.",
+            (f"Действие 3-е. Ваш удар сильнее удара {target['name']}."
+             if player_wins else f"Действие 3-е. Удар {target['name']} сильнее вашего."
+             if player_attack < selected_attack else "Действие 3-е. СИЛА УДАРА равна: противник парирует удар."),
+            (f"Действие 4-е. Вы ранили {target['name']}; его ВЫНОСЛИВОСТЬ уменьшена на 2."
+             if player_wins else "Действие 4-е. Противник не ранен."),
+            ("Действие 5-е. Вас ранили: " + ", ".join(enemies[i]["name"] for i in enemy_hits) + "."
+             if enemy_hits else "Действие 5-е. Вы не получили ранений."),
+        ]
+
+        for action_number in range(1, 8):
+            await asyncio.sleep(1)
+            if action_number == 4 and player_wins:
+                target["stamina"] = max(0, int(target["stamina"]) - 2)
+                if acting_copy and target["stamina"] == 0:
+                    battle["copy_won"] = True
+            elif action_number == 5 and enemy_hits:
+                actor["stamina"] = max(0, int(actor["stamina"]) - 2 * len(enemy_hits))
+            if action_number <= 5:
+                line = event_lines[action_number - 1]
+            elif action_number == 6:
+                actor_name = "Копия" if acting_copy else "Вы"
+                line = f"Действие 6-е. ВЫНОСЛИВОСТЬ: {actor_name} — {actor['stamina']}; " + "; ".join(
+                    f"{enemy['name']} — {enemy['stamina']}" for enemy in enemies
+                ) + "."
+            else:
+                if not acting_copy and int(actor["stamina"]) <= 0:
+                    battle["status"] = "lost"
+                    line = "Действие 7-е. Выносливость равна нулю. Путешествие окончено."
+                elif acting_copy and int(actor["stamina"]) <= 0:
+                    battle["status"] = "awaiting_continue"
+                    battle["stage"] = "copy_lost"
+                    line = "Действие 7-е. Копия повержена; теперь с врагом предстоит драться вам."
+                elif acting_copy and int(target["stamina"]) <= 0:
+                    if all(int(enemy["stamina"]) <= 0 for enemy in enemies):
+                        battle["status"] = "won"
+                        line = "Действие 7-е. Копия победила противника. Вы победили."
+                    else:
+                        battle["status"] = "awaiting_continue"
+                        battle["stage"] = "copy_won"
+                        line = "Действие 7-е. Копия победила противника и исчезла. С остальными врагами предстоит драться вам."
+                elif all(int(enemy["stamina"]) <= 0 for enemy in enemies):
+                    battle["status"] = "won"
+                    line = "Действие 7-е. Противники повержены. Вы победили."
+                else:
+                    battle["status"] = "awaiting_continue"
+                    line = "Действие 7-е. Битва продолжается."
+            log.append(line)
+            if len(log) > 24:
+                del log[:-24]
+            await self._edit_battle_progress(
+                player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
+            )
+
+    @staticmethod
     def _route_spell_options(label: str, body: str) -> list[str]:
         normalized = label.casefold().replace("ё", "е")
         found = [key for key, pattern in SPELL_PATTERNS.items() if pattern.search(label)]
@@ -503,6 +718,10 @@ class BlackCastleBot:
             r"если(?: вы)? победили?|вступить в бой",
             label.casefold().replace("ё", "е"),
         ))
+
+    @staticmethod
+    def _is_escape_route(label: str) -> bool:
+        return bool(re.search(r"убежать|бежать|сбежать|отступить|бегств", label, re.IGNORECASE))
 
     @staticmethod
     def _route_button_text(label: str, target_paragraph: int) -> str:
@@ -762,12 +981,36 @@ class BlackCastleBot:
                 target_paragraph = int(choice["target_paragraph"])
                 if action.startswith("blackcastle:cast:"):
                     spell_key = parts[4]
-                    label = self._route_button_text(
-                        f"Заклинание {SPELL_LABELS.get(spell_key, spell_key)}", target_paragraph
+                    source_paragraph = self.game_store.get_paragraph(paragraph_number)
+                    in_battle = bool(
+                        self._battle_enemies(str((source_paragraph or {}).get("body") or ""))
                     )
+                    if in_battle:
+                        target_paragraph = None
+                        label = f"Заклинание {SPELL_LABELS.get(spell_key, spell_key)}"
+                    else:
+                        label = self._route_button_text(
+                            f"Заклинание {SPELL_LABELS.get(spell_key, spell_key)}", target_paragraph
+                        )
                 if not label_from_message:
                     if not action.startswith("blackcastle:cast:"):
                         label = self._route_button_text(str(choice["button_text"]), target_paragraph)
+        elif action.startswith("blackcastle:battle:start:"):
+            try:
+                _, _, _, source_text, choice_id = action.split(":", 4)
+                paragraph_number = int(source_text)
+                choice = self.game_store.get_paragraph_choice(paragraph_number, choice_id)
+                if choice:
+                    target_paragraph = int(choice["target_paragraph"])
+                    label = "Вступить в бой"
+            except (ValueError, TypeError):
+                pass
+        elif action.startswith("blackcastle:battle:"):
+            label = {
+                "blackcastle:battle:continue": "Продолжить битву",
+                "blackcastle:battle:finish": "Продолжить",
+                "blackcastle:battle:restart": "Начать сначала",
+            }.get(action, label)
         elif action.startswith("blackcastle:step:"):
             try:
                 target_paragraph = int(action.rsplit(":", 1)[1])
@@ -824,6 +1067,31 @@ class BlackCastleBot:
             route_choice = None
             route_source_step = None
             cast_spell = None
+            battle_advance = False
+            battle_target_index = None
+            if action.startswith("blackcastle:battle:start:"):
+                try:
+                    _, _, _, source_text, choice_id = action.split(":", 4)
+                    route_source_step = int(source_text)
+                    route_choice = self.game_store.get_paragraph_choice(route_source_step, choice_id)
+                except (ValueError, TypeError):
+                    route_choice = None
+            elif action.startswith("blackcastle:battle:begin:"):
+                try:
+                    battle_target_index = int(action.rsplit(":", 1)[1])
+                except ValueError:
+                    battle_target_index = None
+            elif action.startswith("blackcastle:battle:flee:"):
+                try:
+                    battle_target_index = int(action.rsplit(":", 1)[1])
+                except ValueError:
+                    battle_target_index = None
+            elif action.startswith("blackcastle:battle:continue"):
+                battle_advance = True
+                try:
+                    battle_target_index = int(action.rsplit(":", 1)[1]) if action.count(":") > 2 else None
+                except ValueError:
+                    battle_target_index = None
             if action.startswith("blackcastle:cast:"):
                 try:
                     _, _, source_text, choice_id, cast_spell = action.split(":", 4)
@@ -847,6 +1115,9 @@ class BlackCastleBot:
                             raw_label,
                             str((source_paragraph or {}).get("body") or ""),
                         ) and not self._is_battle_route(raw_label)):
+                            route_choice = None
+                        if (self._battle_enemies(str((source_paragraph or {}).get("body") or ""))
+                                and self._is_battle_route(raw_label)):
                             route_choice = None
                 except (ValueError, TypeError):
                     route_choice = None
@@ -943,6 +1214,135 @@ class BlackCastleBot:
                 state["view"] = "step"
                 state["step"] = 1
                 state["page_part"] = 0
+            elif action.startswith("blackcastle:battle:start:"):
+                if (route_choice is None or route_source_step is None
+                        or state.get("view") != "step" or state.get("step") != route_source_step):
+                    return
+                if not self._is_battle_route(ROUTE_BUTTON_SUFFIX.sub(
+                    "", str(route_choice.get("button_text") or "")
+                ).strip()):
+                    return
+                paragraph = self.game_store.get_paragraph(route_source_step)
+                enemies = self._battle_enemies(str((paragraph or {}).get("body") or ""))
+                if not enemies:
+                    return
+                required_item = route_choice.get("required_item")
+                if required_item and not self._consume_item(state, str(required_item)):
+                    return
+                magic = state.pop("combat_magic_pending", None)
+                battle = {
+                    "source_step": route_source_step,
+                    "victory_step": int(route_choice["target_paragraph"]),
+                    "enemies": enemies,
+                    "stage": "copy" if isinstance(magic, dict) and magic.get("spell") == "copy" else "hero",
+                    "status": "running",
+                    "round": 0,
+                    "log": [],
+                    "magic": magic,
+                    "escape_options": [
+                        choice for choice in self.game_store.get_paragraph_choices(route_source_step)
+                        if self._is_escape_route(str(choice.get("button_text") or ""))
+                    ],
+                    "player_attack_penalty": 1 if re.search(
+                        r"уменьшайте вашу СИЛУ УДАРА на\s*1",
+                        str((paragraph or {}).get("body") or ""),
+                        re.IGNORECASE,
+                    ) else 0,
+                }
+                if isinstance(magic, dict) and magic.get("spell") == "weakness":
+                    for enemy in battle["enemies"]:
+                        enemy["mastery"] = max(0, enemy["mastery"] - 2)
+                if battle["stage"] == "copy":
+                    original = battle["enemies"][0]
+                    battle["copy"] = {
+                        "name": f"Копия {original['name']}",
+                        "mastery": original["mastery"],
+                        "stamina": original["stamina"],
+                    }
+                if len(enemies) > 1 and battle["stage"] == "hero":
+                    battle["status"] = "choose_target"
+                state["battle"] = battle
+                state["view"] = "battle"
+                state["page_part"] = 0
+                battle_advance = battle["status"] == "running"
+            elif action.startswith("blackcastle:battle:begin:"):
+                battle = state.get("battle")
+                if (state.get("view") != "battle" or not isinstance(battle, dict)
+                        or battle.get("status") != "choose_target" or battle_target_index is None
+                        or battle_target_index < 0 or battle_target_index >= len(battle.get("enemies", []))):
+                    return
+                battle["target_index"] = battle_target_index
+                battle["status"] = "running"
+                battle_advance = True
+            elif action.startswith("blackcastle:battle:flee:"):
+                battle = state.get("battle")
+                if (state.get("view") != "battle" or not isinstance(battle, dict)
+                        or battle.get("status") != "awaiting_continue" or battle_target_index is None
+                        or battle_target_index < 0 or battle_target_index >= len(battle.get("escape_options", []))):
+                    return
+                escape = battle["escape_options"][battle_target_index]
+                target = int(escape["target_paragraph"])
+                if self.game_store.get_paragraph(target) is None:
+                    return
+                characteristics = state["characteristics"]
+                characteristics["stamina"] = max(0, int(characteristics.get("stamina", 0)) - 2)
+                state.pop("battle", None)
+                if characteristics["stamina"] == 0:
+                    state["view"] = "game_over"
+                else:
+                    state["step"] = target
+                    state["view"] = "step"
+                state["page_part"] = 0
+            elif action == "blackcastle:game:restart":
+                if state.get("view") != "game_over":
+                    return
+                state.clear()
+                state.update(self._new_state())
+            elif action.startswith("blackcastle:battle:continue"):
+                battle = state.get("battle")
+                if (state.get("view") != "battle" or not isinstance(battle, dict)
+                        or battle.get("status") != "awaiting_continue"):
+                    return
+                if battle.get("stage") == "copy_lost":
+                    battle["stage"] = "hero"
+                    battle.setdefault("log", []).append("Копия исчезла. Теперь вы сражаетесь с оставшимися противниками.")
+                    battle["target_index"] = 0
+                    battle["status"] = "running"
+                    battle_advance = True
+                elif battle.get("stage") == "copy_won":
+                    battle["stage"] = "hero"
+                    battle.setdefault("log", []).append("Копия исчезла. Теперь вы сражаетесь с оставшимися противниками.")
+                    if len(battle.get("enemies", [])) > 1:
+                        battle["status"] = "choose_target"
+                        battle_advance = False
+                if battle_target_index is not None:
+                    if battle_target_index < 0 or battle_target_index >= len(battle.get("enemies", [])):
+                        return
+                    if battle["enemies"][battle_target_index].get("stamina", 0) <= 0:
+                        return
+                    battle["target_index"] = battle_target_index
+                if battle.get("status") != "choose_target":
+                    battle["status"] = "running"
+                    battle_advance = True
+            elif action == "blackcastle:battle:finish":
+                battle = state.get("battle")
+                if (state.get("view") != "battle" or not isinstance(battle, dict)
+                        or battle.get("status") != "won"):
+                    return
+                target = int(battle["victory_step"])
+                if self.game_store.get_paragraph(target) is None:
+                    return
+                state.pop("battle", None)
+                state["view"] = "step"
+                state["step"] = target
+                state["page_part"] = 0
+            elif action == "blackcastle:battle:restart":
+                battle = state.get("battle")
+                if (state.get("view") != "battle" or not isinstance(battle, dict)
+                        or battle.get("status") != "lost"):
+                    return
+                state.clear()
+                state.update(self._new_state())
             elif action.startswith("blackcastle:spell:"):
                 try:
                     _, _, spell_key, delta_text = action.split(":", 3)
@@ -983,14 +1383,29 @@ class BlackCastleBot:
                 choice = route_choice
                 if cast_spell:
                     source_paragraph = self.game_store.get_paragraph(source_step)
+                    source_body = str((source_paragraph or {}).get("body") or "")
+                    required_item = choice.get("required_item")
+                    if required_item and not self._has_item(state, str(required_item)):
+                        return
                     permitted = self._route_spell_options(
                         ROUTE_BUTTON_SUFFIX.sub("", str(choice.get("button_text") or "")).strip(),
-                        str((source_paragraph or {}).get("body") or ""),
+                        source_body,
                     )
                     if (cast_spell not in permitted or cast_spell not in INITIAL_SPELLS
                             or int(state.get("spells", {}).get(cast_spell, 0)) <= 0):
                         return
-                if luck_check_clicked:
+                is_battle_spell = bool(
+                    cast_spell
+                    and self._battle_enemies(str((self.game_store.get_paragraph(source_step) or {}).get("body") or ""))
+                )
+                if is_battle_spell:
+                    if state.get("combat_magic_pending"):
+                        return
+                    state["spells"][cast_spell] -= 1
+                    state["combat_magic_pending"] = {"spell": cast_spell}
+                    state["view"] = "step"
+                    state["page_part"] = 0
+                elif luck_check_clicked:
                     result = state.get("luck_checks", {}).get(str(source_step), {})
                     if result.get("lucky"):
                         target_step = int(choice["target_paragraph"])
@@ -1041,8 +1456,17 @@ class BlackCastleBot:
                         return
                     if cast_spell:
                         state.setdefault("spells", dict(INITIAL_SPELLS))[cast_spell] -= 1
-                    state["step"] = target_step
-                    state["view"] = "step"
+                    if self._is_escape_route(source_label):
+                        characteristics = state["characteristics"]
+                        characteristics["stamina"] = max(0, int(characteristics.get("stamina", 0)) - 2)
+                        if characteristics["stamina"] == 0:
+                            state["view"] = "game_over"
+                        else:
+                            state["step"] = target_step
+                            state["view"] = "step"
+                    else:
+                        state["step"] = target_step
+                        state["view"] = "step"
                     state["page_part"] = 0
             else:
                 return
@@ -1052,6 +1476,10 @@ class BlackCastleBot:
             inline_message_id = callback.get("inline_message_id")
             if isinstance(inline_message_id, str):
                 await self._edit_inline_screen(inline_message_id, state)
+                if battle_advance:
+                    await self._advance_battle_round(
+                        player_id, state, inline_message_id=inline_message_id, chat_id=None
+                    )
                 return
             message = callback_message
             chat = message.get("chat") or {}
@@ -1064,6 +1492,13 @@ class BlackCastleBot:
                     state,
                     previous_message_id if isinstance(previous_message_id, int) else 0,
                 )
+                if battle_advance:
+                    await self._advance_battle_round(
+                        player_id,
+                        state,
+                        inline_message_id=None,
+                        chat_id=chat_id,
+                    )
             return
 
         message = update.get("message")

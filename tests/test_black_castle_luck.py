@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from messages.black_castle_bot import BlackCastleBot
 
@@ -123,7 +123,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
-    def test_step_558_offers_each_spell_named_for_the_combat_and_consumes_selected_one(self):
+    def test_step_558_shows_spell_buttons_without_route_numbers_and_prepares_spell(self):
         bot, store = make_bot()
         body = (
             "Вы будете драться, используя либо заклятие Силы, либо заклятие Слабости, "
@@ -138,8 +138,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         _, keyboard, _ = bot._screen(store.state)
         labels = [button["text"].replace("\u00a0", " ") for row in keyboard for button in row]
         self.assertEqual(labels[:4], [
-            "Заклинание Силы — 189", "Заклинание Слабости — 189", "Заклинание Копии — 189",
-            "Вступить в бой — 189",
+            "Заклинание Силы", "Заклинание Слабости", "Заклинание Копии", "Вступить в бой",
         ])
         callback = {"callback_query": {
             "id": "cast-copy", "from": {"id": 42},
@@ -148,18 +147,223 @@ class BlackCastleLuckTest(unittest.TestCase):
         }}
         try:
             asyncio.run(bot.process_update(callback))
-            self.assertEqual(store.state["step"], 189)
+            self.assertEqual(store.state["step"], 558)
             self.assertEqual(store.state["spells"]["copy"], 0)
+            self.assertEqual(store.state["combat_magic_pending"], {"spell": "copy"})
 
-            store.state.update({"step": 558, "spells": {"strength": 1, "weakness": 1, "copy": 1}})
             fight = {"callback_query": {
                 "id": "fight-callback", "from": {"id": 42},
-                "data": "blackcastle:route:558:route_01",
+                "data": "blackcastle:battle:start:558:route_01",
                 "message": {"message_id": 9, "chat": {"id": 42}},
             }}
-            asyncio.run(bot.process_update(fight))
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(fight))
+            self.assertEqual(store.state["view"], "battle")
+            self.assertEqual(store.state["battle"]["stage"], "copy")
+            self.assertEqual(store.state["battle"]["copy"], {
+                "name": "Копия ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 8,
+            })
+            self.assertEqual(store.state["battle"]["enemies"][0]["stamina"], 6)
+            self.assertEqual(store.state["battle"]["status"], "awaiting_continue")
+            self.assertEqual(len(store.state["battle"]["log"]), 7)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_battle_runs_seven_actions_and_finishes_at_victory_paragraph(self):
+        bot, store = make_bot()
+        body = (
+            "Во время боя уменьшайте вашу СИЛУ УДАРА на 1.\nГИГАНТСКИЙ ПАУК\nМастерство 8\n"
+            "Выносливость 2\nЕсли вы победили, то 189."
+        )
+        choice = {"choice_id": "route_01", "button_text": "Вступить в бой — 189",
+                  "target_paragraph": 189, "required_item": None}
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[558] = [choice]
+        store.state.update({"step": 558, "spells": {"strength": 0},
+                            "combat_magic_pending": {"spell": "strength"}})
+        start = {"callback_query": {
+            "id": "start-fight", "from": {"id": 42},
+            "data": "blackcastle:battle:start:558:route_01",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock) as pause:
+                asyncio.run(bot.process_update(start))
+            self.assertEqual(store.state["battle"]["status"], "won")
+            self.assertEqual(len(store.state["battle"]["log"]), 7)
+            self.assertEqual(pause.await_count, 7)
+            self.assertIn("12 + 8 + 2 - 1 = 21", store.state["battle"]["log"][1])
+            self.assertIn("Действие 7-е", store.state["battle"]["log"][-1])
+            finish = {"callback_query": {
+                "id": "finish-fight", "from": {"id": 42},
+                "data": "blackcastle:battle:finish",
+                "message": {"message_id": 10, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(finish))
             self.assertEqual(store.state["step"], 189)
-            self.assertEqual(store.state["spells"]["copy"], 1)
+            self.assertEqual(bot.visible_state["step"], 189)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_weakness_reduces_enemy_mastery_for_the_battle(self):
+        bot, store = make_bot()
+        body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 2\nЕсли вы победили, то 189."
+        choice = {"choice_id": "route_01", "button_text": "Вступить в бой — 189",
+                  "target_paragraph": 189, "required_item": None}
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[558] = [choice]
+        store.state.update({"step": 558, "combat_magic_pending": {"spell": "weakness"}})
+        start = {"callback_query": {
+            "id": "weakness-fight", "from": {"id": 42},
+            "data": "blackcastle:battle:start:558:route_01",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(start))
+            self.assertEqual(store.state["battle"]["enemies"][0]["mastery"], 6)
+            self.assertIn("2 + 6 = 8", store.state["battle"]["log"][0])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_losing_copy_is_followed_by_the_hero_fighting_the_enemy(self):
+        bot, store = make_bot()
+        body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 2\nЕсли вы победили, то 189."
+        choice = {"choice_id": "route_01", "button_text": "Вступить в бой — 189",
+                  "target_paragraph": 189, "required_item": None}
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[558] = [choice]
+        store.state.update({"step": 558, "combat_magic_pending": {"spell": "copy"}})
+        start = {"callback_query": {
+            "id": "copy-fight", "from": {"id": 42},
+            "data": "blackcastle:battle:start:558:route_01",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        continue_fight = {"callback_query": {
+            "id": "continue-after-copy", "from": {"id": 42},
+            "data": "blackcastle:battle:continue",
+            "message": {"message_id": 10, "chat": {"id": 42}},
+        }}
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[6, 6, 1, 1]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(start))
+            self.assertEqual(store.state["battle"]["stage"], "copy_lost")
+            self.assertEqual(store.state["battle"]["copy"]["stamina"], 0)
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(continue_fight))
+            self.assertEqual(store.state["battle"]["stage"], "hero")
+            self.assertEqual(store.state["battle"]["status"], "won")
+            self.assertEqual(store.state["characteristics"]["stamina"], 18)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_battle_allows_book_escape_and_applies_automatic_two_stamina_loss(self):
+        bot, store = make_bot()
+        store.paragraphs[558] = {"paragraph_number": 558, "body": "", "photo_file_id": "step-photo"}
+        store.paragraphs[86] = {"paragraph_number": 86, "body": "", "photo_file_id": "step-photo"}
+        store.state.update({
+            "step": 558, "view": "battle",
+            "battle": {
+                "status": "awaiting_continue", "stage": "hero", "log": ["Битва продолжается."],
+                "enemies": [{"name": "Паук", "mastery": 8, "stamina": 4}],
+                "escape_options": [{"button_text": "Убежать — 86", "target_paragraph": 86}],
+            },
+            "characteristics": {"mastery": 8, "stamina": 5, "luck": 4},
+        })
+        flee = {"callback_query": {
+            "id": "flee-fight", "from": {"id": 42},
+            "data": "blackcastle:battle:flee:0",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(flee))
+            self.assertEqual(store.state["view"], "step")
+            self.assertEqual(store.state["step"], 86)
+            self.assertEqual(store.state["characteristics"]["stamina"], 3)
+            self.assertNotIn("battle", store.state)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_multiple_enemies_require_target_choice_and_can_both_damage_hero(self):
+        bot, store = make_bot()
+        body = (
+            "ОРК-ПЕРВЫЙ\nМастерство 3\nВыносливость 2\n"
+            "ОРК-ВТОРОЙ\nМастерство 9\nВыносливость 4\nЕсли вы победили, то 189."
+        )
+        choice = {"choice_id": "route_01", "button_text": "Вступить в бой — 189",
+                  "target_paragraph": 189, "required_item": None}
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[558] = [choice]
+        store.state.update({"step": 558, "spells": {}})
+        start = {"callback_query": {
+            "id": "multi-start", "from": {"id": 42},
+            "data": "blackcastle:battle:start:558:route_01",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        target = {"callback_query": {
+            "id": "multi-target", "from": {"id": 42},
+            "data": "blackcastle:battle:begin:0",
+            "message": {"message_id": 10, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(start))
+            self.assertEqual(store.state["battle"]["status"], "choose_target")
+            _, keyboard, _ = bot._screen(store.state)
+            self.assertEqual(len(keyboard), 2)
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 1, 1, 1, 1]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(target))
+            self.assertEqual(store.state["battle"]["enemies"][0]["stamina"], 0)
+            self.assertEqual(store.state["characteristics"]["stamina"], 16)
+            self.assertEqual(store.state["battle"]["status"], "awaiting_continue")
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_step_54_spell_is_prepared_and_used_with_its_tree_fight_penalty(self):
+        bot, store = make_bot(luck=5)
+        store.paragraph = {
+            "paragraph_number": 54,
+            "body": (
+                "ПРОВЕРЬТЕ СВОЮ УДАЧУ. Во время боя уменьшайте вашу СИЛУ УДАРА на 1.\n"
+                "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 8\n"
+                "Пользоваться заклятием Огня на дереве неразумно. Вы можете воспользоваться "
+                "заклятиями либо Силы (410), либо Слабости (219). Если вы победили, то 189."
+            ),
+            "photo_file_id": "step-photo",
+        }
+        store.choices = [
+            {"choice_id": "route_01", "button_text": "Если вы удачливы — 558", "target_paragraph": 558, "required_item": None},
+            {"choice_id": "route_02", "button_text": "Силы — 410", "target_paragraph": 410, "required_item": None},
+            {"choice_id": "route_03", "button_text": "Слабости — 219", "target_paragraph": 219, "required_item": None},
+            {"choice_id": "route_04", "button_text": "Вступить в бой — 189", "target_paragraph": 189, "required_item": None},
+        ]
+        store.state["spells"] = {"strength": 1, "weakness": 1}
+        cast = {"callback_query": {
+            "id": "prepare-strength", "from": {"id": 42},
+            "data": "blackcastle:cast:54:route_02:strength",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        fight = {"callback_query": {
+            "id": "start-tree-fight", "from": {"id": 42},
+            "data": "blackcastle:battle:start:54:route_04",
+            "message": {"message_id": 10, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(cast))
+            self.assertEqual(store.state["step"], 54)
+            self.assertEqual(store.state["spells"]["strength"], 0)
+            self.assertEqual(store.state["combat_magic_pending"], {"spell": "strength"})
+            self.assertEqual(store.state["characteristics"]["luck"], 4)
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(fight))
+            self.assertEqual(store.state["battle"]["player_attack_penalty"], 1)
+            self.assertIn("12 + 8 + 2 - 1 = 21", store.state["battle"]["log"][1])
         finally:
             bot._test_tempdir.cleanup()
 
