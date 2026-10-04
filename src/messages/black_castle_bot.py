@@ -699,6 +699,10 @@ class BlackCastleBot:
             templates = GENERIC_BATTLE_TEXT.get(phase, [])
         if not templates:
             return ""
+        if "victim_dative" not in values:
+            values["victim_dative"] = {"вас": "вам", "Копию": "Копии"}.get(
+                values.get("victim", ""), values.get("victim", "")
+            )
         return random.choice(templates).format(**values)
 
     async def _edit_battle_progress(
@@ -787,9 +791,11 @@ class BlackCastleBot:
         display_names = [re.sub(r"\s+", " ", enemy["name"]).strip().title() for enemy in enemies]
         target_name = display_names[target_index]
         victim = "Копию" if acting_copy else "вас"
+        victim_dative = "Копии" if acting_copy else "вам"
         opening = "\n".join(
             self._battle_phrase(
-                enemies[i]["name"], "opening", enemy=display_names[i], victim=victim
+                enemies[i]["name"], "opening", enemy=display_names[i], victim=victim,
+                victim_dative=victim_dative,
             )
             for i in active_enemy_indexes
         )
@@ -1472,6 +1478,7 @@ class BlackCastleBot:
             route_source_step = None
             cast_spell = None
             battle_advance = False
+            battle_started = False
             battle_target_index = None
             battle = state.get("battle")
             if (action == "blackcastle:page_next" and state.get("view") == "battle"
@@ -1490,6 +1497,7 @@ class BlackCastleBot:
                     route_choice = self.game_store.get_paragraph_choice(route_source_step, choice_id)
                 except (ValueError, TypeError):
                     route_choice = None
+                battle_started = True
             elif action.startswith("blackcastle:battle:begin:"):
                 try:
                     battle_target_index = int(action.rsplit(":", 1)[1])
@@ -1919,6 +1927,7 @@ class BlackCastleBot:
             if isinstance(chat_id, int):
                 if (
                     state.get("view") == "battle"
+                    and not battle_started
                     and not state.get("direct_message_has_photo")
                     and isinstance(previous_message_id, int)
                     and previous_message_id > 0

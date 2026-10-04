@@ -134,6 +134,27 @@ class BlackCastleStore:
                     "Ваш удар не достигает цели: {enemy} уклоняется и сохраняет равновесие.",
                 ),
             )
+            cursor.execute(
+                """UPDATE battle_narrative_templates
+                   SET template_text = %s
+                   WHERE enemy_key = 'гигантский паук' AND phase = 'opening'
+                     AND variant_no = 1 AND template_text = %s""",
+                (
+                    "{enemy} резко бросается вперёд и выбрасывает к {victim_dative} длинные когтистые лапы.",
+                    "{enemy} резко бросается вперёд, выбрасывая навстречу {victim} длинные когтистые лапы.",
+                ),
+            )
+            cursor.execute(
+                """UPDATE battle_narrative_templates
+                   SET template_text = %s
+                   WHERE enemy_key = 'гигантский паук' AND phase = 'opening'
+                     AND variant_no = 3
+                     AND template_text = %s""",
+                (
+                    "Гигантский Паук резко бросается к {victim_dative}, выставив вперёд длинные лапы.",
+                    "Гигантский Паук резко бросается к {victim}, выставив вперёд длинные лапы.",
+                ),
+            )
             self._battle_narrative_cache = None
         if scene_path is not None:
             self.seed_opening_scene(scene_path)

@@ -250,7 +250,8 @@ class BlackCastleLuckTest(unittest.TestCase):
         for _, _, _, template in rows:
             rendered = template.format(
                 enemy="Гоблин", victim="вас", counterattack="Ваш удар",
-                actor="Путник", actor_genitive="путника", enemies="Гоблин, Орк",
+                victim_dative="вам", actor="Путник", actor_genitive="путника",
+                enemies="Гоблин, Орк",
             )
             self.assertNotIn("{", rendered)
 
@@ -263,7 +264,9 @@ class BlackCastleLuckTest(unittest.TestCase):
                 "ГИГАНТСКИЙ ПАУК", "opening", enemy="Гигантский Паук", victim="вас"
             )
         choose.assert_called_once_with(variants)
-        self.assertEqual(rendered, variants[-1].format(enemy="Гигантский Паук", victim="вас"))
+        self.assertEqual(rendered, variants[-1].format(
+            enemy="Гигантский Паук", victim="вас", victim_dative="вам"
+        ))
         bot._test_tempdir.cleanup()
 
     def test_merchant_battle_uses_book_three_stamina_wound(self):
@@ -398,6 +401,68 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(bot.visible_state["step"], 189)
         finally:
             bot._test_tempdir.cleanup()
+
+    def test_direct_battle_start_replaces_tracked_step_photos_with_one_battle_photo(self):
+        template_bot, store = make_bot()
+        bot = SequentialMessageBot(
+            template_bot.token, template_bot.owner_store, store, template_bot.scene_path
+        )
+        bot._test_tempdir = template_bot._test_tempdir
+        bot.calls = []
+        body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 2\nЕсли вы победили, то 189."
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[558] = [{
+            "choice_id": "route_01", "button_text": "Вступить в бой — 189",
+            "target_paragraph": 189, "required_item": None,
+        }]
+        store.state.update({
+            "step": 558, "direct_message_id": 20,
+            "direct_message_ids": [19, 20], "direct_message_has_photo": False,
+        })
+        start = {"callback_query": {
+            "id": "start-direct-battle", "from": {"id": 42},
+            "data": "blackcastle:battle:start:558:route_01",
+            # Some Telegram callback payloads omit the source message's photo field.
+            "message": {"message_id": 20, "chat": {"id": 42}},
+        }}
+
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot.process_update(start))
+
+            deleted_ids = [payload["message_id"] for method, payload in bot.calls
+                           if method == "deleteMessage"]
+            sent_photos = [payload for method, payload in bot.calls if method == "sendPhoto"]
+            self.assertCountEqual(deleted_ids, [19, 20])
+            self.assertEqual(len(sent_photos), 1)
+            self.assertEqual(sent_photos[0]["photo"], "step-photo")
+            self.assertEqual(len(store.state["direct_message_ids"]), 2)
+            self.assertEqual(len(set(store.state["direct_message_ids"])), 2)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_spider_opening_uses_the_correct_dative_for_player_and_copy(self):
+        bot, _ = make_bot()
+        templates = [row[3] for row in iter_battle_text_rows()
+                     if row[0] == "гигантский паук" and row[1] == "opening"]
+        for template in templates:
+            player = template.format(
+                enemy="Гигантский Паук", victim="вас", victim_dative="вам"
+            )
+            copy = template.format(
+                enemy="Гигантский Паук", victim="Копию", victim_dative="Копии"
+            )
+            self.assertNotIn("к вас", player)
+            self.assertNotIn("навстречу вас", player)
+            self.assertIn("паутиной", player) if "паутиной" in template else None
+            self.assertTrue(copy)
+        self.assertIn("выбрасывает к вам", templates[0].format(
+            enemy="Гигантский Паук", victim="вас", victim_dative="вам"
+        ))
+        self.assertIn("бросается к Копии", templates[2].format(
+            enemy="Гигантский Паук", victim="Копию", victim_dative="Копии"
+        ))
 
     def test_inline_battle_edits_caption_progressively_with_narrative(self):
         bot, store = make_bot()
