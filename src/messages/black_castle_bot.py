@@ -12,7 +12,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from .black_castle_battle_text import ENEMY_BATTLE_TEXT, GENERIC_BATTLE_TEXT, canonical_enemy_key
-from .black_castle_loot import REPEATABLE_LOOT_IDS
+from .black_castle_loot import PARAGRAPH_LOOT_STAMINA_EFFECTS, REPEATABLE_LOOT_IDS
 
 BOT_USERNAME = "KnigaIgraBot"
 ROUTE_BUTTON_MAX_LENGTH = 50
@@ -633,7 +633,7 @@ class BlackCastleBot:
                 for option in loot_options if option.get("loot_id") in claimed_ids
             ))
             if claimed_names:
-                text += "\n\nВы уже взяли: " + ", ".join(claimed_names) + "."
+                text += "\n\nВы уже использовали или взяли: " + ", ".join(claimed_names) + "."
             enemies = self._battle_enemies(display_body)
             prepared_magic = state.get("combat_magic_pending")
             if enemies and isinstance(prepared_magic, dict):
@@ -655,6 +655,16 @@ class BlackCastleBot:
                             "text": str(option["button_text"]),
                             "callback_data": f"blackcastle:loot:{step}:{loot_id}",
                         }])
+                        use_effect = PARAGRAPH_LOOT_STAMINA_EFFECTS.get((step, loot_id))
+                        current_stamina = int(state.get("characteristics", {}).get("stamina", 0))
+                        stamina_maximum = self._personal_characteristic_maximum(
+                            state.get("characteristics", {}), "stamina"
+                        )
+                        if use_effect and current_stamina < stamina_maximum:
+                            keyboard.append([{
+                                "text": use_effect[1],
+                                "callback_data": f"blackcastle:loot_use:{step}:{loot_id}",
+                            }])
             for choice in choices:
                 required_item = choice.get("required_item")
                 if required_item and not self._has_item(state, str(required_item)):
@@ -798,6 +808,31 @@ class BlackCastleBot:
                 if needed and all(any(word.startswith(token[:3]) for word in available) for token in needed):
                     return True
         return False
+
+    @classmethod
+    def _apply_step_supply_effects(cls, state: dict[str, Any], paragraph_number: int) -> None:
+        if paragraph_number not in {11, 21, 131, 307, 500}:
+            return
+        applied = state.setdefault("applied_book_effects", [])
+        effect_key = str(paragraph_number)
+        if effect_key in applied:
+            return
+        if paragraph_number == 11:
+            if cls._has_item(state, "Фляга"):
+                state["water_sips"] = 0
+        elif paragraph_number == 307:
+            if cls._has_item(state, "Фляга"):
+                state["water_sips"] = 2
+        else:
+            stamina_gains = {21: 2, 131: 6, 500: 6}
+            gain = stamina_gains.get(paragraph_number, 0)
+            if gain:
+                characteristics = state.get("characteristics", {})
+                maximum = cls._personal_characteristic_maximum(characteristics, "stamina")
+                characteristics["stamina"] = min(
+                    maximum, int(characteristics.get("stamina", 0)) + gain
+                )
+        applied.append(effect_key)
 
     @staticmethod
     def _bag_item_count(state: dict[str, Any], bag_items: list[str] | None = None) -> int:
@@ -1680,6 +1715,15 @@ class BlackCastleBot:
                     label = str(option.get("button_text") or label)
             except (ValueError, TypeError):
                 pass
+        elif action.startswith("blackcastle:loot_use:"):
+            try:
+                _, _, source_text, loot_id = action.split(":", 3)
+                paragraph_number = int(source_text)
+                use_effect = PARAGRAPH_LOOT_STAMINA_EFFECTS.get((paragraph_number, loot_id))
+                if use_effect and not label_from_message:
+                    label = use_effect[1]
+            except (ValueError, TypeError):
+                pass
         elif action == "blackcastle:flask:drink":
             label = "Попить из фляги (+2 Выносливости)"
         elif action.startswith("blackcastle:discard:"):
@@ -1749,6 +1793,7 @@ class BlackCastleBot:
                     await self._acknowledge_callback(callback_id)
                 return
             state = self._get_or_create_state(player_id)
+            previous_step = state.get("step")
             logger.info(
                 "BlackCastle callback received (action=%s, view=%s, step=%s)",
                 action,
@@ -1769,6 +1814,7 @@ class BlackCastleBot:
             loot_source_step = None
             loot_choice = None
             loot_from_battle = False
+            loot_use_gain = 0
             choice_reward = None
             drink_from_flask = False
             use_healing_spell = False
@@ -1834,6 +1880,41 @@ class BlackCastleBot:
                     ]
                     if self._bag_item_count(state, bag_items) + int(loot_choice["bag_slots"]) > int(state.get("bag_capacity", 7)):
                         loot_alert = "В заплечном мешке недостаточно места для этой вещи."
+            elif action.startswith("blackcastle:loot_use:"):
+                loot_id = ""
+                try:
+                    _, _, source_text, loot_id = action.split(":", 3)
+                    loot_source_step = int(source_text)
+                    use_effect = PARAGRAPH_LOOT_STAMINA_EFFECTS.get((loot_source_step, loot_id))
+                    get_loot = getattr(self.game_store, "get_paragraph_loot_options", None)
+                    options = get_loot(loot_source_step) if callable(get_loot) else []
+                    loot_choice = next(
+                        (row for row in options if str(row.get("loot_id")) == loot_id), None
+                    )
+                except (ValueError, TypeError):
+                    use_effect = None
+                    loot_choice = None
+                claimed = state.get("claimed_loot", {})
+                claimed_ids = claimed.get(str(loot_source_step), []) if isinstance(claimed, dict) else []
+                source_paragraph = self.game_store.get_paragraph(loot_source_step)
+                valid_source = (
+                    loot_source_step is not None
+                    and state.get("view") == "step"
+                    and state.get("step") == loot_source_step
+                    and not self._battle_enemies(str((source_paragraph or {}).get("body") or ""))
+                )
+                current_stamina = int(state.get("characteristics", {}).get("stamina", 0))
+                if (not valid_source or not loot_choice or not use_effect
+                        or loot_id in claimed_ids):
+                    loot_alert = "Это действие с предметом уже недоступно."
+                elif current_stamina >= personal_stamina_maximum:
+                    loot_alert = "Выносливость уже на начальном максимуме; предмет не потрачен."
+                else:
+                    loot_use_gain = int(use_effect[0])
+                    loot_alert = (
+                        f"Выносливость: {current_stamina} → "
+                        f"{min(personal_stamina_maximum, current_stamina + loot_use_gain)}."
+                    )
             elif action == "blackcastle:flask:drink":
                 if state.get("view") not in {"stats", "inventory", "status"} or not self._has_item(state, "Фляга"):
                     inventory_alert = "У вас нет фляги."
@@ -2047,6 +2128,19 @@ class BlackCastleBot:
                     state["view"] = "step"
                     state["step"] = loot_source_step
                     state["page_part"] = 0
+            elif action.startswith("blackcastle:loot_use:"):
+                if loot_use_gain <= 0 or loot_source_step is None:
+                    return
+                characteristics = state["characteristics"]
+                characteristics["stamina"] = min(
+                    personal_stamina_maximum,
+                    int(characteristics.get("stamina", 0)) + loot_use_gain,
+                )
+                claimed = state.setdefault("claimed_loot", {})
+                claimed.setdefault(str(loot_source_step), []).append(str(loot_choice["loot_id"]))
+                state["view"] = "step"
+                state["step"] = loot_source_step
+                state["page_part"] = 0
             elif action == "blackcastle:flask:drink":
                 if not drink_from_flask:
                     return
@@ -2381,6 +2475,9 @@ class BlackCastleBot:
             else:
                 return
             if state.get("view") in {"preface", "step"}:
+                current_step = state.get("step")
+                if isinstance(current_step, int) and current_step != previous_step:
+                    self._apply_step_supply_effects(state, current_step)
                 self._paged_screen(state)
             self._save_state(player_id, state)
             inline_message_id = callback.get("inline_message_id")

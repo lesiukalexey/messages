@@ -14,7 +14,7 @@ from messages.black_castle_battle_text import (
     canonical_enemy_key,
     iter_battle_text_rows,
 )
-from messages.black_castle_loot import PARAGRAPH_LOOT
+from messages.black_castle_loot import PARAGRAPH_LOOT, PARAGRAPH_LOOT_STAMINA_EFFECTS
 
 
 def battle_quote_sentence_count(log):
@@ -444,15 +444,14 @@ class BlackCastleLuckTest(unittest.TestCase):
 
     def test_all_take_anything_pages_offer_each_loot_choice_and_keep_their_routes(self):
         bot, store = make_bot()
-        expected_routes = {187: 47, 189: 19, 335: 46, 484: 308, 573: 561}
-        for step, route in expected_routes.items():
+        for step, loot_rows in PARAGRAPH_LOOT.items():
             store.paragraphs[step] = {
                 "paragraph_number": step, "body": "Возьмите все, что хотите.",
                 "photo_file_id": "step-photo",
             }
             store.choices_by_step[step] = [{
-                "choice_id": "route_01", "button_text": f"Продолжить — {route}",
-                "target_paragraph": route, "required_item": None,
+                "choice_id": "route_01", "button_text": "Продолжить — 617",
+                "target_paragraph": 617, "required_item": None,
             }]
             store.loot_options[step] = [
                 {
@@ -462,16 +461,234 @@ class BlackCastleLuckTest(unittest.TestCase):
                     "gold_amount": gold,
                     "bag_slots": slots,
                 }
-                for loot_id, button_text, item_name, gold, slots in PARAGRAPH_LOOT[step]
+                for loot_id, button_text, item_name, gold, slots in loot_rows
             ]
             store.state.update({"step": step, "view": "step", "claimed_loot": {}})
             _, keyboard, _ = bot._screen(store.state)
             buttons = [button for row in keyboard for button in row]
             loot_buttons = [button for button in buttons if button["callback_data"].startswith("blackcastle:loot:")]
-            self.assertEqual(len(loot_buttons), len(PARAGRAPH_LOOT[step]), step)
-            self.assertTrue(any(button["callback_data"] == f"blackcastle:route:{step}:route_01"
-                                for button in buttons), step)
+            self.assertEqual(
+                [button["callback_data"].rsplit(":", 1)[1] for button in loot_buttons],
+                [row[0] for row in loot_rows],
+                step,
+            )
+            self.assertTrue(any(
+                button["callback_data"] == f"blackcastle:route:{step}:route_01"
+                for button in buttons
+            ), step)
         bot._test_tempdir.cleanup()
+
+    def test_step_8_offers_the_bronze_whistle_found_in_the_goblin_pockets(self):
+        bot, store = make_bot()
+        store.paragraphs[8] = {
+            "paragraph_number": 8,
+            "body": "Вы обшариваете карманы Гоблина и находите бронзовый свисток.",
+            "photo_file_id": "step-photo",
+        }
+        store.loot_options[8] = [{
+            "loot_id": loot_id, "button_text": label, "item_name": item,
+            "gold_amount": gold, "bag_slots": slots,
+        } for loot_id, label, item, gold, slots in PARAGRAPH_LOOT[8]]
+        store.state.update({"step": 8, "view": "step"})
+        try:
+            _, keyboard, _ = bot._screen(store.state)
+            self.assertIn(
+                "Взять бронзовый свисток",
+                [button["text"] for row in keyboard for button in row],
+            )
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_newly_audited_rewards_are_available_on_steps_6_408_and_600(self):
+        bot, store = make_bot()
+        for step in (408, 600):
+            store.paragraphs[step] = {
+                "paragraph_number": step, "body": "Вы находите полезные вещи.",
+                "photo_file_id": "step-photo",
+            }
+            store.loot_options[step] = [{
+                "loot_id": loot_id, "button_text": label, "item_name": item,
+                "gold_amount": gold, "bag_slots": slots,
+            } for loot_id, label, item, gold, slots in PARAGRAPH_LOOT[step]]
+            store.state.update({"step": step, "view": "step", "claimed_loot": {}})
+            _, keyboard, _ = bot._screen(store.state)
+            labels = [button["text"] for row in keyboard for button in row]
+            self.assertTrue(all(row[1] in labels for row in PARAGRAPH_LOOT[step]), step)
+
+        store.loot_options[6] = [{
+            "loot_id": loot_id, "button_text": label, "item_name": item,
+            "gold_amount": gold, "bag_slots": slots,
+        } for loot_id, label, item, gold, slots in PARAGRAPH_LOOT[6]]
+        store.state.update({
+            "step": 6, "view": "battle", "claimed_loot": {},
+            "battle": {
+                "source_step": 6, "status": "won", "display_phase": "complete",
+                "log": ["Победа."], "enemies": [],
+            },
+        })
+        _, keyboard, _ = bot._screen(store.state)
+        labels = [button["text"] for row in keyboard for button in row]
+        self.assertIn("Взять 1 золотой", labels)
+        bot._test_tempdir.cleanup()
+
+    def test_step_239_can_use_or_take_wine_and_food_with_initial_stamina_cap(self):
+        for loot_id, initial, expected in (("wine", 18, 19), ("food", 15, 17)):
+            bot, store = make_bot()
+            store.paragraphs[239] = {
+                "paragraph_number": 239,
+                "body": "Вино восстановит 3 ВЫНОСЛИВОСТИ, еда — 2.",
+                "photo_file_id": "step-photo",
+            }
+            store.loot_options[239] = [{
+                "loot_id": key, "button_text": label, "item_name": item,
+                "gold_amount": 0, "bag_slots": 1,
+            } for key, label, item, _, _ in PARAGRAPH_LOOT[239]]
+            store.state.update({
+                "step": 239, "view": "step", "claimed_loot": {},
+                "characteristics": {
+                    "mastery": 8, "max_mastery": 10,
+                    "stamina": initial, "max_stamina": 19,
+                    "luck": 8, "max_luck": 10,
+                },
+            })
+            use_label = PARAGRAPH_LOOT_STAMINA_EFFECTS[(239, loot_id)][1]
+            _, keyboard, _ = bot._screen(store.state)
+            buttons = [button for row in keyboard for button in row]
+            self.assertIn(use_label, [button["text"] for button in buttons])
+            self.assertIn(
+                f"blackcastle:loot:239:{loot_id}",
+                [button["callback_data"] for button in buttons],
+            )
+            update = {"callback_query": {
+                "id": f"use-{loot_id}", "from": {"id": 42},
+                "data": f"blackcastle:loot_use:239:{loot_id}",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}
+            try:
+                asyncio.run(bot.process_update(update))
+                self.assertEqual(store.state["characteristics"]["stamina"], expected)
+                self.assertIn(loot_id, store.state["claimed_loot"]["239"])
+                self.assertNotIn("Вино" if loot_id == "wine" else "Еда", store.state["items"])
+                _, remaining_keyboard, _ = bot._screen(store.state)
+                self.assertNotIn(use_label, [
+                    button["text"] for row in remaining_keyboard for button in row
+                ])
+            finally:
+                bot._test_tempdir.cleanup()
+
+        bot, store = make_bot()
+        store.paragraphs[239] = {
+            "paragraph_number": 239, "body": "Вино восстановит 3 ВЫНОСЛИВОСТИ.",
+            "photo_file_id": "step-photo",
+        }
+        store.loot_options[239] = [{
+            "loot_id": key, "button_text": label, "item_name": item,
+            "gold_amount": 0, "bag_slots": 1,
+        } for key, label, item, _, _ in PARAGRAPH_LOOT[239]]
+        store.state.update({
+            "step": 239, "view": "step", "claimed_loot": {},
+            "characteristics": {
+                "mastery": 8, "max_mastery": 10,
+                "stamina": 19, "max_stamina": 19,
+                "luck": 8, "max_luck": 10,
+            },
+        })
+        try:
+            _, keyboard, _ = bot._screen(store.state)
+            labels = [button["text"] for row in keyboard for button in row]
+            self.assertNotIn(
+                PARAGRAPH_LOOT_STAMINA_EFFECTS[(239, "wine")][1], labels
+            )
+            stale_use = {"callback_query": {
+                "id": "use-wine-at-cap", "from": {"id": 42},
+                "data": "blackcastle:loot_use:239:wine",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(stale_use))
+            self.assertEqual(store.state["characteristics"]["stamina"], 19)
+            self.assertNotIn("wine", store.state.get("claimed_loot", {}).get("239", []))
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_step_11_empties_and_step_307_refills_the_equipped_flask(self):
+        bot, store = make_bot()
+        store.paragraphs[10] = {"paragraph_number": 10, "body": "", "photo_file_id": "photo"}
+        store.paragraphs[11] = {"paragraph_number": 11, "body": "", "photo_file_id": "photo"}
+        store.paragraphs[306] = {"paragraph_number": 306, "body": "", "photo_file_id": "photo"}
+        store.paragraphs[307] = {"paragraph_number": 307, "body": "Вы наполняете флягу.", "photo_file_id": "photo"}
+        store.choices_by_step[10] = [{
+            "choice_id": "route_01", "button_text": "Продолжить — 11",
+            "target_paragraph": 11, "required_item": None,
+        }]
+        store.choices_by_step[306] = [{
+            "choice_id": "route_01", "button_text": "Продолжить — 307",
+            "target_paragraph": 307, "required_item": None,
+        }]
+        store.state.update({"items": ["Меч", "Фляга"], "water_sips": 2})
+        try:
+            store.state.update({"step": 10, "view": "step"})
+            asyncio.run(bot.process_update({"callback_query": {
+                "id": "enter-step-11", "from": {"id": 42},
+                "data": "blackcastle:route:10:route_01",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}))
+            self.assertEqual(store.state["step"], 11)
+            self.assertEqual(store.state["water_sips"], 0)
+
+            store.state.update({"step": 306, "view": "step"})
+            asyncio.run(bot.process_update({"callback_query": {
+                "id": "enter-step-307", "from": {"id": 42},
+                "data": "blackcastle:route:306:route_01",
+                "message": {"message_id": 10, "chat": {"id": 42}},
+            }}))
+            self.assertEqual(store.state["step"], 307)
+            self.assertEqual(store.state["water_sips"], 2)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_book_meals_and_potions_restore_stamina_once_without_exceeding_initial_maximum(self):
+        bot, store = make_bot()
+        for source_step, target_step in ((20, 21), (130, 131), (499, 500)):
+            store.paragraphs[source_step] = {
+                "paragraph_number": source_step, "body": "", "photo_file_id": "photo",
+            }
+            store.paragraphs[target_step] = {
+                "paragraph_number": target_step, "body": "", "photo_file_id": "photo",
+            }
+            store.choices_by_step[source_step] = [{
+                "choice_id": "route_01", "button_text": f"Продолжить — {target_step}",
+                "target_paragraph": target_step, "required_item": None,
+            }]
+        store.state.update({
+            "characteristics": {
+                "mastery": 8, "max_mastery": 10,
+                "stamina": 15, "max_stamina": 19,
+                "luck": 8, "max_luck": 10,
+            },
+            "applied_book_effects": [],
+        })
+        expected = {21: 17, 131: 19, 500: 19}
+        try:
+            for index, (source_step, target_step) in enumerate(((20, 21), (130, 131), (499, 500))):
+                store.state.update({"step": source_step, "view": "step"})
+                asyncio.run(bot.process_update({"callback_query": {
+                    "id": f"meal-effect-{index}", "from": {"id": 42},
+                    "data": f"blackcastle:route:{source_step}:route_01",
+                    "message": {"message_id": 9 + index, "chat": {"id": 42}},
+                }}))
+                self.assertEqual(store.state["step"], target_step)
+                self.assertEqual(store.state["characteristics"]["stamina"], expected[target_step])
+                self.assertIn(str(target_step), store.state["applied_book_effects"])
+                if target_step == 21:
+                    store.state["step"] = source_step
+                    asyncio.run(bot.process_update({"callback_query": {
+                        "id": "meal-effect-repeat", "from": {"id": 42},
+                        "data": f"blackcastle:route:{source_step}:route_01",
+                        "message": {"message_id": 19, "chat": {"id": 42}},
+                    }}))
+                    self.assertEqual(store.state["characteristics"]["stamina"], 17)
+        finally:
+            bot._test_tempdir.cleanup()
 
     def test_loot_button_adds_selected_item_or_gold_once_and_keeps_player_on_step(self):
         bot, store = make_bot()
