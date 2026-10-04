@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import copy
 from typing import Any
 
 import pymysql
@@ -47,6 +48,28 @@ class BlackCastleStore:
                        state_json JSON NOT NULL,
                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                            ON UPDATE CURRENT_TIMESTAMP
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS items (
+                       item_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                       item_name VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                       UNIQUE KEY unique_item_name (item_name)
+                   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+            )
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS player_inventory (
+                       player_item_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                       player_id BIGINT NOT NULL,
+                       item_id BIGINT UNSIGNED NOT NULL,
+                       position SMALLINT UNSIGNED NOT NULL,
+                       slot_cost SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+                       UNIQUE KEY unique_player_inventory_position (player_id, position),
+                       KEY player_inventory_item (player_id, item_id),
+                       CONSTRAINT player_inventory_player_fk FOREIGN KEY (player_id)
+                           REFERENCES players (player_id) ON DELETE CASCADE,
+                       CONSTRAINT player_inventory_item_fk FOREIGN KEY (item_id)
+                           REFERENCES items (item_id)
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
             cursor.execute(
@@ -209,6 +232,7 @@ class BlackCastleStore:
                 ),
             )
             self._battle_narrative_cache = None
+        self._migrate_player_inventory()
         if scene_path is not None:
             self.seed_opening_scene(scene_path)
         with self.connection.cursor() as cursor:
@@ -408,25 +432,176 @@ class BlackCastleStore:
             state = state.decode("utf-8")
         if isinstance(state, str):
             state = json.loads(state)
-        return state if isinstance(state, dict) else None
+        if not isinstance(state, dict):
+            return None
+        inventory = self._get_player_inventory(player_id)
+        state["items"] = [row["item_name"] for row in inventory]
+        state["item_ids"] = [int(row["player_item_id"]) for row in inventory]
+        state["item_slot_costs"] = {
+            str(row["item_name"]): int(row["slot_cost"])
+            for row in inventory if int(row["slot_cost"]) > 1
+        }
+        return state
+
+    def _get_player_inventory(self, player_id: int) -> list[dict[str, Any]]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT pi.player_item_id, pi.item_id, pi.position, pi.slot_cost, i.item_name
+                   FROM player_inventory pi
+                   JOIN items i ON i.item_id = pi.item_id
+                   WHERE pi.player_id = %s ORDER BY pi.position""",
+                (player_id,),
+            )
+            return list(cursor.fetchall())
+
+    @staticmethod
+    def _state_without_inventory(state: dict[str, Any]) -> dict[str, Any]:
+        saved = copy.deepcopy(state)
+        for key in ("items", "item_ids", "item_slot_costs"):
+            saved.pop(key, None)
+        return saved
+
+    def _sync_player_inventory(self, cursor: Any, player_id: int, state: dict[str, Any]) -> None:
+        items = state.get("items", [])
+        if not isinstance(items, list):
+            items = []
+        item_ids = state.get("item_ids", [])
+        if not isinstance(item_ids, list):
+            item_ids = []
+        slot_costs = state.get("item_slot_costs", {})
+        if not isinstance(slot_costs, dict):
+            slot_costs = {}
+
+        cursor.execute(
+            """SELECT pi.player_item_id, pi.item_id, pi.position, pi.slot_cost, i.item_name
+               FROM player_inventory pi JOIN items i ON i.item_id = pi.item_id
+               WHERE pi.player_id = %s FOR UPDATE""",
+            (player_id,),
+        )
+        existing = {int(row["player_item_id"]): row for row in cursor.fetchall()}
+        retained: set[int] = set()
+        resolved: list[tuple[int | None, int, int]] = []
+        new_ids: list[int | None] = []
+        for position, name in enumerate(items):
+            if not isinstance(name, str) or not name.strip():
+                continue
+            item_name = name.strip()
+            cursor.execute("INSERT IGNORE INTO items (item_name) VALUES (%s)", (item_name,))
+            cursor.execute("SELECT item_id FROM items WHERE item_name = %s", (item_name,))
+            catalog_row = cursor.fetchone()
+            item_id = int(catalog_row["item_id"])
+            try:
+                slot_cost = max(1, int(slot_costs.get(item_name, 1)))
+            except (TypeError, ValueError):
+                slot_cost = 1
+            supplied_id = item_ids[position] if position < len(item_ids) else None
+            inventory_id = int(supplied_id) if supplied_id is not None else None
+            current = existing.get(inventory_id) if inventory_id is not None else None
+            if current is None or int(current["item_id"]) != item_id or inventory_id in retained:
+                inventory_id = None
+            else:
+                retained.add(inventory_id)
+            resolved.append((inventory_id, item_id, slot_cost))
+
+        # Move retained rows out of the active position range before reordering them.
+        for inventory_id in retained:
+            cursor.execute(
+                "UPDATE player_inventory SET position = position + 32768 WHERE player_item_id = %s",
+                (inventory_id,),
+            )
+        if existing:
+            obsolete = set(existing) - retained
+            if obsolete:
+                placeholders = ",".join(["%s"] * len(obsolete))
+                cursor.execute(
+                    f"DELETE FROM player_inventory WHERE player_id = %s AND player_item_id IN ({placeholders})",
+                    (player_id, *sorted(obsolete)),
+                )
+
+        for position, (inventory_id, item_id, slot_cost) in enumerate(resolved):
+            if inventory_id is None:
+                cursor.execute(
+                    """INSERT INTO player_inventory (player_id, item_id, position, slot_cost)
+                       VALUES (%s, %s, %s, %s)""",
+                    (player_id, item_id, position, slot_cost),
+                )
+                inventory_id = int(cursor.lastrowid)
+            else:
+                cursor.execute(
+                    """UPDATE player_inventory SET item_id = %s, position = %s, slot_cost = %s
+                       WHERE player_item_id = %s AND player_id = %s""",
+                    (item_id, position, slot_cost, inventory_id, player_id),
+                )
+            new_ids.append(inventory_id)
+        state["items"] = [name.strip() for name in items if isinstance(name, str) and name.strip()]
+        state["item_ids"] = new_ids
+
+    def _migrate_player_inventory(self) -> None:
+        """Move any legacy JSON inventory into catalog rows and per-player references."""
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT player_id, state_json FROM players")
+            player_ids = [int(row["player_id"]) for row in cursor.fetchall()]
+        for player_id in player_ids:
+            # Lock and re-read the latest state so concurrent worker startups cannot
+            # overwrite a player's progress with a stale snapshot from the scan.
+            self.connection.begin()
+            try:
+                with self.connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT state_json FROM players WHERE player_id = %s FOR UPDATE",
+                        (player_id,),
+                    )
+                    row = cursor.fetchone()
+                    state = row["state_json"] if row else None
+                    if isinstance(state, (bytes, bytearray)):
+                        state = state.decode("utf-8")
+                    if isinstance(state, str):
+                        state = json.loads(state)
+                    if isinstance(state, dict) and any(
+                        key in state for key in ("items", "item_slot_costs", "item_ids")
+                    ):
+                        cursor.execute(
+                            "UPDATE players SET state_json = %s WHERE player_id = %s",
+                            (json.dumps(self._state_without_inventory(state), ensure_ascii=False), player_id),
+                        )
+                        self._sync_player_inventory(cursor, player_id, state)
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
 
     def save_player_state(self, player_id: int, state: dict[str, Any]) -> None:
         self.ensure_connected()
-        with self.connection.cursor() as cursor:
-            cursor.execute(
-                """INSERT INTO players (player_id, state_json)
-                   VALUES (%s, %s)
-                   ON DUPLICATE KEY UPDATE state_json = VALUES(state_json)""",
-                (player_id, json.dumps(state, ensure_ascii=False)),
-            )
+        self.connection.begin()
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO players (player_id, state_json) VALUES (%s, %s)
+                       ON DUPLICATE KEY UPDATE state_json = VALUES(state_json)""",
+                    (player_id, json.dumps(self._state_without_inventory(state), ensure_ascii=False)),
+                )
+                cursor.execute("SELECT player_id FROM players WHERE player_id = %s FOR UPDATE", (player_id,))
+                self._sync_player_inventory(cursor, player_id, state)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def save_player_state_if_absent(self, player_id: int, state: dict[str, Any]) -> None:
         self.ensure_connected()
-        with self.connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT IGNORE INTO players (player_id, state_json) VALUES (%s, %s)",
-                (player_id, json.dumps(state, ensure_ascii=False)),
-            )
+        self.connection.begin()
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    "INSERT IGNORE INTO players (player_id, state_json) VALUES (%s, %s)",
+                    (player_id, json.dumps(self._state_without_inventory(state), ensure_ascii=False)),
+                )
+                if cursor.rowcount:
+                    self._sync_player_inventory(cursor, player_id, state)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def get_setting(self, key: str, default: str = "") -> str:
         self.ensure_connected()

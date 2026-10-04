@@ -127,6 +127,7 @@ class BlackCastleBot:
             },
             "spells": dict(INITIAL_SPELLS),
             "items": ["Меч", "Фляга"],
+            "item_ids": [None, None],
             "gold": 15,
             "water_sips": 2,
             "bag_capacity": 7,
@@ -156,6 +157,12 @@ class BlackCastleBot:
                 ]
                 if len(filtered_items) != len(items):
                     state["items"] = filtered_items
+                    ids = state.get("item_ids")
+                    if isinstance(ids, list):
+                        state["item_ids"] = [
+                            item_id for item, item_id in zip(items, ids)
+                            if not (isinstance(item, str) and item.strip().casefold() == "заплечный мешок")
+                        ]
                     state_changed = True
             if state_changed:
                 self._save_state(player_id, state)
@@ -457,11 +464,14 @@ class BlackCastleBot:
                     "text": "Попить из фляги (+2 Выносливости)",
                     "callback_data": "blackcastle:flask:drink",
                 }])
+            item_ids = state.get("item_ids", [])
             for index, item in item_entries:
                 item_hash = hashlib.sha256(item.encode("utf-8")).hexdigest()[:8]
+                item_id = item_ids[index] if isinstance(item_ids, list) and index < len(item_ids) else None
+                item_ref = str(item_id) if item_id is not None else f"legacy-{index}"
                 keyboard.append([{
                     "text": f"Выкинуть: {item}",
-                    "callback_data": f"blackcastle:discard:{index}:{item_hash}",
+                    "callback_data": f"blackcastle:discard:id:{item_ref}:{item_hash}",
                 }])
             keyboard.append([{
                 "text": f"К шагу {step}",
@@ -741,11 +751,38 @@ class BlackCastleBot:
                 continue
             if BlackCastleBot._has_item({"items": [item]}, required_item):
                 del items[index]
+                item_ids = state.get("item_ids")
+                if isinstance(item_ids, list) and index < len(item_ids):
+                    del item_ids[index]
                 slot_costs = state.get("item_slot_costs")
                 if isinstance(slot_costs, dict) and item not in items:
                     slot_costs.pop(item, None)
                 return True
         return False
+
+    @staticmethod
+    def _discard_reference(state: dict[str, Any], action: str) -> tuple[int, str] | None:
+        try:
+            parts = action.split(":")
+            items = state.get("items", [])
+            if len(parts) == 5 and parts[2] == "id":
+                item_ref, item_hash = parts[3], parts[4]
+                if item_ref.startswith("legacy-"):
+                    index = int(item_ref.removeprefix("legacy-"))
+                else:
+                    item_id = int(item_ref)
+                    ids = state.get("item_ids", [])
+                    index = ids.index(item_id) if isinstance(ids, list) else -1
+            else:  # accept buttons sent before inventory IDs were introduced
+                _, _, index_text, item_hash = action.split(":", 3)
+                index = int(index_text)
+            item = items[index] if isinstance(items, list) and 0 <= index < len(items) else None
+            if (not isinstance(item, str)
+                    or hashlib.sha256(item.encode("utf-8")).hexdigest()[:8] != item_hash):
+                return None
+            return index, item_hash
+        except (ValueError, TypeError, IndexError):
+            return None
 
     def _paragraph_photo(self, paragraph_number: int) -> str:
         paragraph = self.game_store.get_paragraph(paragraph_number)
@@ -1502,15 +1539,10 @@ class BlackCastleBot:
         elif action == "blackcastle:flask:drink":
             label = "Попить из фляги (+2 Выносливости)"
         elif action.startswith("blackcastle:discard:"):
-            try:
-                _, _, index_text, item_hash = action.split(":", 3)
-                index = int(index_text)
-                items = state.get("items", [])
-                item = items[index] if isinstance(items, list) and 0 <= index < len(items) else None
-                if isinstance(item, str) and hashlib.sha256(item.encode("utf-8")).hexdigest()[:8] == item_hash:
-                    label = f"Выкинуть: {item}"
-            except (ValueError, TypeError):
-                pass
+            reference = self._discard_reference(state, action)
+            if reference is not None:
+                index, _ = reference
+                label = f"Выкинуть: {state['items'][index]}"
         elif action.startswith("blackcastle:battle:start:"):
             try:
                 _, _, _, source_text, choice_id = action.split(":", 4)
@@ -1670,24 +1702,12 @@ class BlackCastleBot:
                         f"Во фляге останется глотков: {int(state.get('water_sips', 0)) - 1}."
                     )
             elif action.startswith("blackcastle:discard:"):
-                try:
-                    _, _, index_text, item_hash = action.split(":", 3)
-                    candidate_index = int(index_text)
-                    items = state.get("items", [])
-                    candidate = (
-                        items[candidate_index]
-                        if isinstance(items, list) and 0 <= candidate_index < len(items)
-                        else None
-                    )
-                    if (state.get("view") in {"stats", "inventory", "status"}
-                            and isinstance(candidate, str)
-                            and hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:8] == item_hash):
-                        discard_index = candidate_index
-                        discard_item = candidate
-                    else:
-                        inventory_alert = "Этот предмет уже отсутствует в инвентаре."
-                except (ValueError, TypeError):
-                    inventory_alert = "Не удалось определить предмет. Откройте инвентарь ещё раз."
+                reference = self._discard_reference(state, action)
+                if state.get("view") in {"stats", "inventory", "status"} and reference is not None:
+                    discard_index = reference[0]
+                    discard_item = state["items"][discard_index]
+                else:
+                    inventory_alert = "Этот предмет уже отсутствует в инвентаре."
             elif action.startswith("blackcastle:battle:begin:"):
                 try:
                     battle_target_index = int(action.rsplit(":", 1)[1])
@@ -1846,6 +1866,7 @@ class BlackCastleBot:
                 if loot_choice.get("item_name"):
                     item_name = str(loot_choice["item_name"])
                     state.setdefault("items", []).append(item_name)
+                    state.setdefault("item_ids", []).append(None)
                     slot_cost = int(loot_choice.get("bag_slots") or 1)
                     if slot_cost > 1:
                         state.setdefault("item_slot_costs", {})[item_name] = slot_cost
@@ -1873,6 +1894,9 @@ class BlackCastleBot:
                     return
                 items = state["items"]
                 del items[discard_index]
+                item_ids = state.get("item_ids")
+                if isinstance(item_ids, list) and discard_index < len(item_ids):
+                    del item_ids[discard_index]
                 slot_costs = state.get("item_slot_costs")
                 if isinstance(slot_costs, dict) and discard_item not in items:
                     slot_costs.pop(discard_item, None)
@@ -2143,6 +2167,7 @@ class BlackCastleBot:
                         if choice_reward.get("item_name"):
                             item_name = str(choice_reward["item_name"])
                             state.setdefault("items", []).append(item_name)
+                            state.setdefault("item_ids", []).append(None)
                             slot_cost = int(choice_reward.get("bag_slots") or 1)
                             if slot_cost > 1:
                                 state.setdefault("item_slot_costs", {})[item_name] = slot_cost

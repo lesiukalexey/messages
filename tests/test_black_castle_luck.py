@@ -1341,21 +1341,34 @@ class BlackCastleLuckTest(unittest.TestCase):
         armor_hash = hashlib.sha256("Зелёные латы".encode()).hexdigest()[:8]
         store.state.update({
             "view": "status", "items": ["Меч", "Фляга", "Бриллиант", "Зелёные латы"],
+            "item_ids": [41, 42, 43, 44],
             "water_sips": 2, "item_slot_costs": {"Зелёные латы": 3},
         })
         self.assertEqual(BlackCastleBot._bag_item_count(store.state), 4)
         callback = {"callback_query": {
             "id": "discard-armor", "from": {"id": 42},
-            "data": f"blackcastle:discard:3:{armor_hash}",
+            "data": f"blackcastle:discard:id:44:{armor_hash}",
             "message": {"message_id": 9, "chat": {"id": 42}},
         }}
         try:
             asyncio.run(bot.process_update(callback))
             self.assertNotIn("Зелёные латы", store.state["items"])
+            self.assertEqual(store.state["item_ids"], [41, 42, 43])
             self.assertNotIn("Зелёные латы", store.state["item_slot_costs"])
             self.assertEqual(BlackCastleBot._bag_item_count(store.state), 1)
         finally:
             bot._test_tempdir.cleanup()
+
+    def test_discard_reference_uses_the_player_item_id_and_rejects_stale_ids(self):
+        armor_hash = hashlib.sha256("Зелёные латы".encode()).hexdigest()[:8]
+        state = {"items": ["Меч", "Зелёные латы"], "item_ids": [12, 44]}
+        self.assertEqual(
+            BlackCastleBot._discard_reference(state, f"blackcastle:discard:id:44:{armor_hash}"),
+            (1, armor_hash),
+        )
+        self.assertIsNone(
+            BlackCastleBot._discard_reference(state, f"blackcastle:discard:id:99:{armor_hash}")
+        )
 
     def test_discarding_flask_removes_it_and_empties_it(self):
         bot, store = make_bot()
