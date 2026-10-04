@@ -412,10 +412,13 @@ class BlackCastleBot:
             ]
             bag_used = self._bag_item_count(state, bag_items)
             bag_listing = "\n".join(f"• {item}" for item in bag_items) or "Пусто"
+            mastery_line = str(values["mastery"])
+            if self._has_item(state, "Меч Зеленого рыцаря"):
+                mastery_line += " (+1, меч Зеленого рыцаря)"
             text = (
                 "Характеристики и инвентарь\n\n"
                 "Характеристики:\n"
-                f"МАСТЕРСТВО: {values['mastery']}\n"
+                f"МАСТЕРСТВО: {mastery_line}\n"
                 f"ВЫНОСЛИВОСТЬ: {values['stamina']}\n"
                 f"УДАЧА: {values['luck']}\n\n"
                 "Инвентарь:\n"
@@ -824,9 +827,12 @@ class BlackCastleBot:
         player_die_one, player_die_two = random.randint(1, 6), random.randint(1, 6)
         player_roll = player_die_one + player_die_two
         player_mastery = actor["mastery"]
+        weapon_bonus = (
+            1 if not acting_copy and self._has_item(state, "Меч Зеленого рыцаря") else 0
+        )
         strength_bonus = 2 if not acting_copy and (battle.get("magic") or {}).get("spell") == "strength" else 0
         attack_penalty = 0 if acting_copy else int(battle.get("player_attack_penalty", 0))
-        player_attack = player_roll + player_mastery + strength_bonus - attack_penalty
+        player_attack = player_roll + player_mastery + weapon_bonus + strength_bonus - attack_penalty
         selected_attack = enemy_attacks[target_index]
         player_wins = player_attack > selected_attack
         player_stamina_before = int(actor["stamina"])
@@ -873,6 +879,8 @@ class BlackCastleBot:
             f"{roll_owner}: {player_die_one} 🎲 + {player_die_two} 🎲 + "
             f"{player_mastery} 🎯 (база)"
         )
+        if weapon_bonus:
+            player_formula += " + 1 (меч Зеленого рыцаря)"
         if strength_bonus:
             player_formula += " + 2 (бонус заклинания Силы)"
         if attack_penalty:

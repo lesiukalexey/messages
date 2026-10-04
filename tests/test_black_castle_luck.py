@@ -496,6 +496,27 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_green_knight_sword_adds_one_mastery_to_player_attack(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "battle", "items": ["Меч", "Фляга", "Меч Зеленого рыцаря"],
+            "battle": {
+                "source_step": 40, "status": "running", "stage": "hero",
+                "target_index": 0, "round": 0, "log": [], "enemies": [{
+                    "name": "ГОБЛИН", "mastery": 8, "mastery_base": 8,
+                    "stamina": 8, "damage_to_player": 2,
+                }],
+            },
+        })
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 1, 1]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot._advance_battle_round(42, store.state, inline_message_id=None, chat_id=None))
+            self.assertIn("+ 1 (меч Зеленого рыцаря)", store.state["battle"]["log"][1])
+            self.assertTrue(store.state["battle"]["log"][1].endswith("11 ⚔️."))
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_victory_screen_offers_conditional_loot_before_leaving_battle(self):
         bot, store = make_bot()
         store.loot_options[40] = [{
