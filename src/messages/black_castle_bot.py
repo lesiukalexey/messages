@@ -296,11 +296,14 @@ class BlackCastleBot:
         if enemy_stamina:
             return f"{html.escape(enemy_stamina.group(1))} — {enemy_stamina.group(2)} ❤️"
         stamina_change = re.fullmatch(
-            r"(Ваша ВЫНОСЛИВОСТЬ|ВЫНОСЛИВОСТЬ (?:Копии|.+?)): (\d+) → (\d+)", line
+            r"(Ваша ВЫНОСЛИВОСТЬ|ВЫНОСЛИВОСТЬ(?: (?:Копии|.+?))?): (\d+) → (\d+)",
+            line,
         )
         if stamina_change:
             who = stamina_change.group(1)
             if who == "Ваша ВЫНОСЛИВОСТЬ":
+                label = "Выносливость"
+            elif who == "ВЫНОСЛИВОСТЬ":
                 label = "Выносливость"
             else:
                 label = f"Выносливость {who.removeprefix('ВЫНОСЛИВОСТЬ ')}"
@@ -323,9 +326,21 @@ class BlackCastleBot:
     def _format_battle_screen(body: str) -> str:
         narration: list[str] = []
         breakdown: list[str] = []
-        for raw_line in body.splitlines():
+        lines = body.splitlines()
+        index = 0
+        stamina_total = re.compile(r"(?:Вы|.+?) — \d+(?: ❤️)?")
+        while index < len(lines):
+            raw_line = lines[index]
             line = raw_line.strip()
+            index += 1
             if not line:
+                continue
+            if re.fullmatch(r"ВЫНОСЛИВОСТЬ после раунда:", line, re.IGNORECASE):
+                total_lines = [line]
+                while index < len(lines) and stamina_total.fullmatch(lines[index].strip()):
+                    total_lines.append(BlackCastleBot._format_battle_line(lines[index]))
+                    index += 1
+                breakdown.append("<pre>" + "\n".join(total_lines) + "</pre>")
                 continue
             formatted = BlackCastleBot._format_battle_line(line)
             if formatted.startswith("<blockquote>") and formatted.endswith("</blockquote>"):
@@ -335,9 +350,9 @@ class BlackCastleBot:
 
         sections = ["⚔️ Битва"]
         if narration:
-            sections.append("<blockquote>" + "\n".join(narration) + "</blockquote>")
+            sections.append("<blockquote>" + "\n\n".join(narration) + "</blockquote>")
         if breakdown:
-            sections.append("Расшифровка битвы:\n" + "\n".join(breakdown))
+            sections.append("Расшифровка битвы:\n\n" + "\n\n".join(breakdown))
         return "\n\n".join(sections)
 
     def _screen(self, state: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]], bool]:

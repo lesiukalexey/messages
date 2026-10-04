@@ -127,10 +127,11 @@ class BlackCastleStore:
                 """UPDATE battle_narrative_templates
                    SET template_text = %s
                    WHERE enemy_key = '*' AND phase = 'failed_wound'
-                     AND variant_no = 1 AND template_text = %s""",
+                     AND variant_no = 1 AND template_text IN (%s, %s)""",
                 (
-                    "Ваш удар не достигает цели: {enemy} уклоняется и сохраняет равновесие.",
+                    "Ваш удар не достигает цели. {enemy} уклоняется и сохраняет равновесие.",
                     "Удар не достигает цели: {enemy} уклоняется и сохраняет равновесие.",
+                    "Ваш удар не достигает цели: {enemy} уклоняется и сохраняет равновесие.",
                 ),
             )
             self._battle_narrative_cache = None

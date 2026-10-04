@@ -127,11 +127,11 @@ class BlackCastleLuckTest(unittest.TestCase):
             template for enemy, phase, variant, template in iter_battle_text_rows()
             if enemy == "*" and phase == "failed_wound" and variant == 1
         )
-        self.assertTrue(first_failed_wound.startswith("Ваш удар не достигает цели:"))
+        self.assertTrue(first_failed_wound.startswith("Ваш удар не достигает цели."))
 
         descriptions = (
             "Гигантский Паук резко бросается вперёд, выбрасывая навстречу вас длинные когтистые лапы.",
-            "Ваш удар не достигает цели: Гигантский Паук уклоняется и сохраняет равновесие.",
+            "Ваш удар не достигает цели. Гигантский Паук уклоняется и сохраняет равновесие.",
             "Паук всё же достаёт вас когтистой лапой.",
             "Гигантский Паук пригибается к земле, покачивая лапами, и готовится к следующему броску.",
             "Вы смещаетесь в сторону и готовите ответный выпад.",
@@ -168,6 +168,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             "Выносливость: 20 ❤️ → 18 ❤️",
         )
         self.assertEqual(
+            BlackCastleBot._format_battle_line("ВЫНОСЛИВОСТЬ: 20 → 18"),
+            "Выносливость: 20 ❤️ → 18 ❤️",
+        )
+        self.assertEqual(
             BlackCastleBot._format_battle_line("ВЫНОСЛИВОСТЬ Копии: 20 → 18"),
             "Выносливость Копии: 20 ❤️ → 18 ❤️",
         )
@@ -178,7 +182,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             "Паук бросается вперёд.\n"
             "Паук атакует с СИЛОЙ УДАРА 14.\n"
             "Ваш выпад оказывается быстрее — 17 против 14.\n"
-            "Ваш удар не достигает цели: Паук уклоняется.\n"
+            "Ваш удар не достигает цели. Паук уклоняется.\n"
             "Вы теряете 2 ВЫНОСЛИВОСТИ:\n"
             "Ваша ВЫНОСЛИВОСТЬ: 20 → 18\n"
             "Паук пригибается и готовится к новой атаке."
@@ -188,15 +192,26 @@ class BlackCastleLuckTest(unittest.TestCase):
         self.assertEqual(rendered.count("</blockquote>"), 1)
         quote = rendered.split("<blockquote>", 1)[1].split("</blockquote>", 1)[0]
         self.assertIn("Паук бросается вперёд.", quote)
-        self.assertIn("Ваш удар не достигает цели:", quote)
+        self.assertIn("Ваш удар не достигает цели.", quote)
         self.assertIn("Паук пригибается", quote)
+        self.assertIn("Паук бросается вперёд.\n\nВаш удар не достигает цели", quote)
+        self.assertIn("Ваш удар не достигает цели. Паук уклоняется.\n\nПаук пригибается", quote)
         self.assertNotIn("Расшифровка битвы:", quote)
         breakdown = rendered.split("Расшифровка битвы:\n", 1)[1]
         self.assertIn("Паук атакует с СИЛОЙ УДАРА 14.", breakdown)
         self.assertIn("Вы теряете 2 ВЫНОСЛИВОСТИ:", breakdown)
         self.assertIn("Выносливость: 20 ❤️ → 18 ❤️", breakdown)
+        self.assertIn("СИЛОЙ УДАРА 14.\n\nВаш выпад", breakdown)
         self.assertNotIn("<blockquote>", breakdown)
         self.assertLess(rendered.index("<blockquote>"), rendered.index("Расшифровка битвы:"))
+
+        rendered_with_totals = BlackCastleBot._format_telegram_text(
+            "Битва\n\nВЫНОСЛИВОСТЬ после раунда:\nВы — 18\nГигантский Паук — 8"
+        )
+        self.assertIn(
+            "<pre>ВЫНОСЛИВОСТЬ после раунда:\nВы — 18 ❤️\nГигантский Паук — 8 ❤️</pre>",
+            rendered_with_totals,
+        )
 
     def test_battle_phrase_bank_covers_every_book_enemy_and_generic_phase(self):
         book_enemy_keys = {
@@ -414,7 +429,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertIn("Расшифровка битвы:", captions[2])
             self.assertNotIn("<b>Ваш бросок", captions[2])
             self.assertIn("Выносливость Гигантский Паук: 2 ❤️ → 0 ❤️", captions[4])
-            self.assertIn("ВЫНОСЛИВОСТЬ после раунда:\nВы — 18 ❤️\nГигантский Паук — 0 ❤️", captions[6])
+            self.assertIn(
+                "<pre>ВЫНОСЛИВОСТЬ после раунда:\nВы — 18 ❤️\nГигантский Паук — 0 ❤️</pre>",
+                captions[6],
+            )
             self.assertIn("Вы — 18 ❤️", captions[6])
             self.assertNotIn("<b>ВЫНОСЛИВОСТЬ после раунда:", captions[6])
             self.assertNotIn("<b>Вы — 18", captions[6])
