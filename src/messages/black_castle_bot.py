@@ -482,6 +482,10 @@ class BlackCastleBot:
                     and re.search(r"плаван\w*\s+или\s+левитац", body, re.IGNORECASE)):
                 return ["swimming", "levitation"]
             return found
+        if (re.fullmatch(r"если(?: вы)? победили?|вступить в бой", normalized)
+                and re.search(r"используя\b.*(?:заклятие|заклинание)", body, re.IGNORECASE | re.DOTALL)):
+            battle_options = body.split("ГИГАНТСКИЙ", 1)[0]
+            return [key for key, pattern in SPELL_PATTERNS.items() if pattern.search(battle_options)]
         if re.search(r"наложить какое-нибудь заклятие|попробуете наложить|накладываете заклятие", label, re.IGNORECASE):
             return list(INITIAL_SPELLS)
         if re.search(r"используете заклятие.*переплы|переплываете через реку", label, re.IGNORECASE):
@@ -975,9 +979,16 @@ class BlackCastleBot:
                             or int(state.get("spells", {}).get(cast_spell, 0)) <= 0):
                         return
                 if luck_check_clicked:
+                    result = state.get("luck_checks", {}).get(str(source_step), {})
+                    if result.get("lucky"):
+                        target_step = int(choice["target_paragraph"])
+                        if self.game_store.get_paragraph(target_step) is None:
+                            return
+                        state["step"] = target_step
+                    else:
+                        state["step"] = source_step
                     state["page_part"] = 0
                     state["view"] = "step"
-                    state["step"] = source_step
                 else:
                     source_paragraph = self.game_store.get_paragraph(source_step)
                     source_label = ROUTE_BUTTON_SUFFIX.sub(

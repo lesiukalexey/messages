@@ -13,6 +13,8 @@ class FakeGameStore:
         self.state = state
         self.paragraph = paragraph
         self.choices = choices
+        self.paragraphs = {}
+        self.choices_by_step = {}
 
     def get_player_state(self, player_id):
         return self.state
@@ -21,17 +23,18 @@ class FakeGameStore:
         self.state = json.loads(json.dumps(state))
 
     def get_paragraph(self, number):
-        return self.paragraph if number == 54 else {
+        return self.paragraphs.get(number, self.paragraph if number == 54 else {
             "paragraph_number": number,
             "body": "",
             "photo_file_id": "step-photo",
-        }
+        })
 
     def get_paragraph_choices(self, number):
-        return self.choices if number == 54 else []
+        return self.choices_by_step.get(number, self.choices if number == 54 else [])
 
     def get_paragraph_choice(self, number, choice_id):
-        return next((row for row in self.choices if row["choice_id"] == choice_id), None)
+        choices = self.choices_by_step.get(number, self.choices if number == 54 else [])
+        return next((row for row in choices if row["choice_id"] == choice_id), None)
 
     def get_book_page(self, key):
         return {"body": "Старое предисловие"} if key == "preface" else None
@@ -50,6 +53,7 @@ class LuckBot(BlackCastleBot):
 
     async def _send_direct_screen(self, chat_id, player_id, state, previous_message_id=0):
         self.visible_state = json.loads(json.dumps(state))
+        self.last_previous_message_id = previous_message_id
 
     async def _edit_inline_screen(self, inline_message_id, state):
         self.visible_state = json.loads(json.dumps(state))
@@ -119,6 +123,35 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_step_558_offers_each_spell_named_for_the_combat_and_consumes_selected_one(self):
+        bot, store = make_bot()
+        body = (
+            "Вы будете драться, используя либо заклятие Силы, либо заклятие Слабости, "
+            "либо заклятие Копии.\nГИГАНТСКИЙ ПАУК\nМастерство 8\n"
+            "Выносливость 8\nЕсли вы победили, то 189."
+        )
+        choice = {"choice_id": "route_01", "button_text": "Если вы победили — 189",
+                  "target_paragraph": 189, "required_item": None}
+        store.paragraphs[558] = {"paragraph_number": 558, "body": body, "photo_file_id": "step-photo"}
+        store.choices_by_step[558] = [choice]
+        store.state.update({"step": 558, "spells": {"strength": 1, "weakness": 1, "copy": 1}})
+        _, keyboard, _ = bot._screen(store.state)
+        labels = [button["text"].replace("\u00a0", " ") for row in keyboard for button in row]
+        self.assertEqual(labels[:3], [
+            "Заклинание Силы — 189", "Заклинание Слабости — 189", "Заклинание Копии — 189",
+        ])
+        callback = {"callback_query": {
+            "id": "cast-copy", "from": {"id": 42},
+            "data": "blackcastle:cast:558:route_01:copy",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["step"], 189)
+            self.assertEqual(store.state["spells"]["copy"], 0)
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_new_profile_has_ten_spell_uses_and_preface_uses_default_photo(self):
         template_bot, store = make_bot()
         bot = PhotoBot("token", None, store, template_bot.scene_path)
@@ -160,7 +193,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
-    def test_successful_check_consumes_one_luck_and_returns_to_step_without_check_button(self):
+    def test_successful_check_consumes_one_luck_and_transitions_to_success_destination(self):
         bot, store = make_bot(luck=8)
         _, initial_keyboard, _ = bot._screen(store.state)
         initial_labels = [
@@ -181,7 +214,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         with patch("messages.black_castle_bot.random.randint", side_effect=[2, 3]):
             asyncio.run(bot.process_update(make_callback("route_01")))
         try:
-            self.assertEqual(store.state["step"], 54)
+            self.assertEqual(store.state["step"], 558)
             self.assertEqual(store.state["characteristics"]["luck"], 7)
             self.assertEqual(store.state["luck_checks"]["54"], {
                 "luck_before": 8, "roll": 5, "lucky": True,
@@ -190,13 +223,8 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertIn("Ваша удача: 8", alert["text"])
             self.assertIn("Проверка удачи выпала: 5", alert["text"])
             self.assertIn("Удача улыбнулась вам", alert["text"])
-            _, keyboard, _ = bot._screen(store.state)
-            labels = [button["text"] for row in keyboard for button in row]
-            self.assertFalse(any("Проверить удачу" in label for label in labels))
-            self.assertTrue(any("Удача улыбнулась" in label for label in labels))
-            self.assertTrue(any("Вступить в бой" in label for label in labels))
-            asyncio.run(bot.process_update(make_callback("route_01", "callback-2")))
-            self.assertEqual(store.state["step"], 558)
+            self.assertEqual(bot.visible_state["step"], 558)
+            self.assertEqual(bot.last_previous_message_id, 9)
             self.assertEqual(store.state["characteristics"]["luck"], 7)
         finally:
             bot._test_tempdir.cleanup()
