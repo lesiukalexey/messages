@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -339,7 +340,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
-    def test_battle_runs_seven_actions_and_finishes_at_victory_paragraph(self):
+    def test_battle_narrates_five_lines_then_finishes_round(self):
         bot, store = make_bot()
         body = (
             "Во время боя уменьшайте вашу СИЛУ УДАРА на 1.\nГИГАНТСКИЙ ПАУК\nМастерство 8\n"
@@ -362,7 +363,8 @@ class BlackCastleLuckTest(unittest.TestCase):
                 asyncio.run(bot.process_update(start))
             self.assertEqual(store.state["battle"]["status"], "won")
             self.assertEqual(len(store.state["battle"]["log"]), 7)
-            self.assertEqual(pause.await_count, 7)
+            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
+            self.assertEqual(pause.await_count, max(0, len(narrated_lines) - 1))
             player_roll = store.state["battle"]["log"][1]
             self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 🎯 (база)", player_roll)
             self.assertIn("+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве)", player_roll)
@@ -412,30 +414,41 @@ class BlackCastleLuckTest(unittest.TestCase):
 
             captions = [payload["caption"] for method, payload in bot.calls
                         if method == "editMessageCaption"]
-            self.assertEqual(len(captions), 8)  # battle screen, then each of seven actions
+            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
+            self.assertEqual(len(captions), len(narrated_lines) + 2)  # initial, each quote line, final details
             self.assertRegex(captions[1], r"<blockquote>Гигантский Паук (резко бросается|стремительно перебирает)")
             self.assertNotIn("<i>", "".join(captions))
             self.assertNotIn("<b>", "".join(captions))
             self.assertNotIn("<b>Битва", captions[0])
-            self.assertNotIn("<b>Мастерство", captions[1])
-            self.assertNotIn("<b>СИЛА УДАРА", captions[1])
+            self.assertTrue(all("Расшифровка битвы:" not in caption for caption in captions[1:-1]))
+            self.assertNotIn("🎲", "".join(captions[1:-1]))
+            self.assertNotIn("<b>Мастерство", captions[-1])
+            self.assertNotIn("<b>СИЛА УДАРА", captions[-1])
+            previous_quote_lines = 0
+            for caption in captions[1:-1]:
+                quote = re.search(r"<blockquote>(.*?)</blockquote>", caption, re.DOTALL)
+                self.assertIsNotNone(quote)
+                quote_lines = quote.group(1).split("\n\n")
+                self.assertEqual(len(quote_lines), previous_quote_lines + 1)
+                previous_quote_lines = len(quote_lines)
             self.assertIn(
                 "Гигантский Паук: 1 🎲 + 1 🎲 + 8 🎯 (база) = 10 ⚔️.",
-                captions[1],
+                captions[-1],
             )
-            self.assertIn("20 ⚔️ против 10 ⚔️", captions[3])
+            self.assertIn("20 ⚔️ против 10 ⚔️", captions[-1])
             self.assertRegex(captions[2], r"\nВы [^\n]+(?:\n\n|</blockquote>)")
-            self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 🎯 (база)", captions[2])
-            self.assertIn("Расшифровка битвы:", captions[2])
-            self.assertNotIn("<b>Ваш бросок", captions[2])
-            self.assertIn("Выносливость Гигантский Паук: 2 ❤️ → 0 ❤️", captions[4])
+            self.assertIn("<blockquote>", captions[-1])
+            self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 🎯 (база)", captions[-1])
+            self.assertIn("Расшифровка битвы:", captions[-1])
+            self.assertNotIn("<b>Ваш бросок", captions[-1])
+            self.assertIn("Выносливость Гигантский Паук: 2 ❤️ → 0 ❤️", captions[-1])
             self.assertIn(
                 "<pre>ВЫНОСЛИВОСТЬ после раунда:\nВы — 18 ❤️\nГигантский Паук — 0 ❤️</pre>",
-                captions[6],
+                captions[-1],
             )
-            self.assertIn("Вы — 18 ❤️", captions[6])
-            self.assertNotIn("<b>ВЫНОСЛИВОСТЬ после раунда:", captions[6])
-            self.assertNotIn("<b>Вы — 18", captions[6])
+            self.assertIn("Вы — 18 ❤️", captions[-1])
+            self.assertNotIn("<b>ВЫНОСЛИВОСТЬ после раунда:", captions[-1])
+            self.assertNotIn("<b>Вы — 18", captions[-1])
             self.assertIn("побед", captions[-1].casefold())
             self.assertEqual(store.state["battle"]["status"], "won")
         finally:
@@ -483,7 +496,8 @@ class BlackCastleLuckTest(unittest.TestCase):
                 asyncio.run(bot.process_update(continue_fight))
 
             edits = [payload for method, payload in bot.calls if method == "editMessageText"]
-            self.assertEqual(len(edits), 8)  # refresh current screen plus seven actions
+            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
+            self.assertEqual(len(edits), len(narrated_lines) + 2)  # refresh, quote lines, final details
             self.assertFalse(any(method in {"deleteMessage", "sendMessage", "sendPhoto"}
                                  for method, _ in bot.calls))
             self.assertTrue(all(payload["message_id"] == 20 for payload in edits))
@@ -535,7 +549,8 @@ class BlackCastleLuckTest(unittest.TestCase):
 
             captions = [payload["caption"] for method, payload in bot.calls
                         if method == "editMessageCaption" and "caption" in payload]
-            self.assertEqual(len(captions), 8)
+            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
+            self.assertEqual(len(captions), len(narrated_lines) + 2)
             self.assertTrue(all("Текст завершившегося раунда" not in caption for caption in captions))
             self.assertIn("Гигантский Паук", captions[-1])
             self.assertEqual(store.state["battle"]["round"], 2)

@@ -324,6 +324,16 @@ class BlackCastleBot:
         return escaped if is_formula_or_stat else f"<blockquote>{escaped}</blockquote>"
 
     @staticmethod
+    def _battle_narration_lines(log: list[str]) -> list[str]:
+        narration = []
+        for entry in log:
+            for line in str(entry).splitlines():
+                formatted = BlackCastleBot._format_battle_line(line)
+                if formatted.startswith("<blockquote>") and formatted.endswith("</blockquote>"):
+                    narration.append(html.unescape(formatted[len("<blockquote>"):-len("</blockquote>")]))
+        return narration
+
+    @staticmethod
     def _format_battle_screen(body: str) -> str:
         narration: list[str] = []
         breakdown: list[str] = []
@@ -420,7 +430,12 @@ class BlackCastleBot:
         if view == "battle":
             battle = state.get("battle", {})
             log_limit = 850 if battle.get("inline_message") else 3600
-            log = "\n\n".join(battle.get("log", []))[-log_limit:]
+            battle_log = battle.get("log", [])
+            if battle.get("display_phase") == "narration":
+                visible_count = max(0, int(battle.get("narration_visible_count", 0)))
+                log = "\n\n".join(self._battle_narration_lines(battle_log)[:visible_count])[-log_limit:]
+            else:
+                log = "\n\n".join(battle_log)[-log_limit:]
             text = "Битва"
             if log:
                 text += f"\n\n{log}"
@@ -757,6 +772,8 @@ class BlackCastleBot:
             if enemy_attack > player_attack and enemies[i].get("stamina", 0) > 0
         ]
         battle["round"] = int(battle.get("round", 0)) + 1
+        battle["display_phase"] = "narration"
+        battle["narration_visible_count"] = 0
         log = battle.setdefault("log", [])
         display_names = [re.sub(r"\s+", " ", enemy["name"]).strip().title() for enemy in enemies]
         target_name = display_names[target_index]
@@ -812,8 +829,7 @@ class BlackCastleBot:
              self._battle_phrase(target["name"], "parry", enemy=target_name)),
         ]
 
-        for action_number in range(1, 8):
-            await asyncio.sleep(1)
+        for action_number in range(1, 6):
             if action_number == 4 and player_wins:
                 target["stamina"] = max(0, int(target["stamina"]) - 2)
                 if acting_copy and target["stamina"] == 0:
@@ -875,64 +891,82 @@ class BlackCastleBot:
                     line = self._battle_phrase("*", "avoids_hit")
                 else:
                     line = self._battle_phrase("*", "tie_no_damage")
-            elif action_number == 6:
-                if acting_copy:
-                    line = f"ВЫНОСЛИВОСТЬ после раунда:\nВы — {state['characteristics']['stamina']}\nКопия — {actor['stamina']}"
-                else:
-                    line = "ВЫНОСЛИВОСТЬ после раунда:\n" + "\n".join(
-                        [f"Вы — {actor['stamina']}"]
-                        + [f"{display_names[i]} — {enemy['stamina']}" for i, enemy in enumerate(enemies)]
-                    )
-            else:
-                if not acting_copy and int(actor["stamina"]) <= 0:
-                    battle["status"] = "lost"
-                    line = self._battle_phrase("*", "player_defeated")
-                elif acting_copy and int(actor["stamina"]) <= 0:
-                    battle["status"] = "awaiting_continue"
-                    battle["stage"] = "copy_lost"
-                    line = self._battle_phrase("*", "copy_falls")
-                elif acting_copy and int(target["stamina"]) <= 0:
-                    if all(int(enemy["stamina"]) <= 0 for enemy in enemies):
-                        battle["status"] = "won"
-                        line = (
-                            self._battle_phrase(target["name"], "defeated", enemy=target_name)
-                            + " " + self._battle_phrase("*", "copy_victory_end")
-                        )
-                    else:
-                        battle["status"] = "awaiting_continue"
-                        battle["stage"] = "copy_won"
-                        line = (
-                            self._battle_phrase(target["name"], "defeated", enemy=target_name)
-                            + " " + self._battle_phrase("*", "copy_victory_continue")
-                        )
-                elif all(int(enemy["stamina"]) <= 0 for enemy in enemies):
-                    battle["status"] = "won"
-                    line = self._battle_phrase("*", "battle_victory")
-                else:
-                    battle["status"] = "awaiting_continue"
-                    remaining = [display_names[i] for i, enemy in enumerate(enemies) if enemy["stamina"] > 0]
-                    if len(remaining) == 1:
-                        line = self._battle_phrase(
-                            enemies[next(i for i, enemy in enumerate(enemies) if enemy["stamina"] > 0)]["name"],
-                            "survives",
-                            enemy=remaining[0],
-                        )
-                    else:
-                        line = self._battle_phrase(
-                            "*", "multiple_survives", enemies=", ".join(remaining)
-                        )
             log.append(line)
             if len(log) > 24:
                 del log[:-24]
-            await self._edit_battle_progress(
-                player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
+            narration_lines = self._battle_narration_lines(log)
+            while battle["narration_visible_count"] < len(narration_lines):
+                if battle["narration_visible_count"]:
+                    await asyncio.sleep(1)
+                battle["narration_visible_count"] += 1
+                await self._edit_battle_progress(
+                    player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
+                )
+
+        if acting_copy:
+            summary = (
+                f"ВЫНОСЛИВОСТЬ после раунда:\nВы — {state['characteristics']['stamina']}\n"
+                f"Копия — {actor['stamina']}"
             )
+        else:
+            summary = "ВЫНОСЛИВОСТЬ после раунда:\n" + "\n".join(
+                [f"Вы — {actor['stamina']}"]
+                + [f"{display_names[i]} — {enemy['stamina']}" for i, enemy in enumerate(enemies)]
+            )
+        log.append(summary)
+
+        if not acting_copy and int(actor["stamina"]) <= 0:
+            battle["status"] = "lost"
+            ending = self._battle_phrase("*", "player_defeated")
+        elif acting_copy and int(actor["stamina"]) <= 0:
+            battle["status"] = "awaiting_continue"
+            battle["stage"] = "copy_lost"
+            ending = self._battle_phrase("*", "copy_falls")
+        elif acting_copy and int(target["stamina"]) <= 0:
+            if all(int(enemy["stamina"]) <= 0 for enemy in enemies):
+                battle["status"] = "won"
+                ending = (
+                    self._battle_phrase(target["name"], "defeated", enemy=target_name)
+                    + " " + self._battle_phrase("*", "copy_victory_end")
+                )
+            else:
+                battle["status"] = "awaiting_continue"
+                battle["stage"] = "copy_won"
+                ending = (
+                    self._battle_phrase(target["name"], "defeated", enemy=target_name)
+                    + " " + self._battle_phrase("*", "copy_victory_continue")
+                )
+        elif all(int(enemy["stamina"]) <= 0 for enemy in enemies):
+            battle["status"] = "won"
+            ending = self._battle_phrase("*", "battle_victory")
+        else:
+            battle["status"] = "awaiting_continue"
+            remaining = [display_names[i] for i, enemy in enumerate(enemies) if enemy["stamina"] > 0]
+            if len(remaining) == 1:
+                ending = self._battle_phrase(
+                    enemies[next(i for i, enemy in enumerate(enemies) if enemy["stamina"] > 0)]["name"],
+                    "survives",
+                    enemy=remaining[0],
+                )
+            else:
+                ending = self._battle_phrase(
+                    "*", "multiple_survives", enemies=", ".join(remaining)
+                )
+        log.append(ending)
+        battle["display_phase"] = "complete"
+        battle.pop("narration_visible_count", None)
+        if len(log) > 24:
+            del log[:-24]
+        await self._edit_battle_progress(
+            player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
+        )
 
     def _recover_interrupted_battle(self, state: dict[str, Any]) -> None:
         """Restore a continue button when Telegram redelivers an interrupted round callback."""
         battle = state.get("battle")
         if not isinstance(battle, dict) or battle.get("status") != "running":
             return
+        battle["display_phase"] = "complete"
         log = battle.setdefault("log", [])
         if len(log) < 4:
             log.clear()
