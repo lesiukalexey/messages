@@ -410,6 +410,7 @@ class BlackCastleBot:
                 item for item in carried_items
                 if item.strip().casefold() not in equipment_names
             ]
+            bag_used = self._bag_item_count(state, bag_items)
             bag_listing = "\n".join(f"• {item}" for item in bag_items) or "Пусто"
             text = (
                 "Характеристики и инвентарь\n\n"
@@ -420,7 +421,7 @@ class BlackCastleBot:
                 "Инвентарь:\n"
                 "Снаряжение: меч\n"
                 f"Фляга: {state['water_sips']} глотка; каждый восстанавливает 2 ВЫНОСЛИВОСТИ.\n"
-                f"Заплечный мешок: {len(bag_items)}/{state['bag_capacity']} предметов:\n"
+                f"Заплечный мешок: {bag_used}/{state['bag_capacity']} предметов:\n"
                 f"{bag_listing}\n"
                 "\nЗаклинания:\n"
                 + "\n".join(
@@ -682,6 +683,24 @@ class BlackCastleBot:
         return False
 
     @staticmethod
+    def _bag_item_count(state: dict[str, Any], bag_items: list[str] | None = None) -> int:
+        if bag_items is None:
+            equipment_names = {"меч", "фляга", "заплечный мешок"}
+            bag_items = [
+                item for item in state.get("items", [])
+                if isinstance(item, str) and item.strip().casefold() not in equipment_names
+            ]
+        slot_costs = state.get("item_slot_costs", {})
+        total = 0
+        for item in bag_items:
+            try:
+                cost = max(1, int(slot_costs.get(item, 1))) if isinstance(slot_costs, dict) else 1
+            except (TypeError, ValueError):
+                cost = 1
+            total += cost
+        return total
+
+    @staticmethod
     def _consume_item(state: dict[str, Any], required_item: str) -> bool:
         items = state.get("items", [])
         for index, item in enumerate(items):
@@ -689,6 +708,9 @@ class BlackCastleBot:
                 continue
             if BlackCastleBot._has_item({"items": [item]}, required_item):
                 del items[index]
+                slot_costs = state.get("item_slot_costs")
+                if isinstance(slot_costs, dict) and item not in items:
+                    slot_costs.pop(item, None)
                 return True
         return False
 
@@ -1576,7 +1598,7 @@ class BlackCastleBot:
                         item for item in state.get("items", [])
                         if isinstance(item, str) and item.strip().casefold() not in equipment_names
                     ]
-                    if len(bag_items) + int(loot_choice["bag_slots"]) > int(state.get("bag_capacity", 7)):
+                    if self._bag_item_count(state, bag_items) + int(loot_choice["bag_slots"]) > int(state.get("bag_capacity", 7)):
                         loot_alert = "В заплечном мешке недостаточно места для этой вещи."
             elif action.startswith("blackcastle:battle:begin:"):
                 try:
@@ -1639,7 +1661,7 @@ class BlackCastleBot:
                         item for item in state.get("items", [])
                         if isinstance(item, str) and item.strip().casefold() not in equipment_names
                     ]
-                    if len(bag_items) + int(choice_reward["bag_slots"]) > int(state.get("bag_capacity", 7)):
+                    if self._bag_item_count(state, bag_items) + int(choice_reward["bag_slots"]) > int(state.get("bag_capacity", 7)):
                         loot_alert = "В заплечном мешке недостаточно места для этой вещи."
                 if (
                     route_choice is not None
@@ -1734,7 +1756,11 @@ class BlackCastleBot:
                 if loot_choice is None or loot_source_step is None or loot_alert:
                     return
                 if loot_choice.get("item_name"):
-                    state.setdefault("items", []).append(str(loot_choice["item_name"]))
+                    item_name = str(loot_choice["item_name"])
+                    state.setdefault("items", []).append(item_name)
+                    slot_cost = int(loot_choice.get("bag_slots") or 1)
+                    if slot_cost > 1:
+                        state.setdefault("item_slot_costs", {})[item_name] = slot_cost
                 state["gold"] = int(state.get("gold", 0)) + int(loot_choice.get("gold_amount") or 0)
                 claimed = state.setdefault("claimed_loot", {})
                 claimed.setdefault(str(loot_source_step), []).append(str(loot_choice["loot_id"]))
@@ -2007,7 +2033,11 @@ class BlackCastleBot:
                         if loot_alert:
                             return
                         if choice_reward.get("item_name"):
-                            state.setdefault("items", []).append(str(choice_reward["item_name"]))
+                            item_name = str(choice_reward["item_name"])
+                            state.setdefault("items", []).append(item_name)
+                            slot_cost = int(choice_reward.get("bag_slots") or 1)
+                            if slot_cost > 1:
+                                state.setdefault("item_slot_costs", {})[item_name] = slot_cost
                         state["gold"] = int(state.get("gold", 0)) + int(
                             choice_reward.get("gold_amount") or 0
                         )

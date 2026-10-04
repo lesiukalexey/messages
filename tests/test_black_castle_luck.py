@@ -473,6 +473,29 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_three_slot_armor_uses_three_backpack_slots(self):
+        bot, store = make_bot()
+        store.loot_options[414] = [{
+            "loot_id": "green_armor", "button_text": "Взять зелёные латы (3 места)",
+            "item_name": "Зелёные латы", "gold_amount": 0, "bag_slots": 3,
+        }]
+        store.state.update({
+            "step": 414, "view": "step",
+            "items": ["Меч", "Фляга", "Кольцо", "Еда", "Стрела", "Перо"],
+        })
+        update = {"callback_query": {
+            "id": "green-armor", "from": {"id": 42},
+            "data": "blackcastle:loot:414:green_armor",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(update))
+            self.assertIn("Зелёные латы", store.state["items"])
+            self.assertEqual(store.state["item_slot_costs"]["Зелёные латы"], 3)
+            self.assertEqual(BlackCastleBot._bag_item_count(store.state), 7)
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_victory_screen_offers_conditional_loot_before_leaving_battle(self):
         bot, store = make_bot()
         store.loot_options[40] = [{
