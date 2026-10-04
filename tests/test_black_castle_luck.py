@@ -33,6 +33,9 @@ class FakeGameStore:
     def get_paragraph_choice(self, number, choice_id):
         return next((row for row in self.choices if row["choice_id"] == choice_id), None)
 
+    def get_book_page(self, key):
+        return {"body": "Старое предисловие"} if key == "preface" else None
+
     def record_button_press(self, *args):
         pass
 
@@ -97,6 +100,44 @@ def make_callback(choice_id, callback_id="callback-1"):
 
 
 class BlackCastleLuckTest(unittest.TestCase):
+    def test_spell_route_is_hidden_when_empty_and_cast_consumes_one_copy(self):
+        bot, store = make_bot()
+        store.state["spells"] = {"strength": 1, "weakness": 0}
+        _, keyboard, _ = bot._screen(store.state)
+        labels = [button["text"] for row in keyboard for button in row]
+        self.assertTrue(any("Заклинание Силы" in label for label in labels))
+        self.assertFalse(any("Заклинание Слабости" in label for label in labels))
+        cast = {"callback_query": {
+            "id": "spell-callback", "from": {"id": 42},
+            "data": "blackcastle:cast:54:route_02:strength",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(cast))
+            self.assertEqual(store.state["step"], 410)
+            self.assertEqual(store.state["spells"]["strength"], 0)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_new_profile_has_ten_spell_uses_and_preface_uses_default_photo(self):
+        template_bot, store = make_bot()
+        bot = PhotoBot("token", None, store, template_bot.scene_path)
+        state = bot._new_state()
+        self.assertEqual(sum(state["spells"].values()), 10)
+        self.assertEqual(state["spells"]["levitation"], 2)
+        self.assertEqual(state["spells"]["fire"], 2)
+        state["view"] = "preface"
+        bot.calls = []
+        bot._test_tempdir = template_bot._test_tempdir
+        try:
+            asyncio.run(bot._send_direct_screen(42, 42, state))
+            photo_call = next(payload for method, payload in bot.calls if method == "sendPhoto")
+            self.assertEqual(photo_call["photo"], "default-photo")
+            self.assertIn("Старое предисловие", photo_call["caption"])
+            self.assertIn("ЗАКЛЯТИЕ ЛЕВИТАЦИИ", photo_call["caption"])
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_successful_check_consumes_one_luck_and_returns_to_step_without_check_button(self):
         bot, store = make_bot(luck=8)
         _, initial_keyboard, _ = bot._screen(store.state)
@@ -177,8 +218,14 @@ class BlackCastleLuckTest(unittest.TestCase):
 
     def test_other_route_declines_check_and_is_unlucky(self):
         bot, store = make_bot(luck=4)
+        store.state["spells"] = {"strength": 1}
+        cast = {"callback_query": {
+            "id": "callback-1", "from": {"id": 42},
+            "data": "blackcastle:cast:54:route_02:strength",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
         with patch("messages.black_castle_bot.random.randint") as dice:
-            asyncio.run(bot.process_update(make_callback("route_02")))
+            asyncio.run(bot.process_update(cast))
         try:
             self.assertEqual(store.state["step"], 410)
             self.assertEqual(store.state["characteristics"]["luck"], 3)

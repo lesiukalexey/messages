@@ -13,6 +13,57 @@ from urllib.request import Request, urlopen
 BOT_USERNAME = "KnigaIgraBot"
 ROUTE_BUTTON_MAX_LENGTH = 50
 ROUTE_BUTTON_SUFFIX = re.compile(r"\s+[—–-]\s*\d+\s*$")
+INITIAL_SPELLS = {
+    "levitation": 2,
+    "fire": 2,
+    "illusion": 1,
+    "strength": 1,
+    "weakness": 1,
+    "copy": 1,
+    "healing": 1,
+    "swimming": 1,
+}
+SPELL_LABELS = {
+    "levitation": "Левитации",
+    "fire": "Огня",
+    "illusion": "Иллюзии",
+    "strength": "Силы",
+    "weakness": "Слабости",
+    "copy": "Копии",
+    "healing": "Исцеления",
+    "swimming": "Плавания",
+}
+SPELL_PATTERNS = {
+    "levitation": re.compile(r"\bлевитац\w*", re.IGNORECASE),
+    "fire": re.compile(r"\bогн\w*", re.IGNORECASE),
+    "illusion": re.compile(r"\bиллюз\w*", re.IGNORECASE),
+    "strength": re.compile(r"\bсилы\b(?!\s+удара)", re.IGNORECASE),
+    "weakness": re.compile(r"\bслабост\w*", re.IGNORECASE),
+    "copy": re.compile(r"\bкопи\w*", re.IGNORECASE),
+    "healing": re.compile(r"\bисцел\w*", re.IGNORECASE),
+    "swimming": re.compile(r"\bплаван\w*", re.IGNORECASE),
+}
+PREFACE_SPELL_TEXT = """Как и положено в сказках, путешествие начинается перед королевским дворцом. Узнав, зачем вы пришли, стражники провожают вас в Тронный зал, и вы предстаете перед Королем. Обрадованный тем, что есть еще в его королевстве герои, готовые рискнуть даже своей жизнью ради его дочери, он отправляет вас к придворному астрологу и волшебнику, лучшему в королевстве знатоку Белой магии — Майлину. Ведь вам придется сражаться не только с воинами, но и со злыми духами — без волшебства в дороге не обойтись.
+
+Однако даже Майлин не может предвидеть всего могущества Барлада Дэрта, да и времени на учебу у вас совсем мало. Он лишь успевает научить вас самым необходимым заклятиям и дать несколько советов. Вот заклятия, которые вы изучили:
+
+ЗАКЛЯТИЕ ЛЕВИТАЦИИ — с его помощью вы сможете подняться в воздух и перелететь то препятствие, которое вам встретится. Но будьте осторожны: заклятие действует не слишком долго, и если вы не рассчитаете свои силы, то можете опуститься на землю раньше, чем препятствие или опасность будут позади.
+
+ЗАКЛЯТИЕ ОГНЯ — поможет вам в нужный момент создать в воздухе огненный шар и направить его на врагов. Но в закрытых помещениях им надо пользоваться осмотрительно, чтобы не устроить пожар.
+
+ЗАКЛЯТИЕ ИЛЛЮЗИИ — вы создадите у вашего врага необходимую иллюзию и сможете спастись в тех ситуациях, из которых другого выхода не будет. Но заклятие иллюзии — опасное колдовство: ведь иллюзия рассеивается, и враг понимает, что его одурачили.
+
+ЗАКЛЯТИЕ СИЛЫ — прибавит вам силу и увеличит вашу СИЛУ УДАРА.
+
+ЗАКЛЯТИЕ СЛАБОСТИ — сделает вашего врага неуклюжим и неповоротливым, ослабит СИЛУ его УДАРА.
+
+ЗАКЛЯТИЕ КОПИИ — с его помощью вы сможете при случае создать точную Копию вашего противника, которую вы будете контролировать. Тогда прежде чем добраться до вас, ему придется драться с собственной Копией, МАСТЕРСТВО и ВЫНОСЛИВОСТЬ которой будут равны его МАСТЕРСТВУ и ВЫНОСЛИВОСТИ. Если ваш враг победит свою Копию, то с ним придется драться вам самим. Если же Копия сразит противника, то заклятие теряет силу и Копия исчезает, а вы продолжаете свой путь. Но если противников было несколько, а Копию вы смогли или захотели создать только одну, то придется драться и с остальными.
+
+ЗАКЛЯТИЕ ИСЦЕЛЕНИЯ — в любой момент (но не во время сражения) добавит вам 8 ВЫНОСЛИВОСТЕЙ.
+
+ЗАКЛЯТИЕ ПЛАВАНИЯ — вы никогда не видели ни реки, ни озера, а в дороге может случиться всякое. У вас уже нет времени учиться плавать. Но с помощью этого заклятия вы сможете переплыть любую водную преграду, которая вам встретится. Но будьте внимательны: как только вы ступите на землю, заклятие утратит свою силу.
+
+Астролог предупредил: уровень вашего МАСТЕРСТВА позволяет вам воспользоваться заклятиями только 10 раз. Поэтому вы можете выбрать любые заклятия и в любом количестве, но всего их должно быть не более десяти. Настройте запас заклятий кнопками ниже."""
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +116,7 @@ class BlackCastleBot:
                 "luck": luck,
                 "max_luck": luck,
             },
+            "spells": dict(INITIAL_SPELLS),
             "items": ["Меч", "Фляга"],
             "gold": 15,
             "water_sips": 2,
@@ -83,6 +135,7 @@ class BlackCastleBot:
             state = self._new_state()
             self._save_state(player_id, state)
         else:
+            state_changed = self._ensure_spell_profile(state)
             items = state.get("items")
             if isinstance(items, list):
                 filtered_items = [
@@ -94,8 +147,31 @@ class BlackCastleBot:
                 ]
                 if len(filtered_items) != len(items):
                     state["items"] = filtered_items
-                    self._save_state(player_id, state)
+                    state_changed = True
+            if state_changed:
+                self._save_state(player_id, state)
         return state
+
+    @staticmethod
+    def _ensure_spell_profile(state: dict[str, Any]) -> bool:
+        spells = state.get("spells")
+        if not isinstance(spells, dict):
+            state["spells"] = dict(INITIAL_SPELLS)
+            return True
+        changed = False
+        for spell, initial_count in INITIAL_SPELLS.items():
+            if spell not in spells:
+                spells[spell] = initial_count
+                changed = True
+            else:
+                try:
+                    count = max(0, int(spells[spell]))
+                except (TypeError, ValueError):
+                    count = 0
+                if spells[spell] != count:
+                    spells[spell] = count
+                    changed = True
+        return changed
 
     def _save_state(self, player_id: int, state: dict[str, Any]) -> None:
         self.game_store.save_player_state(player_id, state)
@@ -200,10 +276,20 @@ class BlackCastleBot:
                 if preface is not None
                 else str(scene["preface"])
             )
-            return preface_text, [[{
-                "text": "Продолжить",
-                "callback_data": "blackcastle:continue",
-            }]], True
+            if PREFACE_SPELL_TEXT not in preface_text:
+                preface_text = f"{preface_text.rstrip()}\n\n{PREFACE_SPELL_TEXT}"
+            spells = state.get("spells", INITIAL_SPELLS)
+            allocated = sum(max(0, int(spells.get(key, 0))) for key in INITIAL_SPELLS)
+            preface_text += f"\n\nРаспределено заклятий: {allocated} из 10."
+            keyboard = []
+            for key, label in SPELL_LABELS.items():
+                keyboard.append([
+                    {"text": "−", "callback_data": f"blackcastle:spell:{key}:-1"},
+                    {"text": f"{label}: {spells.get(key, 0)}", "callback_data": "blackcastle:spell:noop"},
+                    {"text": "+", "callback_data": f"blackcastle:spell:{key}:1"},
+                ])
+            keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:continue"}])
+            return preface_text, keyboard, True
 
         if view in {"stats", "inventory", "status"}:
             values = state["characteristics"]
@@ -227,6 +313,12 @@ class BlackCastleBot:
                 f"Фляга: {state['water_sips']} глотка; каждый восстанавливает 2 ВЫНОСЛИВОСТИ.\n"
                 f"Заплечный мешок: {len(bag_items)}/{state['bag_capacity']} предметов:\n"
                 f"{bag_listing}\n"
+                "\nЗаклинания:\n"
+                + "\n".join(
+                    f"{SPELL_LABELS[key]}: {state.get('spells', {}).get(key, 0)}"
+                    for key in INITIAL_SPELLS
+                )
+                + "\n"
                 f"Золотые: {state['gold']}"
             )
             return text, [[{
@@ -269,6 +361,22 @@ class BlackCastleBot:
                 source_label = ROUTE_BUTTON_SUFFIX.sub(
                     "", str(choice["button_text"])
                 ).strip()
+                spell_options = self._route_spell_options(source_label, str(body or ""))
+                if spell_options:
+                    available = [
+                        spell for spell in spell_options
+                        if int(state.get("spells", INITIAL_SPELLS).get(spell, 0)) > 0
+                    ]
+                    for spell in available:
+                        keyboard.append([{
+                            "text": self._route_button_text(
+                                f"Заклинание {SPELL_LABELS[spell]}", target
+                            ),
+                            "callback_data": (
+                                f"blackcastle:cast:{step}:{choice['choice_id']}:{spell}"
+                            ),
+                        }])
+                    continue
                 is_luck_success_route = bool(
                     re.fullmatch(
                         r"Если(?: вы)? удачливы|Проверить удачу",
@@ -363,6 +471,22 @@ class BlackCastleBot:
 
     def _default_photo(self) -> str:
         return self.game_store.get_setting("kniga_igra_black_castle_photo_file_id")
+
+    @staticmethod
+    def _route_spell_options(label: str, body: str) -> list[str]:
+        normalized = label.casefold().replace("ё", "е")
+        found = [key for key, pattern in SPELL_PATTERNS.items() if pattern.search(label)]
+        if found:
+            # Step 24 lets the player use either Swimming or Levitation for the same route.
+            if ("левитац" in normalized and "плаван" in body.casefold().replace("ё", "е")
+                    and re.search(r"плаван\w*\s+или\s+левитац", body, re.IGNORECASE)):
+                return ["swimming", "levitation"]
+            return found
+        if re.search(r"наложить какое-нибудь заклятие|попробуете наложить|накладываете заклятие", label, re.IGNORECASE):
+            return list(INITIAL_SPELLS)
+        if re.search(r"используете заклятие.*переплы|переплываете через реку", label, re.IGNORECASE):
+            return ["swimming"]
+        return []
 
     @staticmethod
     def _route_button_text(label: str, target_paragraph: int) -> str:
@@ -493,7 +617,7 @@ class BlackCastleBot:
         if has_photo and first_part:
             photo_id = (
                 self._default_photo()
-                if state.get("view") == "status"
+                if state.get("view") in {"status", "preface"}
                 else self._paragraph_photo(int(state.get("step", 1)))
             )
         else:
@@ -538,10 +662,10 @@ class BlackCastleBot:
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
         text, keyboard = self._inline_screen(state)
         payload = {"inline_message_id": inline_message_id, "reply_markup": {"inline_keyboard": keyboard}}
-        if state.get("view") in {"step", "status"}:
+        if state.get("view") in {"step", "status", "preface"}:
             photo_id = (
                 self._default_photo()
-                if state.get("view") == "status"
+                if state.get("view") in {"status", "preface"}
                 else self._paragraph_photo(int(state.get("step", 1)))
             )
             if not photo_id:
@@ -569,7 +693,7 @@ class BlackCastleBot:
         except ValueError:
             return
         state = self._get_or_create_state(player_id)
-        photo_id = self._paragraph_photo(int(state.get("step", 1)))
+        photo_id = self._default_photo() if state.get("view") == "preface" else self._paragraph_photo(int(state.get("step", 1)))
         results: list[dict[str, Any]] = []
         if photo_id:
             text, keyboard = self._inline_screen(state)
@@ -610,19 +734,24 @@ class BlackCastleBot:
                         label_from_message = True
                         break
 
-        if action.startswith("blackcastle:route:"):
+        if action.startswith("blackcastle:route:") or action.startswith("blackcastle:cast:"):
             try:
-                _, _, source_text, choice_id = action.split(":", 3)
+                parts = action.split(":")
+                source_text, choice_id = parts[2], parts[3]
                 paragraph_number = int(source_text)
                 choice = self.game_store.get_paragraph_choice(paragraph_number, choice_id)
             except (ValueError, TypeError):
                 choice = None
             if choice is not None:
                 target_paragraph = int(choice["target_paragraph"])
-                if not label_from_message:
+                if action.startswith("blackcastle:cast:"):
+                    spell_key = parts[4]
                     label = self._route_button_text(
-                        str(choice["button_text"]), target_paragraph
+                        f"Заклинание {SPELL_LABELS.get(spell_key, spell_key)}", target_paragraph
                     )
+                if not label_from_message:
+                    if not action.startswith("blackcastle:cast:"):
+                        label = self._route_button_text(str(choice["button_text"]), target_paragraph)
         elif action.startswith("blackcastle:step:"):
             try:
                 target_paragraph = int(action.rsplit(":", 1)[1])
@@ -678,13 +807,31 @@ class BlackCastleBot:
             luck_check_clicked = False
             route_choice = None
             route_source_step = None
-            if action.startswith("blackcastle:route:"):
+            cast_spell = None
+            if action.startswith("blackcastle:cast:"):
+                try:
+                    _, _, source_text, choice_id, cast_spell = action.split(":", 4)
+                    route_source_step = int(source_text)
+                    route_choice = self.game_store.get_paragraph_choice(route_source_step, choice_id)
+                except (ValueError, TypeError):
+                    route_choice = None
+            elif action.startswith("blackcastle:route:"):
                 try:
                     _, _, source_text, choice_id = action.split(":", 3)
                     route_source_step = int(source_text)
                     route_choice = self.game_store.get_paragraph_choice(
                         route_source_step, choice_id
                     )
+                    if route_choice is not None:
+                        source_paragraph = self.game_store.get_paragraph(route_source_step)
+                        raw_label = ROUTE_BUTTON_SUFFIX.sub(
+                            "", str(route_choice.get("button_text") or "")
+                        ).strip()
+                        if self._route_spell_options(
+                            raw_label,
+                            str((source_paragraph or {}).get("body") or ""),
+                        ):
+                            route_choice = None
                 except (ValueError, TypeError):
                     route_choice = None
                 if (
@@ -728,6 +875,18 @@ class BlackCastleBot:
                             state, route_source_step, check=False
                         )
 
+            if (action.startswith("blackcastle:cast:") and route_choice is not None
+                    and state.get("view") == "step" and state.get("step") == route_source_step):
+                source_paragraph = self.game_store.get_paragraph(route_source_step)
+                has_luck_prompt = bool(
+                    source_paragraph
+                    and re.search(r"ПРОВЕРЬТЕ СВОЮ УДАЧУ", str(source_paragraph.get("body") or ""), re.IGNORECASE)
+                )
+                checks = state.get("luck_checks")
+                has_checked = isinstance(checks, dict) and str(route_source_step) in checks
+                if has_luck_prompt and not has_checked:
+                    luck_alert = self._resolve_luck_check(state, route_source_step, check=False)
+
             if luck_alert:
                 self._save_state(player_id, state)
             if isinstance(callback_id, str):
@@ -757,6 +916,25 @@ class BlackCastleBot:
                 state["view"] = "step"
                 state["step"] = 1
                 state["page_part"] = 0
+            elif action.startswith("blackcastle:spell:"):
+                try:
+                    _, _, spell_key, delta_text = action.split(":", 3)
+                    delta = int(delta_text)
+                except ValueError:
+                    return
+                if spell_key == "noop":
+                    return
+                if state.get("view") != "preface" or spell_key not in INITIAL_SPELLS or delta not in {-1, 1}:
+                    return
+                spells = state.setdefault("spells", dict(INITIAL_SPELLS))
+                current = int(spells.get(spell_key, 0))
+                total = sum(max(0, int(value)) for value in spells.values())
+                if delta < 0 and current > 0:
+                    spells[spell_key] = current - 1
+                elif delta > 0 and total < 10:
+                    spells[spell_key] = current + 1
+                else:
+                    return
             elif action.startswith("blackcastle:step:"):
                 try:
                     target_step = int(action.rsplit(":", 1)[1])
@@ -769,13 +947,22 @@ class BlackCastleBot:
                     state["page_part"] = 0
                 except ValueError:
                     return
-            elif action.startswith("blackcastle:route:"):
+            elif action.startswith("blackcastle:route:") or action.startswith("blackcastle:cast:"):
                 if route_choice is None or route_source_step is None:
                     return
                 source_step = route_source_step
                 if state.get("view") != "step" or state.get("step") != source_step:
                     return
                 choice = route_choice
+                if cast_spell:
+                    source_paragraph = self.game_store.get_paragraph(source_step)
+                    permitted = self._route_spell_options(
+                        ROUTE_BUTTON_SUFFIX.sub("", str(choice.get("button_text") or "")).strip(),
+                        str((source_paragraph or {}).get("body") or ""),
+                    )
+                    if (cast_spell not in permitted or cast_spell not in INITIAL_SPELLS
+                            or int(state.get("spells", {}).get(cast_spell, 0)) <= 0):
+                        return
                 if luck_check_clicked:
                     state["page_part"] = 0
                     state["view"] = "step"
@@ -818,6 +1005,8 @@ class BlackCastleBot:
                     target_step = int(choice["target_paragraph"])
                     if self.game_store.get_paragraph(target_step) is None:
                         return
+                    if cast_spell:
+                        state.setdefault("spells", dict(INITIAL_SPELLS))[cast_spell] -= 1
                     state["step"] = target_step
                     state["view"] = "step"
                     state["page_part"] = 0
