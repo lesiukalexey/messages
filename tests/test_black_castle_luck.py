@@ -610,6 +610,64 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_step_239_long_paragraph_keeps_loot_and_routes_on_first_page(self):
+        bot, store = make_bot()
+        body = (
+            "Оба противника мертвы, и вы можете осмотреть дом, в котором оказались. "
+            "В нем нет ничего интересного, кроме картины, висящей на стене напротив входа. "
+            "На ней рыцарь в зеленых латах и зеленом шлеме во весь опор скачет по лесной дороге. "
+            "Картина любопытна, но ни о чем не напоминает: при дворе таких рыцарей не встречалось. "
+            "Может быть, это воинство волшебника? Пока же ясно только одно: если этот рыцарь враг, "
+            "то такая встреча не сулит ничего хорошего. Бутылка, которую нес Гоблин, разбилась, "
+            "но в погребе удается найти еще одну и немного еды. Можете использовать и то, и другое "
+            "или же взять с собой: вино восстановит вам 3 ВЫНОСЛИВОСТИ, еда — 2. В кармане у Орка "
+            "лежит серебряный свисток, который вы можете взять себе. Теперь уходите. От Заставы в "
+            "глубь леса ведет удобная широкая дорога, и вы быстро идете по ней, стараясь наверстать "
+            "упущенное время. Направо от дороги отходит узенькая тропка. Хотите свернуть на нее "
+            "(531) или пойдете дальше (64)?"
+        )
+        store.paragraphs[239] = {
+            "paragraph_number": 239, "body": body, "photo_file_id": "step-photo",
+        }
+        store.choices_by_step[239] = [
+            {"choice_id": "route_01", "button_text": "Свернуть на тропку — 531",
+             "target_paragraph": 531, "required_item": None},
+            {"choice_id": "route_02", "button_text": "Пойти дальше — 64",
+             "target_paragraph": 64, "required_item": None},
+        ]
+        store.loot_options[239] = [{
+            "loot_id": key, "button_text": label, "item_name": item,
+            "gold_amount": gold, "bag_slots": slots,
+        } for key, label, item, gold, slots in PARAGRAPH_LOOT[239]]
+        store.state.update({
+            "step": 239, "view": "step", "claimed_loot": {},
+            "characteristics": {
+                "mastery": 8, "max_mastery": 10,
+                "stamina": 18, "max_stamina": 19,
+                "luck": 8, "max_luck": 10,
+            },
+        })
+
+        text, keyboard, _ = bot._paged_screen(store.state, limit=1024)
+        labels = [button["text"] for row in keyboard for button in row]
+        self.assertLessEqual(len(text), 1024)
+        self.assertNotIn("Читать продолжение", labels)
+        self.assertIn("Взять вино", labels)
+        self.assertIn("Взять еду", labels)
+        self.assertIn("Взять серебряный свисток", labels)
+        self.assertIn(PARAGRAPH_LOOT_STAMINA_EFFECTS[(239, "wine")][1], labels)
+        self.assertIn(PARAGRAPH_LOOT_STAMINA_EFFECTS[(239, "food")][1], labels)
+        self.assertIn("Свернуть на тропку — 531", labels)
+        self.assertIn("Пойти дальше — 64", labels)
+
+        inline_text, inline_keyboard = bot._inline_screen(store.state)
+        self.assertLessEqual(len(inline_text), 1024)
+        self.assertEqual(
+            {button["text"] for row in inline_keyboard for button in row},
+            set(labels),
+        )
+        bot._test_tempdir.cleanup()
+
     def test_step_11_empties_and_step_307_refills_the_equipped_flask(self):
         bot, store = make_bot()
         store.paragraphs[10] = {"paragraph_number": 10, "body": "", "photo_file_id": "photo"}

@@ -1492,7 +1492,10 @@ class BlackCastleBot:
     def _inline_screen(
         self, state: dict[str, Any]
     ) -> tuple[str, list[list[dict[str, str]]]]:
-        text, keyboard, _ = self._paged_screen(state, limit=950)
+        # Telegram photo captions allow up to 1024 characters. Step 239 is
+        # 953 characters including its heading, and fits as a single caption;
+        # splitting it at 950 hides every item and route action on page one.
+        text, keyboard, _ = self._paged_screen(state, limit=1024)
         return self._format_telegram_text(text), keyboard
 
     async def _delete_message(self, chat_id: int, message_id: int) -> bool:
@@ -1525,7 +1528,7 @@ class BlackCastleBot:
             old_ids.append(previous_message_id)
         old_ids = list(dict.fromkeys(old_ids))
 
-        screen_limit = 3900 if state.get("view") == "battle" else 950
+        screen_limit = 3900 if state.get("view") == "battle" else 1024
         text, keyboard, first_part = self._paged_screen(state, limit=screen_limit)
         is_direct_battle = state.get("view") == "battle"
         _, _, has_photo = self._screen(state)
