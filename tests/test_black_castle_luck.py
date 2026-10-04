@@ -145,7 +145,7 @@ class BlackCastleLuckTest(unittest.TestCase):
 
         plain_lines = (
             "Гигантский Паук атакует с СИЛОЙ УДАРА 17 (9 + 8).",
-            "Ваш бросок: 5 (сумма двух кубиков) + 8 (база: ваше Мастерство) = 13 (СИЛА УДАРА игрока) ⚔️",
+            "Ваш бросок: 2 🎲 + 3 🎲 + 8 (база: ваше Мастерство) = 13 (СИЛА УДАРА игрока) ⚔️",
             "ВЫНОСЛИВОСТЬ после раунда:",
             "Вы — 18 ❤️",
             "Гигантский Паук — 4 ❤️",
@@ -330,7 +330,7 @@ class BlackCastleLuckTest(unittest.TestCase):
                 "name": "Копия ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 8,
             })
             self.assertIn(
-                "Бросок Копии: 12 (сумма двух кубиков) + 8 (база: Мастерство Копии)",
+                "Бросок Копии: 6 🎲 + 6 🎲 + 8 (база: Мастерство Копии)",
                 store.state["battle"]["log"][1],
             )
             self.assertEqual(store.state["battle"]["enemies"][0]["stamina"], 6)
@@ -364,7 +364,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(len(store.state["battle"]["log"]), 7)
             self.assertEqual(pause.await_count, 7)
             player_roll = store.state["battle"]["log"][1]
-            self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", player_roll)
+            self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 (база: ваше Мастерство)", player_roll)
             self.assertIn("+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве)", player_roll)
             self.assertIn("= 21 (СИЛА УДАРА игрока) ⚔️", player_roll)
             self.assertEqual(player_roll.count("Ваш бросок"), 1)
@@ -420,12 +420,12 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertNotIn("<b>Мастерство", captions[1])
             self.assertNotIn("<b>СИЛА УДАРА", captions[1])
             self.assertIn(
-                "Гигантский Паук: 2 (сумма двух кубиков) + 8 (база: Мастерство) = 10 (СИЛА УДАРА) ⚔️.",
+                "Гигантский Паук: 1 🎲 + 1 🎲 + 8 (база: Мастерство) = 10 (СИЛА УДАРА) ⚔️.",
                 captions[1],
             )
             self.assertIn("20 ⚔️ против 10 ⚔️", captions[3])
             self.assertRegex(captions[2], r"\nВы (смещаетесь|перехватываете|уходите).*</blockquote>")
-            self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", captions[2])
+            self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 (база: ваше Мастерство)", captions[2])
             self.assertIn("Расшифровка битвы:", captions[2])
             self.assertNotIn("<b>Ваш бросок", captions[2])
             self.assertIn("Выносливость Гигантский Паук: 2 ❤️ → 0 ❤️", captions[4])
@@ -644,7 +644,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(store.state["battle"]["enemies"][0]["mastery"], 6)
             self.assertEqual(store.state["battle"]["enemies"][0]["mastery_base"], 8)
             self.assertIn(
-                "2 (сумма двух кубиков) + 8 (база: Мастерство) - 2 (заклинание Слабости) = 8 (СИЛА УДАРА) ⚔️",
+                "1 🎲 + 1 🎲 + 8 (база: Мастерство) - 2 (заклинание Слабости) = 8 (СИЛА УДАРА) ⚔️",
                 store.state["battle"]["log"][0],
             )
         finally:
@@ -784,7 +784,7 @@ class BlackCastleLuckTest(unittest.TestCase):
                     patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
                 asyncio.run(bot.process_update(fight))
             self.assertEqual(store.state["battle"]["player_attack_penalty"], 1)
-            self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", store.state["battle"]["log"][1])
+            self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 (база: ваше Мастерство)", store.state["battle"]["log"][1])
             self.assertIn(
                 "+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве) = 21 (СИЛА УДАРА игрока) ⚔️",
                 store.state["battle"]["log"][1],
@@ -861,7 +861,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             })
             alert = next(payload for method, payload in bot.calls if method == "answerCallbackQuery")
             self.assertIn("Ваша удача: 8", alert["text"])
-            self.assertIn("Проверка удачи выпала: 5", alert["text"])
+            self.assertIn("Проверка удачи: 2 🎲 + 3 🎲 = 5", alert["text"])
             self.assertIn("Удача улыбнулась вам", alert["text"])
             self.assertEqual(bot.visible_state["step"], 558)
             self.assertEqual(bot.last_previous_message_id, 9)

@@ -734,11 +734,15 @@ class BlackCastleBot:
             i for i, enemy in enumerate(enemies) if int(enemy.get("stamina", 0)) > 0
         ]
         enemy_rolls: list[int | None] = [None] * len(enemies)
+        enemy_dice: list[tuple[int, int] | None] = [None] * len(enemies)
         enemy_attacks = [-1] * len(enemies)
         for i in active_enemy_indexes:
-            enemy_rolls[i] = random.randint(1, 6) + random.randint(1, 6)
+            die_one, die_two = random.randint(1, 6), random.randint(1, 6)
+            enemy_dice[i] = (die_one, die_two)
+            enemy_rolls[i] = die_one + die_two
             enemy_attacks[i] = enemy_rolls[i] + enemies[i]["mastery"]
-        player_roll = random.randint(1, 6) + random.randint(1, 6)
+        player_die_one, player_die_two = random.randint(1, 6), random.randint(1, 6)
+        player_roll = player_die_one + player_die_two
         player_mastery = actor["mastery"]
         strength_bonus = 2 if not acting_copy and (battle.get("magic") or {}).get("spell") == "strength" else 0
         attack_penalty = 0 if acting_copy else int(battle.get("player_attack_penalty", 0))
@@ -770,8 +774,9 @@ class BlackCastleBot:
             enemy = enemies[i]
             mastery_base = int(enemy.get("mastery_base", enemy["mastery"]))
             mastery_reduction = max(0, mastery_base - int(enemy["mastery"]))
+            die_one, die_two = enemy_dice[i] or (0, 0)
             formula = (
-                f"{enemy_rolls[i]} (сумма двух кубиков) + "
+                f"{die_one} 🎲 + {die_two} 🎲 + "
                 f"{mastery_base} (база: Мастерство)"
             )
             if mastery_reduction:
@@ -783,7 +788,7 @@ class BlackCastleBot:
         roll_owner = "Бросок Копии" if acting_copy else "Ваш бросок"
         mastery_owner = "Мастерство Копии" if acting_copy else "ваше Мастерство"
         player_formula = (
-            f"{roll_owner}: {player_roll} (сумма двух кубиков) + "
+            f"{roll_owner}: {player_die_one} 🎲 + {player_die_two} 🎲 + "
             f"{player_mastery} (база: {mastery_owner})"
         )
         if strength_bonus:
@@ -1072,7 +1077,8 @@ class BlackCastleBot:
         except (TypeError, ValueError):
             luck = 0
             characteristics["luck"] = luck
-        roll = random.randint(1, 6) + random.randint(1, 6) if check and luck else None
+        luck_dice = (random.randint(1, 6), random.randint(1, 6)) if check and luck else None
+        roll = sum(luck_dice) if luck_dice is not None else None
         lucky = roll is not None and roll <= luck
         if luck:
             characteristics["luck"] = luck - 1
@@ -1088,7 +1094,8 @@ class BlackCastleBot:
             )
         outcome = "Удача улыбнулась вам." if lucky else "Вас настигла неудача."
         return (
-            f"Ваша удача: {luck}. Проверка удачи выпала: {roll}. "
+            f"Ваша удача: {luck}. Проверка удачи: "
+            f"{luck_dice[0]} 🎲 + {luck_dice[1]} 🎲 = {roll}. "
             f"Результат: {outcome}"
         )
 
