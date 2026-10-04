@@ -137,8 +137,9 @@ class BlackCastleLuckTest(unittest.TestCase):
         store.state.update({"step": 558, "spells": {"strength": 1, "weakness": 1, "copy": 1}})
         _, keyboard, _ = bot._screen(store.state)
         labels = [button["text"].replace("\u00a0", " ") for row in keyboard for button in row]
-        self.assertEqual(labels[:3], [
+        self.assertEqual(labels[:4], [
             "Заклинание Силы — 189", "Заклинание Слабости — 189", "Заклинание Копии — 189",
+            "Вступить в бой — 189",
         ])
         callback = {"callback_query": {
             "id": "cast-copy", "from": {"id": 42},
@@ -149,6 +150,16 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot.process_update(callback))
             self.assertEqual(store.state["step"], 189)
             self.assertEqual(store.state["spells"]["copy"], 0)
+
+            store.state.update({"step": 558, "spells": {"strength": 1, "weakness": 1, "copy": 1}})
+            fight = {"callback_query": {
+                "id": "fight-callback", "from": {"id": 42},
+                "data": "blackcastle:route:558:route_01",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(fight))
+            self.assertEqual(store.state["step"], 189)
+            self.assertEqual(store.state["spells"]["copy"], 1)
         finally:
             bot._test_tempdir.cleanup()
 

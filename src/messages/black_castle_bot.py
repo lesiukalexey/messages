@@ -376,6 +376,11 @@ class BlackCastleBot:
                                 f"blackcastle:cast:{step}:{choice['choice_id']}:{spell}"
                             ),
                         }])
+                    if self._is_battle_route(source_label):
+                        keyboard.append([{
+                            "text": self._route_button_text(str(choice["button_text"]), target),
+                            "callback_data": f"blackcastle:route:{step}:{choice['choice_id']}",
+                        }])
                     continue
                 is_luck_success_route = bool(
                     re.fullmatch(
@@ -491,6 +496,13 @@ class BlackCastleBot:
         if re.search(r"используете заклятие.*переплы|переплываете через реку", label, re.IGNORECASE):
             return ["swimming"]
         return []
+
+    @staticmethod
+    def _is_battle_route(label: str) -> bool:
+        return bool(re.fullmatch(
+            r"если(?: вы)? победили?|вступить в бой",
+            label.casefold().replace("ё", "е"),
+        ))
 
     @staticmethod
     def _route_button_text(label: str, target_paragraph: int) -> str:
@@ -831,10 +843,10 @@ class BlackCastleBot:
                         raw_label = ROUTE_BUTTON_SUFFIX.sub(
                             "", str(route_choice.get("button_text") or "")
                         ).strip()
-                        if self._route_spell_options(
+                        if (self._route_spell_options(
                             raw_label,
                             str((source_paragraph or {}).get("body") or ""),
-                        ):
+                        ) and not self._is_battle_route(raw_label)):
                             route_choice = None
                 except (ValueError, TypeError):
                     route_choice = None
