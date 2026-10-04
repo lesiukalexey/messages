@@ -1178,7 +1178,13 @@ class BlackCastleBot:
                     line = event_lines[action_number - 1]
                 elif action_number == 4 and player_wins:
                     counterattack = "Удар Копии" if acting_copy else "Ваш ответный удар"
-                    if acting_copy:
+                    if int(target["stamina"]) == 0:
+                        finisher = "Удар Копии" if acting_copy else "Ваш удар"
+                        wound = self._battle_phrase(
+                            target["name"], "fatal_blow", enemy=target_name,
+                            finisher=finisher,
+                        )
+                    elif acting_copy:
                         wound = self._battle_phrase(
                             target["name"], "copy_wounded", enemy=target_name,
                             counterattack=counterattack,

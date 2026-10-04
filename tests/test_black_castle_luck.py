@@ -241,7 +241,7 @@ class BlackCastleLuckTest(unittest.TestCase):
         }
         self.assertEqual(set(ENEMY_BATTLE_TEXT), book_enemy_keys)
         for enemy, phases in ENEMY_BATTLE_TEXT.items():
-            for phase in ("opening", "wounded", "hit", "survives"):
+            for phase in ("opening", "wounded", "hit", "survives", "fatal_blow"):
                 self.assertEqual(len(phases[phase]), 10, f"{enemy} {phase} must have 10 variants")
                 self.assertEqual(len(set(phases[phase])), 10, f"{enemy} {phase} variants must differ")
         for phase, variants in GENERIC_BATTLE_TEXT.items():
@@ -259,7 +259,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(banks[("*", phase)], list(range(1, 11)))
         for _, _, _, template in rows:
             rendered = template.format(
-                enemy="Гоблин", victim="вас", counterattack="Ваш удар",
+                enemy="Гоблин", victim="вас", counterattack="Ваш удар", finisher="Ваш удар",
                 victim_dative="вам", actor="Путник", actor_genitive="путника",
                 enemies="Гоблин, Орк",
             )
@@ -268,6 +268,7 @@ class BlackCastleLuckTest(unittest.TestCase):
                 rendered = template.format(
                     enemy="Гоблин", victim=victim, victim_dative=victim_dative,
                     counterattack="Ваш удар", actor="Путник", actor_genitive="путника",
+                    finisher="Ваш удар",
                     enemies="Гоблин, Орк",
                 )
                 self.assertNotIn("к вас", rendered)
@@ -1109,7 +1110,14 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertRegex(store.state["battle"]["log"][0], r"Гигантский Паук .+")
             self.assertIn("21 ⚔️ против 10 ⚔️", store.state["battle"]["log"][2])
             self.assertIn("ВЫНОСЛИВОСТЬ Гигантский Паук: 2 → 0", store.state["battle"]["log"][3])
-            self.assertIn("побед", store.state["battle"]["log"][-1].casefold())
+            fatal_templates = [row[3] for row in iter_battle_text_rows()
+                               if row[0] == "гигантский паук" and row[1] == "fatal_blow"]
+            self.assertTrue(any(
+                phrase.format(enemy="Гигантский Паук", finisher="Ваш удар")
+                in store.state["battle"]["log"][3]
+                for phrase in fatal_templates
+            ))
+            self.assertTrue(store.state["battle"]["log"][-1])
             self.assertFalse(any(line.startswith(tuple(f"{n})" for n in range(1, 8)))
                                  for line in store.state["battle"]["log"]))
             self.assertFalse(any("Действие " in line for line in store.state["battle"]["log"]))
@@ -1121,6 +1129,62 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot.process_update(finish))
             self.assertEqual(store.state["step"], 189)
             self.assertEqual(bot.visible_state["step"], 189)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_nonlethal_enemy_wound_does_not_use_fatal_blow_narration(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "battle", "battle": {
+                "source_step": 40, "status": "running", "stage": "hero",
+                "target_index": 0, "round": 0, "log": [], "enemies": [{
+                    "name": "ГОБЛИН", "mastery": 8, "mastery_base": 8,
+                    "stamina": 4, "damage_to_player": 2,
+                }],
+            },
+        })
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot._advance_battle_round(42, store.state, inline_message_id=None, chat_id=None))
+            self.assertEqual(store.state["battle"]["enemies"][0]["stamina"], 2)
+            fatal_templates = [row[3] for row in iter_battle_text_rows()
+                               if row[0] == "гоблин" and row[1] == "fatal_blow"]
+            self.assertFalse(any(
+                phrase.format(enemy="Гоблин", finisher="Ваш удар")
+                in store.state["battle"]["log"][3]
+                for phrase in fatal_templates
+            ))
+            self.assertIn("получает 2 урона", store.state["battle"]["log"][3])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_copy_uses_fatal_blow_phase_when_it_kills_an_enemy(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "battle", "battle": {
+                "source_step": 40, "status": "running", "stage": "copy",
+                "target_index": 0, "round": 0, "log": [], "magic": [],
+                "copy": {"mastery": 8, "stamina": 6},
+                "enemies": [{
+                    "name": "ГОБЛИН", "mastery": 8, "mastery_base": 8,
+                    "stamina": 2, "damage_to_player": 2,
+                }],
+            },
+        })
+        try:
+            with patch("messages.black_castle_bot.random.randint", side_effect=[1, 1, 6, 6]), \
+                    patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
+                asyncio.run(bot._advance_battle_round(42, store.state, inline_message_id=None, chat_id=None))
+            self.assertEqual(store.state["battle"]["enemies"][0]["stamina"], 0)
+            fatal_templates = [row[3] for row in iter_battle_text_rows()
+                               if row[0] == "гоблин" and row[1] == "fatal_blow"]
+            self.assertTrue(any(
+                phrase.format(enemy="Гоблин", finisher="Удар Копии")
+                in store.state["battle"]["log"][3]
+                for phrase in fatal_templates
+            ))
+            self.assertIn("ВЫНОСЛИВОСТЬ Гоблин: 2 → 0", store.state["battle"]["log"][3])
         finally:
             bot._test_tempdir.cleanup()
 
@@ -1251,7 +1315,6 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertIn("Вы — 18 ❤️", captions[-1])
             self.assertNotIn("<b>ВЫНОСЛИВОСТЬ после раунда:", captions[-1])
             self.assertNotIn("<b>Вы — 18", captions[-1])
-            self.assertIn("побед", captions[-1].casefold())
             self.assertEqual(store.state["battle"]["status"], "won")
         finally:
             bot._test_tempdir.cleanup()
