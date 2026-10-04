@@ -15,6 +15,12 @@ from messages.black_castle_battle_text import (
 )
 
 
+def battle_quote_sentence_count(log):
+    formatted = BlackCastleBot._format_telegram_text("Битва\n\n" + "\n\n".join(log))
+    quote = re.search(r"<blockquote>(.*?)</blockquote>", formatted, re.DOTALL)
+    return len(quote.group(1).split("\n\n")) if quote else 0
+
+
 class FakeGameStore:
     def __init__(self, state, paragraph, choices):
         self.state = state
@@ -196,7 +202,8 @@ class BlackCastleLuckTest(unittest.TestCase):
         self.assertIn("Ваш удар не достигает цели.", quote)
         self.assertIn("Паук пригибается", quote)
         self.assertIn("Паук бросается вперёд.\n\nВаш удар не достигает цели", quote)
-        self.assertIn("Ваш удар не достигает цели. Паук уклоняется.\n\nПаук пригибается", quote)
+        self.assertIn("Ваш удар не достигает цели.\n\nПаук уклоняется.", quote)
+        self.assertIn("Паук уклоняется.\n\nПаук пригибается", quote)
         self.assertNotIn("Расшифровка битвы:", quote)
         breakdown = rendered.split("Расшифровка битвы:\n", 1)[1]
         self.assertIn("Паук атакует с СИЛОЙ УДАРА 14.", breakdown)
@@ -363,11 +370,11 @@ class BlackCastleLuckTest(unittest.TestCase):
                 asyncio.run(bot.process_update(start))
             self.assertEqual(store.state["battle"]["status"], "won")
             self.assertEqual(len(store.state["battle"]["log"]), 7)
-            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
-            self.assertEqual(pause.await_count, max(0, len(narrated_lines) - 1))
+            narrated_count = battle_quote_sentence_count(store.state["battle"]["log"])
+            self.assertEqual(pause.await_count, narrated_count)
             self.assertEqual(
                 [call.args[0] for call in pause.await_args_list],
-                [5] * max(0, len(narrated_lines) - 1),
+                [5] * narrated_count,
             )
             player_roll = store.state["battle"]["log"][1]
             self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 🎯 (база)", player_roll)
@@ -418,8 +425,8 @@ class BlackCastleLuckTest(unittest.TestCase):
 
             captions = [payload["caption"] for method, payload in bot.calls
                         if method == "editMessageCaption"]
-            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
-            self.assertEqual(len(captions), len(narrated_lines) + 2)  # initial, each quote line, final details
+            narrated_count = battle_quote_sentence_count(store.state["battle"]["log"])
+            self.assertEqual(len(captions), narrated_count + 2)  # initial, each quote line, final details
             self.assertRegex(captions[1], r"<blockquote>Гигантский Паук (резко бросается|стремительно перебирает)")
             self.assertNotIn("<i>", "".join(captions))
             self.assertNotIn("<b>", "".join(captions))
@@ -500,8 +507,8 @@ class BlackCastleLuckTest(unittest.TestCase):
                 asyncio.run(bot.process_update(continue_fight))
 
             edits = [payload for method, payload in bot.calls if method == "editMessageText"]
-            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
-            self.assertEqual(len(edits), len(narrated_lines) + 2)  # refresh, quote lines, final details
+            narrated_count = battle_quote_sentence_count(store.state["battle"]["log"])
+            self.assertEqual(len(edits), narrated_count + 2)  # refresh, quote lines, final details
             self.assertFalse(any(method in {"deleteMessage", "sendMessage", "sendPhoto"}
                                  for method, _ in bot.calls))
             self.assertTrue(all(payload["message_id"] == 20 for payload in edits))
@@ -553,8 +560,8 @@ class BlackCastleLuckTest(unittest.TestCase):
 
             captions = [payload["caption"] for method, payload in bot.calls
                         if method == "editMessageCaption" and "caption" in payload]
-            narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
-            self.assertEqual(len(captions), len(narrated_lines) + 2)
+            narrated_count = battle_quote_sentence_count(store.state["battle"]["log"])
+            self.assertEqual(len(captions), narrated_count + 2)
             self.assertTrue(all("Текст завершившегося раунда" not in caption for caption in captions))
             self.assertIn("Гигантский Паук", captions[-1])
             self.assertEqual(store.state["battle"]["round"], 2)

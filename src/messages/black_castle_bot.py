@@ -324,15 +324,19 @@ class BlackCastleBot:
         return escaped if is_formula_or_stat else f"<blockquote>{escaped}</blockquote>"
 
     @staticmethod
+    def _split_battle_sentences(text: str) -> list[str]:
+        sentence_pattern = re.compile(r".+?[.!?…]+(?:[»”\"’]+)?(?=\s|$)|.+$")
+        return [sentence.strip() for sentence in sentence_pattern.findall(text) if sentence.strip()]
+
+    @staticmethod
     def _battle_narration_lines(log: list[str]) -> list[str]:
         narration = []
-        sentence_pattern = re.compile(r".+?[.!?…]+(?:[»”\"’]+)?(?=\s|$)|.+$")
         for entry in log:
             for line in str(entry).splitlines():
                 formatted = BlackCastleBot._format_battle_line(line)
                 if formatted.startswith("<blockquote>") and formatted.endswith("</blockquote>"):
                     prose = html.unescape(formatted[len("<blockquote>"):-len("</blockquote>")])
-                    narration.extend(sentence.strip() for sentence in sentence_pattern.findall(prose))
+                    narration.extend(BlackCastleBot._split_battle_sentences(prose))
         return narration
 
     @staticmethod
@@ -357,7 +361,8 @@ class BlackCastleBot:
                 continue
             formatted = BlackCastleBot._format_battle_line(line)
             if formatted.startswith("<blockquote>") and formatted.endswith("</blockquote>"):
-                narration.append(formatted[len("<blockquote>"):-len("</blockquote>")])
+                prose = html.unescape(formatted[len("<blockquote>"):-len("</blockquote>")])
+                narration.extend(BlackCastleBot._split_battle_sentences(prose))
             else:
                 breakdown.append(formatted)
 
@@ -444,6 +449,8 @@ class BlackCastleBot:
             else:
                 text += "\n\nПодготовка к бою."
             keyboard = []
+            if battle.get("display_phase") == "narration":
+                return text, keyboard, False
             if battle.get("status") == "choose_target":
                 for index, enemy in enumerate(battle.get("enemies", [])):
                     keyboard.append([{
@@ -905,18 +912,6 @@ class BlackCastleBot:
                     player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
                 )
 
-        if acting_copy:
-            summary = (
-                f"ВЫНОСЛИВОСТЬ после раунда:\nВы — {state['characteristics']['stamina']}\n"
-                f"Копия — {actor['stamina']}"
-            )
-        else:
-            summary = "ВЫНОСЛИВОСТЬ после раунда:\n" + "\n".join(
-                [f"Вы — {actor['stamina']}"]
-                + [f"{display_names[i]} — {enemy['stamina']}" for i, enemy in enumerate(enemies)]
-            )
-        log.append(summary)
-
         if not acting_copy and int(actor["stamina"]) <= 0:
             battle["status"] = "lost"
             ending = self._battle_phrase("*", "player_defeated")
@@ -955,6 +950,29 @@ class BlackCastleBot:
                     "*", "multiple_survives", enemies=", ".join(remaining)
                 )
         log.append(ending)
+
+        narration_lines = self._battle_narration_lines(log)
+        while battle["narration_visible_count"] < len(narration_lines):
+            if battle["narration_visible_count"]:
+                await asyncio.sleep(5)
+            battle["narration_visible_count"] += 1
+            await self._edit_battle_progress(
+                player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
+            )
+        if battle["narration_visible_count"]:
+            await asyncio.sleep(5)
+
+        if acting_copy:
+            summary = (
+                f"ВЫНОСЛИВОСТЬ после раунда:\nВы — {state['characteristics']['stamina']}\n"
+                f"Копия — {actor['stamina']}"
+            )
+        else:
+            summary = "ВЫНОСЛИВОСТЬ после раунда:\n" + "\n".join(
+                [f"Вы — {actor['stamina']}"]
+                + [f"{display_names[i]} — {enemy['stamina']}" for i, enemy in enumerate(enemies)]
+            )
+        log.insert(len(log) - 1, summary)
         battle["display_phase"] = "complete"
         battle.pop("narration_visible_count", None)
         if len(log) > 24:
@@ -966,7 +984,13 @@ class BlackCastleBot:
     def _recover_interrupted_battle(self, state: dict[str, Any]) -> None:
         """Restore a continue button when Telegram redelivers an interrupted round callback."""
         battle = state.get("battle")
-        if not isinstance(battle, dict) or battle.get("status") != "running":
+        if not isinstance(battle, dict):
+            return
+        if battle.get("display_phase") == "narration" and battle.get("status") != "running":
+            battle["display_phase"] = "complete"
+            battle.pop("narration_visible_count", None)
+            return
+        if battle.get("status") != "running":
             return
         battle["display_phase"] = "complete"
         log = battle.setdefault("log", [])
