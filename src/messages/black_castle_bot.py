@@ -299,23 +299,15 @@ class BlackCastleBot:
             label = "Выносливость" if is_player else f"Выносливость {who.removeprefix('ВЫНОСЛИВОСТЬ ')}"
             return f"{html.escape(label)}: {stamina_change.group(2)} → {stamina_change.group(3)} ❤️"
 
-        enemy_names = tuple(name for name in ENEMY_BATTLE_TEXT if name != "*")
-        starts_with_enemy = any(canonical_enemy_key(line).startswith(name) for name in enemy_names)
+        escaped = html.escape(line)
         is_formula_or_stat = (
             "Мастерство:" in line or "УДАРА" in line
-            or line.startswith("ВЫНОСЛИВОСТЬ")
+            or line.startswith(("ВЫНОСЛИВОСТЬ", "Выносливость", "Битва продолжается"))
             or "получает 2 урона" in line
+            or re.search(r"\b\d+\s+против\s+\d+\b", line, re.IGNORECASE)
+            or line.startswith("Выберите противника")
         )
-        is_narrative = (
-            starts_with_enemy
-            or line.startswith((
-                "Удар не достигает цели", "Защита ", "Клинок ",
-                "Удар приходится", "Противники расходятся", "Оставшиеся противники",
-                "Вы теряете", "Копия теряет",
-            ))
-        ) and not is_formula_or_stat
-        escaped = html.escape(line)
-        return f"<b>{escaped}</b>" if is_narrative else escaped
+        return escaped if is_formula_or_stat else f"<b>{escaped}</b>"
 
     def _screen(self, state: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]], bool]:
         scene = json.loads(self.scene_path.read_text(encoding="utf-8"))
@@ -614,6 +606,7 @@ class BlackCastleBot:
         return [{
             "name": re.sub(r"\s+", " ", match.group("name")).strip(),
             "mastery": int(match.group("mastery")),
+            "mastery_base": int(match.group("mastery")),
             "stamina": int(match.group("stamina")),
             "damage_to_player": (
                 3 if stronger_merchant_blow and "торгов" in match.group("name").casefold() else 2
@@ -682,6 +675,15 @@ class BlackCastleBot:
         if target_index >= len(enemies) or enemies[target_index].get("stamina", 0) <= 0:
             target_index = next((i for i, enemy in enumerate(enemies) if enemy.get("stamina", 0) > 0), 0)
         target = enemies[target_index]
+        if any("mastery_base" not in enemy for enemy in enemies):
+            paragraph = self.game_store.get_paragraph(int(battle.get("source_step", state.get("step", 1))))
+            original_enemies = self._battle_enemies(str((paragraph or {}).get("body") or ""))
+            for index, enemy in enumerate(enemies):
+                enemy.setdefault(
+                    "mastery_base",
+                    original_enemies[index]["mastery"]
+                    if index < len(original_enemies) else int(enemy["mastery"]),
+                )
         active_enemy_indexes = [0] if acting_copy else [
             i for i, enemy in enumerate(enemies) if int(enemy.get("stamina", 0)) > 0
         ]
@@ -717,30 +719,41 @@ class BlackCastleBot:
         round_intro = battle.pop("round_intro", None)
         if round_intro:
             opening = f"{round_intro}\n{opening}"
-        enemy_attack_text = "\n".join(
-            f"{display_names[i]} атакует. Бросок (2 кубика): {enemy_rolls[i]} + "
-            f"Мастерство: {enemies[i]['mastery']} = СИЛА УДАРА: {enemy_attacks[i]}."
-            for i in active_enemy_indexes
-        )
+        enemy_attack_lines = []
+        for i in active_enemy_indexes:
+            enemy = enemies[i]
+            mastery_base = int(enemy.get("mastery_base", enemy["mastery"]))
+            mastery_reduction = max(0, mastery_base - int(enemy["mastery"]))
+            formula = (
+                f"{enemy_rolls[i]} (сумма двух кубиков) + "
+                f"{mastery_base} (база: Мастерство)"
+            )
+            if mastery_reduction:
+                formula += f" - {mastery_reduction} (заклинание Слабости)"
+            formula += f" = {enemy_attacks[i]} (СИЛА УДАРА)"
+            enemy_attack_lines.append(f"{display_names[i]}: {formula}.")
+        enemy_attack_text = "\n".join(enemy_attack_lines)
         hero_label = "Копии" if acting_copy else "игрока"
         roll_owner = "Бросок Копии" if acting_copy else "Ваш бросок"
         mastery_owner = "Мастерство Копии" if acting_copy else "ваше Мастерство"
-        player_formula = f"{roll_owner} (2 кубика): {player_roll} + {mastery_owner}: {player_mastery}"
+        player_formula = (
+            f"{roll_owner}: {player_roll} (сумма двух кубиков) + "
+            f"{player_mastery} (база: {mastery_owner})"
+        )
         if strength_bonus:
-            player_formula += " + бонус заклинания Силы: 2"
+            player_formula += " + 2 (бонус заклинания Силы)"
         if attack_penalty:
-            player_formula += f" - штраф за бой на дереве: {attack_penalty}"
+            player_formula += f" - {attack_penalty} (штраф книги: бой на дереве)"
         if len(active_enemy_indexes) > 1:
             attack_description = f"Атаки противников:\n{enemy_attack_text}"
         else:
             attack_description = enemy_attack_text
-        if acting_copy:
-            counter_start = "Копия повторяет движение противника и готовит ответный выпад."
-        else:
-            counter_start = "Вы успеваете отступить и готовите ответный выпад."
+        counter_start = self._battle_phrase(
+            "*", "copy_intro" if acting_copy else "player_intro"
+        )
         event_lines = [
             f"{opening}\n{attack_description}",
-            f"{counter_start}\n{player_formula} = СИЛА УДАРА {hero_label} — {player_attack}.",
+            f"{counter_start}\n{player_formula} = {player_attack} (СИЛА УДАРА {hero_label}).",
             (f"{('Удар Копии' if acting_copy else 'Ваш выпад')} оказывается быстрее — "
              f"{player_attack} против {selected_attack}."
              if player_wins else f"{target_name} успевает опередить {victim} — {selected_attack} против {player_attack}."
@@ -808,9 +821,9 @@ class BlackCastleBot:
                         f"{player_stamina_before} → {actor['stamina']}"
                     )
                 elif player_wins:
-                    line = "Вы успеваете уйти с линии атаки и не получаете повреждений."
+                    line = self._battle_phrase("*", "avoids_hit")
                 else:
-                    line = "Противники расходятся после обмена ударами; новых ранений нет."
+                    line = self._battle_phrase("*", "tie_no_damage")
             elif action_number == 6:
                 if acting_copy:
                     line = f"ВЫНОСЛИВОСТЬ после раунда:\nВы — {state['characteristics']['stamina']}\nКопия — {actor['stamina']}"
@@ -822,22 +835,28 @@ class BlackCastleBot:
             else:
                 if not acting_copy and int(actor["stamina"]) <= 0:
                     battle["status"] = "lost"
-                    line = "Вы падаете от полученных ран. ВЫНОСЛИВОСТЬ равна нулю — путешествие окончено."
+                    line = self._battle_phrase("*", "player_defeated")
                 elif acting_copy and int(actor["stamina"]) <= 0:
                     battle["status"] = "awaiting_continue"
                     battle["stage"] = "copy_lost"
-                    line = "Копия падает, и её очертания тают в воздухе. Теперь с противником предстоит драться вам."
+                    line = self._battle_phrase("*", "copy_falls")
                 elif acting_copy and int(target["stamina"]) <= 0:
                     if all(int(enemy["stamina"]) <= 0 for enemy in enemies):
                         battle["status"] = "won"
-                        line = self._battle_phrase(target["name"], "defeated", enemy=target_name) + " Копия исчезает, а победа остаётся за вами."
+                        line = (
+                            self._battle_phrase(target["name"], "defeated", enemy=target_name)
+                            + " " + self._battle_phrase("*", "copy_victory_end")
+                        )
                     else:
                         battle["status"] = "awaiting_continue"
                         battle["stage"] = "copy_won"
-                        line = self._battle_phrase(target["name"], "defeated", enemy=target_name) + " Копия исчезает; с остальными противниками предстоит драться вам."
+                        line = (
+                            self._battle_phrase(target["name"], "defeated", enemy=target_name)
+                            + " " + self._battle_phrase("*", "copy_victory_continue")
+                        )
                 elif all(int(enemy["stamina"]) <= 0 for enemy in enemies):
                     battle["status"] = "won"
-                    line = "Последний противник повержен. Вы переводите дух: битва окончена, победа за вами."
+                    line = self._battle_phrase("*", "battle_victory")
                 else:
                     battle["status"] = "awaiting_continue"
                     remaining = [display_names[i] for i, enemy in enumerate(enemies) if enemy["stamina"] > 0]
@@ -848,7 +867,9 @@ class BlackCastleBot:
                             enemy=remaining[0],
                         )
                     else:
-                        line = f"Оставшиеся противники не отступают: {', '.join(remaining)}. Они готовятся к следующей атаке."
+                        line = self._battle_phrase(
+                            "*", "multiple_survives", enemies=", ".join(remaining)
+                        )
             log.append(line)
             if len(log) > 24:
                 del log[:-24]
@@ -864,7 +885,7 @@ class BlackCastleBot:
         log = battle.setdefault("log", [])
         if len(log) < 4:
             log.clear()
-            battle["round_intro"] = "Схватка прервалась до обмена ударами. Противник вновь готовится атаковать."
+            battle["round_intro"] = self._battle_phrase("*", "recovery")
             battle["status"] = "awaiting_continue"
             return
 
@@ -872,7 +893,7 @@ class BlackCastleBot:
         if not enemies:
             battle["status"] = "awaiting_continue"
             log.clear()
-            log.append("Схватка прервалась. Противник готовится атаковать снова.")
+            log.append(self._battle_phrase("*", "recovery"))
             return
         display_names = [re.sub(r"\s+", " ", enemy["name"]).strip().title() for enemy in enemies]
         acting_copy = battle.get("stage") == "copy"
@@ -891,22 +912,22 @@ class BlackCastleBot:
 
         if not acting_copy and int(actor["stamina"]) <= 0:
             battle["status"] = "lost"
-            log.append("Вы падаете от полученных ран. ВЫНОСЛИВОСТЬ равна нулю — путешествие окончено.")
+            log.append(self._battle_phrase("*", "player_defeated"))
         elif acting_copy and int(actor["stamina"]) <= 0:
             battle["status"] = "awaiting_continue"
             battle["stage"] = "copy_lost"
-            log.append("Копия пала; её очертания тают в воздухе. Теперь с противником предстоит драться вам.")
+            log.append(self._battle_phrase("*", "copy_falls"))
         elif acting_copy and int(enemies[0]["stamina"]) <= 0:
             if all(int(enemy["stamina"]) <= 0 for enemy in enemies):
                 battle["status"] = "won"
-                log.append("Копия одолевает последнего противника и исчезает. Битва окончена, победа за вами.")
+                log.append(self._battle_phrase("*", "copy_victory_end"))
             else:
                 battle["status"] = "awaiting_continue"
                 battle["stage"] = "copy_won"
-                log.append("Копия одолевает противника и исчезает. С оставшимися врагами предстоит драться вам.")
+                log.append(self._battle_phrase("*", "copy_victory_continue"))
         elif all(int(enemy["stamina"]) <= 0 for enemy in enemies):
             battle["status"] = "won"
-            log.append("Последний противник повержен. Битва окончена, победа за вами.")
+            log.append(self._battle_phrase("*", "battle_victory"))
         else:
             battle["status"] = "awaiting_continue"
             remaining = [display_names[i] for i, enemy in enumerate(enemies) if enemy["stamina"] > 0]
@@ -914,7 +935,9 @@ class BlackCastleBot:
                 enemy = next(enemy for enemy in enemies if int(enemy["stamina"]) > 0)
                 log.append(self._battle_phrase(enemy["name"], "survives", enemy=remaining[0]))
             else:
-                log.append(f"Оставшиеся противники не отступают: {', '.join(remaining)}. Они готовятся к следующей атаке.")
+                log.append(self._battle_phrase(
+                    "*", "multiple_survives", enemies=", ".join(remaining)
+                ))
 
     @staticmethod
     def _spell_button_label(spell: str, *, combat: bool = False) -> str:
