@@ -1239,6 +1239,11 @@ class BlackCastleLuckTest(unittest.TestCase):
         template_bot, store = make_bot()
         bot = PhotoBot("token", None, store, template_bot.scene_path)
         state = bot._new_state()
+        for key in ("mastery", "stamina", "luck"):
+            self.assertEqual(
+                state["characteristics"][f"max_{key}"],
+                state["characteristics"][key],
+            )
         self.assertEqual(sum(state["spells"].values()), 10)
         self.assertEqual(state["spells"]["levitation"], 2)
         self.assertEqual(state["spells"]["fire"], 2)
@@ -1337,13 +1342,17 @@ class BlackCastleLuckTest(unittest.TestCase):
         bot, store = make_bot()
         store.state.update({
             "view": "status", "water_sips": 2,
-            "characteristics": {"mastery": 10, "stamina": 13, "luck": 10},
+            "characteristics": {
+                "mastery": 10, "max_mastery": 10,
+                "stamina": 13, "max_stamina": 19,
+                "luck": 10, "max_luck": 11,
+            },
             "items": ["Меч", "Фляга", "Бриллиант"],
         })
         text, keyboard, _ = bot._screen(store.state)
         self.assertIn("МАСТЕРСТВО: 10 (Максимум 12)", text)
-        self.assertIn("ВЫНОСЛИВОСТЬ: 13 (Максимум 24)", text)
-        self.assertIn("УДАЧА: 10 (Максимум 12)", text)
+        self.assertIn("ВЫНОСЛИВОСТЬ: 13 из 19 (Максимум 24)", text)
+        self.assertIn("УДАЧА: 10 из 11 (Максимум 12)", text)
         self.assertIn("Фляга: полная (2 глотка)", text)
         labels = [button["text"] for row in keyboard for button in row]
         self.assertIn("Попить из фляги (+2 Выносливости)", labels)
@@ -1360,7 +1369,11 @@ class BlackCastleLuckTest(unittest.TestCase):
             button["callback_data"] == "blackcastle:flask:drink"
             for row in empty_keyboard for button in row
         ))
-        store.state["characteristics"].update({"mastery": 12, "stamina": 24, "luck": 12})
+        store.state["characteristics"].update({
+            "mastery": 12, "max_mastery": 12,
+            "stamina": 24, "max_stamina": 24,
+            "luck": 12, "max_luck": 12,
+        })
         full_text, _, _ = bot._screen(store.state)
         self.assertIn("МАСТЕРСТВО: 12\n", full_text)
         self.assertIn("ВЫНОСЛИВОСТЬ: 24\n", full_text)
@@ -1369,11 +1382,58 @@ class BlackCastleLuckTest(unittest.TestCase):
         self.assertNotIn("Максимум 24", full_text)
         bot._test_tempdir.cleanup()
 
+    def test_initial_stamina_is_the_personal_cap_for_flask_and_healing(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "status", "water_sips": 2, "items": ["Меч", "Фляга"],
+            "spells": {"healing": 1},
+            "characteristics": {
+                "mastery": 9, "max_mastery": 9,
+                "stamina": 19, "max_stamina": 19,
+                "luck": 11, "max_luck": 11,
+            },
+        })
+        try:
+            labels = [button["callback_data"]
+                      for row in bot._screen(store.state)[1] for button in row]
+            self.assertNotIn("blackcastle:flask:drink", labels)
+            self.assertNotIn("blackcastle:spell:healing", labels)
+            for index, action in enumerate(("blackcastle:flask:drink", "blackcastle:spell:healing")):
+                callback = {"callback_query": {
+                    "id": f"personal-cap-{index}", "from": {"id": 42},
+                    "data": action,
+                    "message": {"message_id": 9, "chat": {"id": 42}},
+                }}
+                asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 19)
+            self.assertEqual(store.state["water_sips"], 2)
+            self.assertEqual(store.state["spells"]["healing"], 1)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_characteristic_maxima_are_preserved_and_over_cap_values_are_repaired(self):
+        bot, store = make_bot()
+        store.state["characteristics"] = {
+            "mastery": 9, "max_mastery": 9,
+            "stamina": 22, "max_stamina": 19,
+            "luck": 8, "max_luck": 11,
+        }
+        state = bot._get_or_create_state(42)
+        self.assertEqual(state["characteristics"]["stamina"], 19)
+        self.assertEqual(state["characteristics"]["max_stamina"], 19)
+        self.assertEqual(state["characteristics"]["max_luck"], 11)
+        self.assertEqual(store.state["characteristics"]["max_mastery"], 9)
+        bot._test_tempdir.cleanup()
+
     def test_drinking_spends_one_sip_and_persists_two_stamina_per_press(self):
         bot, store = make_bot()
         store.state.update({
             "view": "status", "water_sips": 2, "items": ["Меч", "Фляга"],
-            "characteristics": {"mastery": 10, "stamina": 18, "luck": 10},
+            "characteristics": {
+                "mastery": 10, "max_mastery": 10,
+                "stamina": 18, "max_stamina": 22,
+                "luck": 10, "max_luck": 10,
+            },
         })
         callback = {"callback_query": {
             "id": "drink-water-1", "from": {"id": 42},
@@ -1399,7 +1459,11 @@ class BlackCastleLuckTest(unittest.TestCase):
         bot, store = make_bot()
         store.state.update({
             "view": "status", "water_sips": 2, "items": ["Меч", "Фляга"],
-            "characteristics": {"mastery": 10, "stamina": 24, "luck": 10},
+            "characteristics": {
+                "mastery": 10, "max_mastery": 10,
+                "stamina": 24, "max_stamina": 24,
+                "luck": 10, "max_luck": 10,
+            },
         })
         callback = {"callback_query": {
             "id": "drink-at-max", "from": {"id": 42},
@@ -1418,7 +1482,11 @@ class BlackCastleLuckTest(unittest.TestCase):
         bot, store = make_bot()
         store.state.update({
             "view": "status", "spells": {"healing": 1},
-            "characteristics": {"mastery": 8, "stamina": 18, "luck": 8},
+            "characteristics": {
+                "mastery": 8, "max_mastery": 8,
+                "stamina": 18, "max_stamina": 24,
+                "luck": 8, "max_luck": 8,
+            },
         })
         try:
             _, keyboard, _ = bot._screen(store.state)
@@ -1446,10 +1514,14 @@ class BlackCastleLuckTest(unittest.TestCase):
         bot, store = make_bot()
         store.state.update({
             "view": "status", "spells": {"healing": 1},
-            "characteristics": {"mastery": 8, "stamina": 24, "luck": 8},
+            "characteristics": {
+                "mastery": 8, "max_mastery": 8,
+                "stamina": 24, "max_stamina": 24,
+                "luck": 8, "max_luck": 8,
+            },
         })
         try:
-            self.assertTrue(any(
+            self.assertFalse(any(
                 button["callback_data"] == "blackcastle:spell:healing"
                 for row in bot._screen(store.state)[1] for button in row
             ))

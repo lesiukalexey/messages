@@ -147,6 +147,7 @@ class BlackCastleBot:
             self._save_state(player_id, state)
         else:
             state_changed = self._ensure_spell_profile(state)
+            state_changed = self._ensure_characteristic_maxima(state) or state_changed
             items = state.get("items")
             if isinstance(items, list):
                 filtered_items = [
@@ -189,6 +190,36 @@ class BlackCastleBot:
                     spells[spell] = count
                     changed = True
         return changed
+
+    @staticmethod
+    def _ensure_characteristic_maxima(state: dict[str, Any]) -> bool:
+        characteristics = state.get("characteristics")
+        if not isinstance(characteristics, dict):
+            return False
+        changed = False
+        for key, theoretical_maximum in CHARACTERISTIC_MAXIMUMS.items():
+            maximum_key = f"max_{key}"
+            current = max(0, int(characteristics.get(key, 0)))
+            try:
+                personal_maximum = int(characteristics.get(maximum_key, current))
+            except (TypeError, ValueError):
+                personal_maximum = current
+            personal_maximum = max(0, min(theoretical_maximum, personal_maximum))
+            if characteristics.get(maximum_key) != personal_maximum:
+                characteristics[maximum_key] = personal_maximum
+                changed = True
+            if current > personal_maximum:
+                characteristics[key] = personal_maximum
+                changed = True
+        return changed
+
+    @staticmethod
+    def _personal_characteristic_maximum(characteristics: dict[str, Any], key: str) -> int:
+        try:
+            maximum = int(characteristics.get(f"max_{key}", characteristics.get(key, 0)))
+        except (TypeError, ValueError):
+            maximum = int(characteristics.get(key, 0))
+        return max(0, min(CHARACTERISTIC_MAXIMUMS[key], maximum))
 
     def _save_state(self, player_id: int, state: dict[str, Any]) -> None:
         self.game_store.save_player_state(player_id, state)
@@ -427,8 +458,12 @@ class BlackCastleBot:
 
             def characteristic_text(key: str) -> str:
                 value = int(values[key])
-                maximum = CHARACTERISTIC_MAXIMUMS[key]
-                return str(value) if value >= maximum else f"{value} (Максимум {maximum})"
+                initial = self._personal_characteristic_maximum(values, key)
+                current_text = str(value) if value >= initial else f"{value} из {initial}"
+                theoretical_maximum = CHARACTERISTIC_MAXIMUMS[key]
+                if value < theoretical_maximum:
+                    current_text += f" (Максимум {theoretical_maximum})"
+                return current_text
 
             mastery_line = characteristic_text("mastery")
             if self._has_item(state, "Меч Зеленого рыцаря"):
@@ -460,13 +495,16 @@ class BlackCastleBot:
                 f"Золотые: {state['gold']}"
             )
             keyboard = []
-            if has_flask and flask_sips > 0:
+            stamina = int(values.get("stamina", 0))
+            personal_stamina_maximum = self._personal_characteristic_maximum(values, "stamina")
+            if has_flask and flask_sips > 0 and stamina < personal_stamina_maximum:
                 keyboard.append([{
                     "text": "Попить из фляги (+2 Выносливости)",
                     "callback_data": "blackcastle:flask:drink",
                 }])
             healing_uses = max(0, int(state.get("spells", {}).get("healing", 0)))
-            if healing_uses > 0 and not isinstance(state.get("battle"), dict):
+            if (healing_uses > 0 and stamina < personal_stamina_maximum
+                    and not isinstance(state.get("battle"), dict)):
                 keyboard.append([{
                     "text": "Заклинание Исцеления (+8 Выносливости)",
                     "callback_data": "blackcastle:spell:healing",
@@ -1714,6 +1752,9 @@ class BlackCastleBot:
             battle_started = False
             battle_target_index = None
             battle = state.get("battle")
+            personal_stamina_maximum = self._personal_characteristic_maximum(
+                state.get("characteristics", {}), "stamina"
+            )
             if (action == "blackcastle:page_next" and state.get("view") == "battle"
                     and isinstance(battle, dict)):
                 if battle.get("status") == "awaiting_continue":
@@ -1771,14 +1812,14 @@ class BlackCastleBot:
                     inventory_alert = "У вас нет фляги."
                 elif int(state.get("water_sips", 0)) <= 0:
                     inventory_alert = "Во фляге не осталось воды."
-                elif int(state.get("characteristics", {}).get("stamina", 0)) >= CHARACTERISTIC_MAXIMUMS["stamina"]:
-                    inventory_alert = "Выносливость уже максимальна; глоток не потрачен."
+                elif int(state.get("characteristics", {}).get("stamina", 0)) >= personal_stamina_maximum:
+                    inventory_alert = "Выносливость уже на начальном максимуме; глоток не потрачен."
                 else:
                     drink_from_flask = True
                     stamina_before = int(state["characteristics"].get("stamina", 0))
                     inventory_alert = (
                         f"Выносливость: {stamina_before} → "
-                        f"{min(CHARACTERISTIC_MAXIMUMS['stamina'], stamina_before + 2)}. "
+                        f"{min(personal_stamina_maximum, stamina_before + 2)}. "
                         f"Во фляге останется глотков: {int(state.get('water_sips', 0)) - 1}."
                     )
             elif action == "blackcastle:spell:healing":
@@ -1788,12 +1829,15 @@ class BlackCastleBot:
                     inventory_alert = "Во время сражения заклинание Исцеления использовать нельзя."
                 elif int(state.get("spells", {}).get("healing", 0)) <= 0:
                     inventory_alert = "У вас не осталось применений заклинания Исцеления."
-                elif int(state.get("characteristics", {}).get("stamina", 0)) >= CHARACTERISTIC_MAXIMUMS["stamina"]:
-                    inventory_alert = "Выносливость уже максимальна; заклинание не потрачено."
+                elif int(state.get("characteristics", {}).get("stamina", 0)) >= personal_stamina_maximum:
+                    inventory_alert = "Выносливость уже на начальном максимуме; заклинание не потрачено."
                 else:
                     use_healing_spell = True
                     stamina_before = int(state["characteristics"].get("stamina", 0))
-                    stamina_after = min(CHARACTERISTIC_MAXIMUMS["stamina"], stamina_before + 8)
+                    stamina_after = min(
+                        personal_stamina_maximum,
+                        stamina_before + 8,
+                    )
                     inventory_alert = (
                         f"Заклинание Исцеления восстановило {stamina_after - stamina_before} "
                         f"ВЫНОСЛИВОСТИ: {stamina_before} → {stamina_after}."
@@ -1982,7 +2026,8 @@ class BlackCastleBot:
                 characteristics = state["characteristics"]
                 stamina_before = int(characteristics.get("stamina", 0))
                 stamina_after = min(
-                    CHARACTERISTIC_MAXIMUMS["stamina"], stamina_before + 2
+                    personal_stamina_maximum,
+                    stamina_before + 2,
                 )
                 characteristics["stamina"] = stamina_after
                 state["water_sips"] = max(0, int(state.get("water_sips", 0)) - 1)
@@ -1992,7 +2037,8 @@ class BlackCastleBot:
                 characteristics = state["characteristics"]
                 stamina_before = int(characteristics.get("stamina", 0))
                 characteristics["stamina"] = min(
-                    CHARACTERISTIC_MAXIMUMS["stamina"], stamina_before + 8
+                    personal_stamina_maximum,
+                    stamina_before + 8,
                 )
                 state.setdefault("spells", dict(INITIAL_SPELLS))["healing"] -= 1
             elif action.startswith("blackcastle:discard:"):
