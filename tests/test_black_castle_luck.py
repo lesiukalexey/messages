@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import re
 import tempfile
@@ -1251,6 +1252,124 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot._edit_inline_screen("inline-1", state))
             inline_call = next(call for call in bot.calls if call[0] == "editMessageMedia")
             self.assertEqual(inline_call[1]["media"]["media"], "default-photo")
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_status_screen_shows_characteristic_maxima_and_item_actions(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "status", "water_sips": 2,
+            "characteristics": {"mastery": 10, "stamina": 13, "luck": 10},
+            "items": ["Меч", "Фляга", "Бриллиант"],
+        })
+        text, keyboard, _ = bot._screen(store.state)
+        self.assertIn("МАСТЕРСТВО: 10 (Максимум 12)", text)
+        self.assertIn("ВЫНОСЛИВОСТЬ: 13 (Максимум 24)", text)
+        self.assertIn("УДАЧА: 10 (Максимум 12)", text)
+        self.assertIn("Фляга: полная (2 глотка)", text)
+        labels = [button["text"] for row in keyboard for button in row]
+        self.assertIn("Попить из фляги (+2 Выносливости)", labels)
+        self.assertEqual(labels.count("Выкинуть: Меч"), 1)
+        self.assertEqual(labels.count("Выкинуть: Фляга"), 1)
+        self.assertEqual(labels.count("Выкинуть: Бриллиант"), 1)
+
+        store.state["water_sips"] = 1
+        self.assertIn("Фляга: наполовину полная (1 глоток)", bot._screen(store.state)[0])
+        store.state["water_sips"] = 0
+        empty_text, empty_keyboard, _ = bot._screen(store.state)
+        self.assertIn("Фляга: пустая", empty_text)
+        self.assertFalse(any(
+            button["callback_data"] == "blackcastle:flask:drink"
+            for row in empty_keyboard for button in row
+        ))
+        store.state["characteristics"].update({"mastery": 12, "stamina": 24, "luck": 12})
+        full_text, _, _ = bot._screen(store.state)
+        self.assertIn("МАСТЕРСТВО: 12\n", full_text)
+        self.assertIn("ВЫНОСЛИВОСТЬ: 24\n", full_text)
+        self.assertIn("УДАЧА: 12\n", full_text)
+        self.assertNotIn("Максимум 12", full_text)
+        self.assertNotIn("Максимум 24", full_text)
+        bot._test_tempdir.cleanup()
+
+    def test_drinking_spends_one_sip_and_persists_two_stamina_per_press(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "status", "water_sips": 2, "items": ["Меч", "Фляга"],
+            "characteristics": {"mastery": 10, "stamina": 18, "luck": 10},
+        })
+        callback = {"callback_query": {
+            "id": "drink-water-1", "from": {"id": 42},
+            "data": "blackcastle:flask:drink",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 20)
+            self.assertEqual(store.state["water_sips"], 1)
+            callback["callback_query"]["id"] = "drink-water-2"
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 22)
+            self.assertEqual(store.state["water_sips"], 0)
+            self.assertFalse(any(
+                button["callback_data"] == "blackcastle:flask:drink"
+                for row in bot._screen(store.state)[1] for button in row
+            ))
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_drinking_at_maximum_stamina_does_not_spend_a_sip(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "status", "water_sips": 2, "items": ["Меч", "Фляга"],
+            "characteristics": {"mastery": 10, "stamina": 24, "luck": 10},
+        })
+        callback = {"callback_query": {
+            "id": "drink-at-max", "from": {"id": 42},
+            "data": "blackcastle:flask:drink",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 24)
+            self.assertEqual(store.state["water_sips"], 2)
+            self.assertIn("глоток не потрачен", bot.calls[0][1]["text"])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_discarding_item_removes_it_and_frees_its_configured_slots(self):
+        bot, store = make_bot()
+        armor_hash = hashlib.sha256("Зелёные латы".encode()).hexdigest()[:8]
+        store.state.update({
+            "view": "status", "items": ["Меч", "Фляга", "Бриллиант", "Зелёные латы"],
+            "water_sips": 2, "item_slot_costs": {"Зелёные латы": 3},
+        })
+        self.assertEqual(BlackCastleBot._bag_item_count(store.state), 4)
+        callback = {"callback_query": {
+            "id": "discard-armor", "from": {"id": 42},
+            "data": f"blackcastle:discard:3:{armor_hash}",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(callback))
+            self.assertNotIn("Зелёные латы", store.state["items"])
+            self.assertNotIn("Зелёные латы", store.state["item_slot_costs"])
+            self.assertEqual(BlackCastleBot._bag_item_count(store.state), 1)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_discarding_flask_removes_it_and_empties_it(self):
+        bot, store = make_bot()
+        flask_hash = hashlib.sha256("Фляга".encode()).hexdigest()[:8]
+        store.state.update({"view": "status", "items": ["Меч", "Фляга"], "water_sips": 2})
+        callback = {"callback_query": {
+            "id": "discard-flask", "from": {"id": 42},
+            "data": f"blackcastle:discard:1:{flask_hash}",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(callback))
+            self.assertNotIn("Фляга", store.state["items"])
+            self.assertEqual(store.state["water_sips"], 0)
         finally:
             bot._test_tempdir.cleanup()
 

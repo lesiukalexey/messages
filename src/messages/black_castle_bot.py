@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -16,6 +17,7 @@ from .black_castle_loot import REPEATABLE_LOOT_IDS
 BOT_USERNAME = "KnigaIgraBot"
 ROUTE_BUTTON_MAX_LENGTH = 50
 ROUTE_BUTTON_SUFFIX = re.compile(r"\s+[—–-]\s*\d+\s*$")
+CHARACTERISTIC_MAXIMUMS = {"mastery": 12, "stamina": 24, "luck": 12}
 INITIAL_SPELLS = {
     "levitation": 2,
     "fire": 2,
@@ -402,9 +404,11 @@ class BlackCastleBot:
 
         if view in {"stats", "inventory", "status"}:
             values = state["characteristics"]
-            carried_items = [
-                item for item in state.get("items", []) if isinstance(item, str)
+            item_entries = [
+                (index, item) for index, item in enumerate(state.get("items", []))
+                if isinstance(item, str)
             ]
+            carried_items = [item for _, item in item_entries]
             equipment_names = {"меч", "фляга", "заплечный мешок"}
             bag_items = [
                 item for item in carried_items
@@ -412,18 +416,31 @@ class BlackCastleBot:
             ]
             bag_used = self._bag_item_count(state, bag_items)
             bag_listing = "\n".join(f"• {item}" for item in bag_items) or "Пусто"
-            mastery_line = str(values["mastery"])
+
+            def characteristic_text(key: str) -> str:
+                value = int(values[key])
+                maximum = CHARACTERISTIC_MAXIMUMS[key]
+                return str(value) if value >= maximum else f"{value} (Максимум {maximum})"
+
+            mastery_line = characteristic_text("mastery")
             if self._has_item(state, "Меч Зеленого рыцаря"):
-                mastery_line += " (+1, меч Зеленого рыцаря)"
+                mastery_line += " (+1 меч Зеленого рыцаря)"
+            flask_sips = max(0, min(2, int(state.get("water_sips", 0))))
+            flask_status = {
+                2: "полная (2 глотка)",
+                1: "наполовину полная (1 глоток)",
+                0: "пустая",
+            }[flask_sips]
+            has_flask = self._has_item(state, "Фляга")
             text = (
                 "Характеристики и инвентарь\n\n"
                 "Характеристики:\n"
                 f"МАСТЕРСТВО: {mastery_line}\n"
-                f"ВЫНОСЛИВОСТЬ: {values['stamina']}\n"
-                f"УДАЧА: {values['luck']}\n\n"
+                f"ВЫНОСЛИВОСТЬ: {characteristic_text('stamina')}\n"
+                f"УДАЧА: {characteristic_text('luck')}\n\n"
                 "Инвентарь:\n"
-                "Снаряжение: меч\n"
-                f"Фляга: {state['water_sips']} глотка; каждый восстанавливает 2 ВЫНОСЛИВОСТИ.\n"
+                f"Снаряжение: {'меч' if self._has_item(state, 'Меч') else 'нет'}\n"
+                f"Фляга: {flask_status if has_flask else 'нет фляги'}; каждый глоток восстанавливает 2 ВЫНОСЛИВОСТИ.\n"
                 f"Заплечный мешок: {bag_used}/{state['bag_capacity']} предметов:\n"
                 f"{bag_listing}\n"
                 "\nЗаклинания:\n"
@@ -434,10 +451,23 @@ class BlackCastleBot:
                 + "\n"
                 f"Золотые: {state['gold']}"
             )
-            return text, [[{
+            keyboard = []
+            if has_flask and flask_sips > 0:
+                keyboard.append([{
+                    "text": "Попить из фляги (+2 Выносливости)",
+                    "callback_data": "blackcastle:flask:drink",
+                }])
+            for index, item in item_entries:
+                item_hash = hashlib.sha256(item.encode("utf-8")).hexdigest()[:8]
+                keyboard.append([{
+                    "text": f"Выкинуть: {item}",
+                    "callback_data": f"blackcastle:discard:{index}:{item_hash}",
+                }])
+            keyboard.append([{
                 "text": f"К шагу {step}",
                 "callback_data": "blackcastle:back",
-            }]], view == "status"
+            }])
+            return text, keyboard, view == "status"
 
         if view == "battle":
             battle = state.get("battle", {})
@@ -1469,6 +1499,18 @@ class BlackCastleBot:
                     label = str(option.get("button_text") or label)
             except (ValueError, TypeError):
                 pass
+        elif action == "blackcastle:flask:drink":
+            label = "Попить из фляги (+2 Выносливости)"
+        elif action.startswith("blackcastle:discard:"):
+            try:
+                _, _, index_text, item_hash = action.split(":", 3)
+                index = int(index_text)
+                items = state.get("items", [])
+                item = items[index] if isinstance(items, list) and 0 <= index < len(items) else None
+                if isinstance(item, str) and hashlib.sha256(item.encode("utf-8")).hexdigest()[:8] == item_hash:
+                    label = f"Выкинуть: {item}"
+            except (ValueError, TypeError):
+                pass
         elif action.startswith("blackcastle:battle:start:"):
             try:
                 _, _, _, source_text, choice_id = action.split(":", 4)
@@ -1544,6 +1586,7 @@ class BlackCastleBot:
                 state["direct_message_has_photo"] = isinstance(callback_photo, list) and bool(callback_photo)
             luck_alert = None
             loot_alert = None
+            inventory_alert = None
             luck_check_clicked = False
             route_choice = None
             route_source_step = None
@@ -1551,6 +1594,9 @@ class BlackCastleBot:
             loot_choice = None
             loot_from_battle = False
             choice_reward = None
+            drink_from_flask = False
+            discard_index = None
+            discard_item = None
             cast_spell = None
             battle_advance = False
             battle_started = False
@@ -1608,6 +1654,40 @@ class BlackCastleBot:
                     ]
                     if self._bag_item_count(state, bag_items) + int(loot_choice["bag_slots"]) > int(state.get("bag_capacity", 7)):
                         loot_alert = "В заплечном мешке недостаточно места для этой вещи."
+            elif action == "blackcastle:flask:drink":
+                if state.get("view") not in {"stats", "inventory", "status"} or not self._has_item(state, "Фляга"):
+                    inventory_alert = "У вас нет фляги."
+                elif int(state.get("water_sips", 0)) <= 0:
+                    inventory_alert = "Во фляге не осталось воды."
+                elif int(state.get("characteristics", {}).get("stamina", 0)) >= CHARACTERISTIC_MAXIMUMS["stamina"]:
+                    inventory_alert = "Выносливость уже максимальна; глоток не потрачен."
+                else:
+                    drink_from_flask = True
+                    stamina_before = int(state["characteristics"].get("stamina", 0))
+                    inventory_alert = (
+                        f"Выносливость: {stamina_before} → "
+                        f"{min(CHARACTERISTIC_MAXIMUMS['stamina'], stamina_before + 2)}. "
+                        f"Во фляге останется глотков: {int(state.get('water_sips', 0)) - 1}."
+                    )
+            elif action.startswith("blackcastle:discard:"):
+                try:
+                    _, _, index_text, item_hash = action.split(":", 3)
+                    candidate_index = int(index_text)
+                    items = state.get("items", [])
+                    candidate = (
+                        items[candidate_index]
+                        if isinstance(items, list) and 0 <= candidate_index < len(items)
+                        else None
+                    )
+                    if (state.get("view") in {"stats", "inventory", "status"}
+                            and isinstance(candidate, str)
+                            and hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:8] == item_hash):
+                        discard_index = candidate_index
+                        discard_item = candidate
+                    else:
+                        inventory_alert = "Этот предмет уже отсутствует в инвентаре."
+                except (ValueError, TypeError):
+                    inventory_alert = "Не удалось определить предмет. Откройте инвентарь ещё раз."
             elif action.startswith("blackcastle:battle:begin:"):
                 try:
                     battle_target_index = int(action.rsplit(":", 1)[1])
@@ -1738,7 +1818,7 @@ class BlackCastleBot:
             if luck_alert:
                 self._save_state(player_id, state)
             if isinstance(callback_id, str):
-                await self._acknowledge_callback(callback_id, luck_alert or loot_alert)
+                await self._acknowledge_callback(callback_id, luck_alert or loot_alert or inventory_alert)
             if action == "blackcastle:preface":
                 state["view"] = "preface"
                 state["preface_part"] = 0
@@ -1778,6 +1858,26 @@ class BlackCastleBot:
                     state["view"] = "step"
                     state["step"] = loot_source_step
                     state["page_part"] = 0
+            elif action == "blackcastle:flask:drink":
+                if not drink_from_flask:
+                    return
+                characteristics = state["characteristics"]
+                stamina_before = int(characteristics.get("stamina", 0))
+                stamina_after = min(
+                    CHARACTERISTIC_MAXIMUMS["stamina"], stamina_before + 2
+                )
+                characteristics["stamina"] = stamina_after
+                state["water_sips"] = max(0, int(state.get("water_sips", 0)) - 1)
+            elif action.startswith("blackcastle:discard:"):
+                if discard_index is None or discard_item is None:
+                    return
+                items = state["items"]
+                del items[discard_index]
+                slot_costs = state.get("item_slot_costs")
+                if isinstance(slot_costs, dict) and discard_item not in items:
+                    slot_costs.pop(discard_item, None)
+                if discard_item.strip().casefold() == "фляга":
+                    state["water_sips"] = 0
             elif action == "blackcastle:continue":
                 state["view"] = "step"
                 state["step"] = 1
