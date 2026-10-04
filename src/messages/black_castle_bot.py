@@ -315,6 +315,7 @@ class BlackCastleBot:
         escaped = html.escape(line)
         is_formula_or_stat = (
             "Мастерство:" in line or "УДАРА" in line
+            or "🎲" in line or re.search(r"\d+\s+⚔️", line)
             or line.startswith(("ВЫНОСЛИВОСТЬ", "Выносливость", "Битва продолжается"))
             or "получает 2 урона" in line
             or re.search(r"\b\d+\s+против\s+\d+\b", line, re.IGNORECASE)
@@ -781,10 +782,9 @@ class BlackCastleBot:
             )
             if mastery_reduction:
                 formula += f" - {mastery_reduction} (заклинание Слабости)"
-            formula += f" = {enemy_attacks[i]} (СИЛА УДАРА) ⚔️"
+            formula += f" = {enemy_attacks[i]} ⚔️"
             enemy_attack_lines.append(f"{display_names[i]}: {formula}.")
         enemy_attack_text = "\n".join(enemy_attack_lines)
-        hero_label = "Копии" if acting_copy else "игрока"
         roll_owner = "Бросок Копии" if acting_copy else "Ваш бросок"
         player_formula = (
             f"{roll_owner}: {player_die_one} 🎲 + {player_die_two} 🎲 + "
@@ -803,7 +803,7 @@ class BlackCastleBot:
         )
         event_lines = [
             f"{opening}\n{attack_description}",
-            f"{counter_start}\n{player_formula} = {player_attack} (СИЛА УДАРА {hero_label}) ⚔️.",
+            f"{counter_start}\n{player_formula} = {player_attack} ⚔️.",
             (f"{('Удар Копии' if acting_copy else 'Ваш выпад')} оказывается быстрее — "
              f"{player_attack} ⚔️ против {selected_attack} ⚔️."
              if player_wins else f"{target_name} успевает опередить {victim} — "
