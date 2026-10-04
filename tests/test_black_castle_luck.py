@@ -1047,6 +1047,167 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_merchant_shops_offer_item_purchases_and_direct_steps_use_text_limit(self):
+        bot, store = make_bot()
+        body = "Торговец предлагает купить яблоко и наполнить флягу. " * 20
+        store.paragraphs[176] = {
+            "paragraph_number": 176, "body": body, "photo_file_id": "shop-photo",
+        }
+        store.paragraphs[448] = {
+            "paragraph_number": 448, "body": "Крестьянин предлагает товары.", "photo_file_id": "market-photo",
+        }
+        store.choices_by_step[176] = []
+        store.choices_by_step[448] = []
+        store.state.update({"step": 176, "view": "step", "gold": 5, "items": ["Фляга"]})
+        try:
+            text, keyboard, _ = bot._screen(store.state)
+            buttons = [button for row in keyboard for button in row]
+            self.assertIn("Купить яблоко — 1 золотой", [button["text"] for button in buttons])
+            self.assertIn("blackcastle:buy:176:apple", [button["callback_data"] for button in buttons])
+            self.assertIn("blackcastle:buy:176:water_full", [button["callback_data"] for button in buttons])
+            self.assertIn("blackcastle:buy:176:backpack", [button["callback_data"] for button in buttons])
+            self.assertIn("Золотые: 5", text)
+
+            first_inline_page, first_inline_keyboard = bot._inline_screen(store.state)
+            self.assertLessEqual(len(first_inline_page), 1024)
+            self.assertIn("Читать продолжение", [
+                button["text"] for row in first_inline_keyboard for button in row
+            ])
+            self.assertNotIn("blackcastle:buy:176:apple", [
+                button["callback_data"] for row in first_inline_keyboard for button in row
+            ])
+            store.state["page_part"] = 1
+            _, final_inline_keyboard = bot._inline_screen(store.state)
+            self.assertIn("blackcastle:buy:176:apple", [
+                button["callback_data"] for row in final_inline_keyboard for button in row
+            ])
+
+            store.state.update({"step": 448, "view": "step"})
+            _, market_keyboard, _ = bot._screen(store.state)
+            market_actions = [button["callback_data"] for row in market_keyboard for button in row]
+            self.assertIn("blackcastle:buy:448:pineapple", market_actions)
+            self.assertIn("blackcastle:buy:448:shaped_key", market_actions)
+
+            store.state.update({"step": 176, "view": "step", "page_part": 0})
+            calls = []
+
+            async def fake_call(method, payload):
+                calls.append((method, payload))
+                return {"message_id": len(calls)}
+
+            with patch.object(bot, "_call", side_effect=fake_call):
+                asyncio.run(BlackCastleBot._send_direct_screen(bot, 42, 42, store.state))
+            self.assertEqual([method for method, _ in calls], ["sendPhoto", "sendMessage"])
+            text_payload = calls[1][1]
+            self.assertLessEqual(len(text_payload["text"]), 4096)
+            self.assertNotIn("Читать продолжение", text_payload["text"])
+            self.assertIn("blackcastle:buy:176:apple", {
+                button["callback_data"]
+                for row in text_payload["reply_markup"]["inline_keyboard"] for button in row
+            })
+            self.assertEqual(len(store.state["direct_message_ids"]), 2)
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_shop_purchase_charges_gold_and_adds_canonical_item(self):
+        bot, store = make_bot()
+        store.paragraphs[176] = {
+            "paragraph_number": 176, "body": "Торговец предлагает яблоки.", "photo_file_id": "shop-photo",
+        }
+        store.choices_by_step[176] = []
+        store.state.update({"step": 176, "view": "step", "gold": 3, "items": ["Фляга"]})
+        update = {"callback_query": {
+            "id": "buy-apple", "from": {"id": 42},
+            "data": "blackcastle:buy:176:apple",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(update))
+            self.assertEqual(store.state["gold"], 2)
+            self.assertEqual(store.state["items"][-1], "Яблоко")
+            self.assertEqual(store.state["step"], 176)
+            self.assertEqual(store.state["last_shop_purchase"]["text"], "Покупка завершена: Яблоко")
+            self.assertIn("Покупка: Яблоко. Золотых останется: 2.", [
+                payload.get("text", "") for method, payload in bot.calls if method == "answerCallbackQuery"
+            ])
+            asyncio.run(bot.process_update(update))
+            self.assertEqual(store.state["gold"], 2)
+            self.assertEqual(store.state["items"].count("Яблоко"), 1)
+
+            store.state["view"] = "inventory"
+            store.state["characteristics"].update({"stamina": 10, "max_stamina": 19})
+            _, inventory_keyboard, _ = bot._screen(store.state)
+            self.assertIn("blackcastle:item_use:apple", [
+                button["callback_data"] for row in inventory_keyboard for button in row
+            ])
+            use_update = {"callback_query": {
+                "id": "eat-apple", "from": {"id": 42},
+                "data": "blackcastle:item_use:apple",
+                "message": {"message_id": 10, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(use_update))
+            self.assertEqual(store.state["characteristics"]["stamina"], 11)
+            self.assertNotIn("Яблоко", store.state["items"])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_shop_rejects_insufficient_gold_and_full_bag(self):
+        bot, store = make_bot()
+        store.paragraphs[176] = {
+            "paragraph_number": 176, "body": "Торговец предлагает яблоки.", "photo_file_id": "shop-photo",
+        }
+        store.choices_by_step[176] = []
+        store.state.update({"step": 176, "view": "step", "gold": 0, "items": ["Фляга"]})
+        insufficient = {"callback_query": {
+            "id": "no-gold", "from": {"id": 42}, "data": "blackcastle:buy:176:apple",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(insufficient))
+            self.assertEqual(store.state["gold"], 0)
+            self.assertEqual(store.state["items"], ["Фляга"])
+            self.assertIn("Недостаточно золотых", [
+                payload.get("text", "") for method, payload in bot.calls if method == "answerCallbackQuery"
+            ][-1])
+
+            store.state.update({"gold": 5, "items": ["Фляга", *[f"Вещь {i}" for i in range(7)]]})
+            full_bag = {"callback_query": {
+                "id": "bag-full", "from": {"id": 42}, "data": "blackcastle:buy:176:apple",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(full_bag))
+            self.assertEqual(store.state["gold"], 5)
+            self.assertNotIn("Яблоко", store.state["items"])
+            self.assertIn("недостаточно места", [
+                payload.get("text", "") for method, payload in bot.calls if method == "answerCallbackQuery"
+            ][-1])
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_shop_can_refill_flask_and_upgrade_backpack_for_gold(self):
+        bot, store = make_bot()
+        store.paragraphs[176] = {
+            "paragraph_number": 176, "body": "Торговец продаёт воду и мешки.", "photo_file_id": "shop-photo",
+        }
+        store.choices_by_step[176] = []
+        store.state.update({
+            "step": 176, "view": "step", "gold": 12, "items": ["Фляга"],
+            "water_sips": 0, "bag_capacity": 7,
+        })
+        try:
+            for callback_id, purchase_id in (("water-buy", "water_full"), ("bag-buy", "backpack")):
+                update = {"callback_query": {
+                    "id": callback_id, "from": {"id": 42},
+                    "data": f"blackcastle:buy:176:{purchase_id}",
+                    "message": {"message_id": 9, "chat": {"id": 42}},
+                }}
+                asyncio.run(bot.process_update(update))
+            self.assertEqual(store.state["gold"], 0)
+            self.assertEqual(store.state["water_sips"], 2)
+            self.assertEqual(store.state["bag_capacity"], 9)
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_using_a_required_item_consumes_it_from_saved_inventory_and_frees_a_slot(self):
         bot, store = make_bot()
         store.paragraphs[427] = {

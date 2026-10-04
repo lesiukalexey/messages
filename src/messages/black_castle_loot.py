@@ -91,9 +91,67 @@ PARAGRAPH_LOOT_STAMINA_EFFECTS = {
     (239, "food"): (2, "Съесть еду (+2 Выносливости)"),
 }
 
+# Shop goods are purchases, not free paragraph loot. Item names are canonical
+# catalog names; bought item instances are then stored through player_inventory.
+PARAGRAPH_PURCHASE_OPTIONS = {
+    176: [
+        {"purchase_id": "apple", "button_text": "Купить яблоко — 1 золотой", "gold_cost": 1,
+         "item_name": "Яблоко", "bag_slots": 1},
+        {"purchase_id": "mandarin", "button_text": "Купить мандарин — 2 золотых", "gold_cost": 2,
+         "item_name": "Мандарин", "bag_slots": 1},
+        {"purchase_id": "orange", "button_text": "Купить апельсин — 1 золотой", "gold_cost": 1,
+         "item_name": "Апельсин", "bag_slots": 1},
+        {"purchase_id": "banana", "button_text": "Купить банан — 2 золотых", "gold_cost": 2,
+         "item_name": "Банан", "bag_slots": 1},
+        {"purchase_id": "milk", "button_text": "Купить молоко — 2 золотых", "gold_cost": 2,
+         "item_name": "Молоко", "bag_slots": 1},
+        {"purchase_id": "water_full", "button_text": "Наполнить флягу — 4 золотых", "gold_cost": 4,
+         "water_sips": 2, "requires_flask": True, "receipt": "Вы наполнили флягу полностью"},
+        {"purchase_id": "water_half", "button_text": "Налить полфляги — 2 золотых", "gold_cost": 2,
+         "water_sips": 1, "requires_flask": True, "receipt": "Вы наполнили флягу наполовину"},
+        {"purchase_id": "backpack", "button_text": "Купить мешок на 9 мест — 8 золотых", "gold_cost": 8,
+         "bag_capacity": 9, "receipt": "Вместимость мешка увеличена до 9 предметов"},
+    ],
+    448: [
+        {"purchase_id": "pineapple", "button_text": "Купить ананас — 2 золотых", "gold_cost": 2,
+         "item_name": "Ананас", "bag_slots": 1},
+        {"purchase_id": "banana", "button_text": "Купить банан — 2 золотых", "gold_cost": 2,
+         "item_name": "Банан", "bag_slots": 1},
+        {"purchase_id": "wood_piece", "button_text": "Купить кусочек дерева — 1 золотой", "gold_cost": 1,
+         "item_name": "Красивый кусочек дерева", "bag_slots": 1},
+        {"purchase_id": "shaped_key", "button_text": "Купить фигурный ключ — 2 золотых", "gold_cost": 2,
+         "item_name": "Фигурный ключ", "bag_slots": 1},
+        {"purchase_id": "horse_blanket", "button_text": "Купить попону — 5 золотых", "gold_cost": 5,
+         "item_name": "Попона для лошади", "bag_slots": 1},
+        {"purchase_id": "shiny_metal", "button_text": "Купить кусок металла — 3 золотых", "gold_cost": 3,
+         "item_name": "Блестящий кусок металла", "bag_slots": 1},
+        {"purchase_id": "golden_oyster", "button_text": "Купить золотую устрицу — 8 золотых", "gold_cost": 8,
+         "item_name": "Золотая устрица", "bag_slots": 1},
+        {"purchase_id": "silver_bracelet", "button_text": "Купить серебряный браслет — 4 золотых", "gold_cost": 4,
+         "item_name": "Серебряный браслет", "bag_slots": 1},
+    ],
+}
+
 INVENTORY_STAMINA_CONSUMABLES = {
     "wine": ("Вино", 3, "Выпить вино (+3 Выносливости)"),
     "food": ("Еда", 2, "Съесть еду (+2 Выносливости)"),
+    "apple": ("Яблоко", 1, "Съесть яблоко (+1 Выносливости)"),
+    "mandarin": ("Мандарин", 2, "Съесть мандарин (+2 Выносливости)"),
+    "orange": ("Апельсин", 1, "Съесть апельсин (+1 Выносливости)"),
+    "banana": ("Банан", 2, "Съесть банан (+2 Выносливости)"),
+    "milk": ("Молоко", 3, "Выпить молоко (+3 Выносливости)"),
+    "pineapple": ("Ананас", 3, "Съесть ананас (+3 Выносливости)"),
+}
+
+INVENTORY_CONSUMABLE_USE_TEXT = {
+    "wine": "Вы выпили вино",
+    "food": "Вы съели еду",
+    "apple": "Вы съели яблоко",
+    "mandarin": "Вы съели мандарин",
+    "orange": "Вы съели апельсин",
+    "banana": "Вы съели банан",
+    "milk": "Вы выпили молоко",
+    "pineapple": "Вы съели ананас",
 }
 
 PARAGRAPH_CHOICE_REWARDS = [

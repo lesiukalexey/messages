@@ -13,7 +13,9 @@ from urllib.request import Request, urlopen
 
 from .black_castle_battle_text import ENEMY_BATTLE_TEXT, GENERIC_BATTLE_TEXT, canonical_enemy_key
 from .black_castle_loot import (
+    INVENTORY_CONSUMABLE_USE_TEXT,
     INVENTORY_STAMINA_CONSUMABLES,
+    PARAGRAPH_PURCHASE_OPTIONS,
     PARAGRAPH_LOOT_STAMINA_EFFECTS,
     REPEATABLE_LOOT_IDS,
 )
@@ -689,6 +691,25 @@ class BlackCastleBot:
                                 "text": use_effect[1],
                                 "callback_data": f"blackcastle:loot_use:{step}:{loot_id}",
                             }])
+                purchase_options = PARAGRAPH_PURCHASE_OPTIONS.get(step, [])
+                if purchase_options:
+                    receipt = state.get("last_shop_purchase")
+                    if isinstance(receipt, dict) and receipt.get("step") == step:
+                        text += f"\n\n{receipt.get('text', 'Покупка выполнена.')}. Осталось золотых: {int(state.get('gold', 0))}."
+                    text += f"\n\nЗолотые: {int(state.get('gold', 0))}. Выберите покупку:"
+                    has_flask = self._has_item(state, "Фляга")
+                    for option in purchase_options:
+                        if option.get("requires_flask") and not has_flask:
+                            continue
+                        if (option.get("water_sips") is not None
+                                and int(state.get("water_sips", 0)) >= int(option["water_sips"])):
+                            continue
+                        if option.get("bag_capacity") and int(state.get("bag_capacity", 7)) >= int(option["bag_capacity"]):
+                            continue
+                        keyboard.append([{
+                            "text": str(option["button_text"]),
+                            "callback_data": f"blackcastle:buy:{step}:{option['purchase_id']}",
+                        }])
             for choice in choices:
                 required_item = choice.get("required_item")
                 if required_item and not self._has_item(state, str(required_item)):
@@ -1576,8 +1597,16 @@ class BlackCastleBot:
         # Telegram photo captions allow up to 1024 characters. Step 239 is
         # 953 characters including its heading, and fits as a single caption;
         # splitting it at 950 hides every item and route action on page one.
-        text, keyboard, _ = self._paged_screen(state, limit=1024)
-        return self._format_telegram_text(text), keyboard
+        limit = 1024
+        text, keyboard, _ = self._paged_screen(state, limit=limit)
+        formatted = self._format_telegram_text(text)
+        # Formatting adds HTML tags and a page heading icon. Use the full
+        # caption allowance when possible, then reserve only the markup overhead.
+        while len(formatted) > 1024 and limit > 900:
+            limit -= 16
+            text, keyboard, _ = self._paged_screen(state, limit=limit)
+            formatted = self._format_telegram_text(text)
+        return formatted, keyboard
 
     async def _delete_message(self, chat_id: int, message_id: int) -> bool:
         if not message_id:
@@ -1609,7 +1638,7 @@ class BlackCastleBot:
             old_ids.append(previous_message_id)
         old_ids = list(dict.fromkeys(old_ids))
 
-        screen_limit = 3900 if state.get("view") == "battle" else 1024
+        screen_limit = 3900 if state.get("view") in {"battle", "step"} else 1024
         text, keyboard, first_part = self._paged_screen(state, limit=screen_limit)
         is_direct_battle = state.get("view") == "battle"
         _, _, has_photo = self._screen(state)
@@ -1648,7 +1677,10 @@ class BlackCastleBot:
             "reply_markup": {"inline_keyboard": keyboard},
         }
         formatted = self._format_telegram_text(text)
-        if is_direct_battle:
+        # Keep battle logs separate from their illustration. A regular step
+        # also uses separate photo/text messages when its caption would exceed
+        # Telegram's 1024-character caption limit.
+        if is_direct_battle or (photo_id and len(formatted) > 1024):
             photo_message_id = None
             if photo_id:
                 photo = await self._call("sendPhoto", {
@@ -1887,6 +1919,11 @@ class BlackCastleBot:
                     await self._acknowledge_callback(callback_id)
                 return
             state = self._get_or_create_state(player_id)
+            if action.startswith("blackcastle:buy:") and isinstance(callback_id, str):
+                processed = state.get("processed_shop_purchase_callbacks", [])
+                if isinstance(processed, list) and callback_id in processed:
+                    await self._acknowledge_callback(callback_id, "Эта покупка уже обработана.")
+                    return
             previous_step = state.get("step")
             logger.info(
                 "BlackCastle callback received (action=%s, view=%s, step=%s)",
@@ -1910,6 +1947,10 @@ class BlackCastleBot:
             loot_choice = None
             loot_from_battle = False
             loot_use_gain = 0
+            purchase_offer = None
+            purchase_source_step = None
+            purchase_error = None
+            purchase_success = None
             inventory_consumable_index = None
             inventory_consumable_key = None
             inventory_consumable_gain = 0
@@ -1991,6 +2032,46 @@ class BlackCastleBot:
                     ]
                     if self._bag_item_count(state, bag_items) + int(loot_choice["bag_slots"]) > int(state.get("bag_capacity", 7)):
                         loot_alert = "В заплечном мешке недостаточно места для этой вещи."
+            elif action.startswith("blackcastle:buy:"):
+                try:
+                    _, _, source_text, purchase_id = action.split(":", 3)
+                    purchase_source_step = int(source_text)
+                    purchase_offer = next((
+                        row for row in PARAGRAPH_PURCHASE_OPTIONS.get(purchase_source_step, [])
+                        if str(row.get("purchase_id")) == purchase_id
+                    ), None)
+                except (ValueError, TypeError):
+                    purchase_offer = None
+                if (purchase_offer is None or state.get("view") != "step"
+                        or state.get("step") != purchase_source_step):
+                    purchase_error = "Эта покупка сейчас недоступна."
+                elif int(state.get("gold", 0)) < int(purchase_offer["gold_cost"]):
+                    purchase_error = "Недостаточно золотых для этой покупки."
+                elif purchase_offer.get("requires_flask") and not self._has_item(state, "Фляга"):
+                    purchase_error = "Чтобы купить воду, нужна фляга."
+                elif (purchase_offer.get("water_sips") is not None
+                        and int(state.get("water_sips", 0)) >= int(purchase_offer["water_sips"])):
+                    purchase_error = "Во фляге уже достаточно воды для этой покупки."
+                elif (purchase_offer.get("bag_capacity") is not None
+                        and int(state.get("bag_capacity", 7)) >= int(purchase_offer["bag_capacity"])):
+                    purchase_error = "У вас уже есть заплечный мешок на 9 предметов."
+                elif purchase_offer.get("item_name"):
+                    equipment_names = {"меч", "фляга", "заплечный мешок"}
+                    bag_items = [
+                        item for item in state.get("items", [])
+                        if isinstance(item, str) and item.strip().casefold() not in equipment_names
+                    ]
+                    slots = int(purchase_offer.get("bag_slots") or 1)
+                    if self._bag_item_count(state, bag_items) + slots > int(state.get("bag_capacity", 7)):
+                        purchase_error = "В заплечном мешке недостаточно места для покупки."
+                if purchase_offer is not None and purchase_error is None:
+                    remaining_gold = int(state.get("gold", 0)) - int(purchase_offer["gold_cost"])
+                    receipt_text = str(
+                        purchase_offer.get("item_name")
+                        or purchase_offer.get("receipt")
+                        or "Покупка выполнена"
+                    )
+                    purchase_success = f"Покупка: {receipt_text}. Золотых останется: {remaining_gold}."
             elif action.startswith("blackcastle:loot_use:"):
                 loot_id = ""
                 try:
@@ -2048,10 +2129,7 @@ class BlackCastleBot:
                         inventory_consumable_gain = min(
                             int(consumable[1]), personal_stamina_maximum - current_stamina
                         )
-                        consumed_description = {
-                            "wine": "Вы выпили вино",
-                            "food": "Вы съели еду",
-                        }[inventory_consumable_key]
+                        consumed_description = INVENTORY_CONSUMABLE_USE_TEXT[inventory_consumable_key]
                         inventory_alert = (
                             f"{consumed_description}. Выносливость: {current_stamina} → "
                             f"{current_stamina + inventory_consumable_gain}."
@@ -2228,7 +2306,10 @@ class BlackCastleBot:
             if luck_alert:
                 self._save_state(player_id, state)
             if isinstance(callback_id, str):
-                await self._acknowledge_callback(callback_id, luck_alert or loot_alert or inventory_alert)
+                await self._acknowledge_callback(
+                    callback_id,
+                    luck_alert or loot_alert or inventory_alert or purchase_error or purchase_success,
+                )
             if action == "blackcastle:preface":
                 state["view"] = "preface"
                 state["preface_part"] = 0
@@ -2250,6 +2331,39 @@ class BlackCastleBot:
             elif action == "blackcastle:back":
                 state["view"] = "step"
                 state["page_part"] = 0
+            elif action.startswith("blackcastle:buy:"):
+                if purchase_offer is None or purchase_source_step is None or purchase_error:
+                    return
+                state["gold"] = int(state.get("gold", 0)) - int(purchase_offer["gold_cost"])
+                if purchase_offer.get("item_name"):
+                    item_name = str(purchase_offer["item_name"])
+                    state.setdefault("items", []).append(item_name)
+                    state.setdefault("item_ids", []).append(None)
+                    slot_cost = int(purchase_offer.get("bag_slots") or 1)
+                    if slot_cost > 1:
+                        state.setdefault("item_slot_costs", {})[item_name] = slot_cost
+                if purchase_offer.get("water_sips") is not None:
+                    state["water_sips"] = int(purchase_offer["water_sips"])
+                if purchase_offer.get("bag_capacity") is not None:
+                    state["bag_capacity"] = int(purchase_offer["bag_capacity"])
+                receipt_text = str(
+                    purchase_offer.get("item_name")
+                    or purchase_offer.get("receipt")
+                    or "Покупка выполнена"
+                )
+                state["last_shop_purchase"] = {
+                    "step": purchase_source_step,
+                    "text": f"Покупка завершена: {receipt_text}",
+                }
+                if isinstance(callback_id, str):
+                    processed = state.setdefault("processed_shop_purchase_callbacks", [])
+                    if not isinstance(processed, list):
+                        processed = []
+                        state["processed_shop_purchase_callbacks"] = processed
+                    processed.append(callback_id)
+                    del processed[:-64]
+                state["view"] = "step"
+                state["step"] = purchase_source_step
             elif action.startswith("blackcastle:loot:"):
                 if loot_choice is None or loot_source_step is None or loot_alert:
                     return
