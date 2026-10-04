@@ -138,6 +138,28 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_preface_cannot_continue_with_unallocated_spell_uses(self):
+        bot, store = make_bot()
+        store.state["view"] = "preface"
+        store.state["spells"] = {
+            "levitation": 2, "fire": 2, "illusion": 1, "strength": 1,
+            "weakness": 1, "copy": 1, "healing": 1, "swimming": 0,
+        }
+        callback = {"callback_query": {
+            "id": "continue-callback", "from": {"id": 42},
+            "data": "blackcastle:continue",
+            "message": {"message_id": 9, "chat": {"id": 42}},
+        }}
+        try:
+            asyncio.run(bot.process_update(callback))
+            self.assertEqual(store.state["view"], "preface")
+            self.assertEqual(store.state["step"], 54)
+            alert = next(payload for method, payload in bot.calls if method == "answerCallbackQuery")
+            self.assertIn("Распределите все 10 заклинаний", alert["text"])
+            self.assertIn("Осталось распределить: 1", alert["text"])
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_successful_check_consumes_one_luck_and_returns_to_step_without_check_button(self):
         bot, store = make_bot(luck=8)
         _, initial_keyboard, _ = bot._screen(store.state)

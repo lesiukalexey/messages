@@ -887,6 +887,17 @@ class BlackCastleBot:
                 if has_luck_prompt and not has_checked:
                     luck_alert = self._resolve_luck_check(state, route_source_step, check=False)
 
+            if action == "blackcastle:continue" and state.get("view") == "preface":
+                spells = state.get("spells", INITIAL_SPELLS)
+                allocated = sum(max(0, int(spells.get(key, 0))) for key in INITIAL_SPELLS)
+                if allocated < 10:
+                    if isinstance(callback_id, str):
+                        await self._acknowledge_callback(
+                            callback_id,
+                            f"Распределите все 10 заклинаний. Осталось распределить: {10 - allocated}.",
+                        )
+                    return
+
             if luck_alert:
                 self._save_state(player_id, state)
             if isinstance(callback_id, str):
