@@ -145,12 +145,12 @@ class BlackCastleLuckTest(unittest.TestCase):
 
         plain_lines = (
             "Гигантский Паук атакует с СИЛОЙ УДАРА 17 (9 + 8).",
-            "Ваш бросок: 5 (сумма двух кубиков) + 8 (база: ваше Мастерство) = 13 (СИЛА УДАРА игрока)",
+            "Ваш бросок: 5 (сумма двух кубиков) + 8 (база: ваше Мастерство) = 13 (СИЛА УДАРА игрока) ⚔️",
             "ВЫНОСЛИВОСТЬ после раунда:",
             "Вы — 18 ❤️",
             "Гигантский Паук — 4 ❤️",
             "ВЫНОСЛИВОСТЬ: 20 → 18",
-            "Ваш выпад оказывается быстрее — 17 против 12.",
+            "Ваш выпад оказывается быстрее — 17 ⚔️ против 12 ⚔️.",
             "Гигантский Паук получает 2 урона:",
         )
         for line in plain_lines:
@@ -366,10 +366,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             player_roll = store.state["battle"]["log"][1]
             self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", player_roll)
             self.assertIn("+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве)", player_roll)
-            self.assertIn("= 21 (СИЛА УДАРА игрока)", player_roll)
+            self.assertIn("= 21 (СИЛА УДАРА игрока) ⚔️", player_roll)
             self.assertEqual(player_roll.count("Ваш бросок"), 1)
             self.assertRegex(store.state["battle"]["log"][0], r"(резко бросается|стремительно перебирает)")
-            self.assertIn("21 против 10", store.state["battle"]["log"][2])
+            self.assertIn("21 ⚔️ против 10 ⚔️", store.state["battle"]["log"][2])
             self.assertIn("ВЫНОСЛИВОСТЬ Гигантский Паук: 2 → 0", store.state["battle"]["log"][3])
             self.assertIn("побед", store.state["battle"]["log"][-1].casefold())
             self.assertFalse(any(line.startswith(tuple(f"{n})" for n in range(1, 8)))
@@ -420,10 +420,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertNotIn("<b>Мастерство", captions[1])
             self.assertNotIn("<b>СИЛА УДАРА", captions[1])
             self.assertIn(
-                "Гигантский Паук: 2 (сумма двух кубиков) + 8 (база: Мастерство) = 10 (СИЛА УДАРА).",
+                "Гигантский Паук: 2 (сумма двух кубиков) + 8 (база: Мастерство) = 10 (СИЛА УДАРА) ⚔️.",
                 captions[1],
             )
-            self.assertIn("20 против 10", captions[3])
+            self.assertIn("20 ⚔️ против 10 ⚔️", captions[3])
             self.assertRegex(captions[2], r"\nВы (смещаетесь|перехватываете|уходите).*</blockquote>")
             self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", captions[2])
             self.assertIn("Расшифровка битвы:", captions[2])
@@ -644,7 +644,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(store.state["battle"]["enemies"][0]["mastery"], 6)
             self.assertEqual(store.state["battle"]["enemies"][0]["mastery_base"], 8)
             self.assertIn(
-                "2 (сумма двух кубиков) + 8 (база: Мастерство) - 2 (заклинание Слабости) = 8 (СИЛА УДАРА)",
+                "2 (сумма двух кубиков) + 8 (база: Мастерство) - 2 (заклинание Слабости) = 8 (СИЛА УДАРА) ⚔️",
                 store.state["battle"]["log"][0],
             )
         finally:
@@ -786,7 +786,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(store.state["battle"]["player_attack_penalty"], 1)
             self.assertIn("Ваш бросок: 12 (сумма двух кубиков) + 8 (база: ваше Мастерство)", store.state["battle"]["log"][1])
             self.assertIn(
-                "+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве) = 21 (СИЛА УДАРА игрока)",
+                "+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве) = 21 (СИЛА УДАРА игрока) ⚔️",
                 store.state["battle"]["log"][1],
             )
         finally:

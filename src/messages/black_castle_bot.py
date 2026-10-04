@@ -776,7 +776,7 @@ class BlackCastleBot:
             )
             if mastery_reduction:
                 formula += f" - {mastery_reduction} (заклинание Слабости)"
-            formula += f" = {enemy_attacks[i]} (СИЛА УДАРА)"
+            formula += f" = {enemy_attacks[i]} (СИЛА УДАРА) ⚔️"
             enemy_attack_lines.append(f"{display_names[i]}: {formula}.")
         enemy_attack_text = "\n".join(enemy_attack_lines)
         hero_label = "Копии" if acting_copy else "игрока"
@@ -799,10 +799,11 @@ class BlackCastleBot:
         )
         event_lines = [
             f"{opening}\n{attack_description}",
-            f"{counter_start}\n{player_formula} = {player_attack} (СИЛА УДАРА {hero_label}).",
+            f"{counter_start}\n{player_formula} = {player_attack} (СИЛА УДАРА {hero_label}) ⚔️.",
             (f"{('Удар Копии' if acting_copy else 'Ваш выпад')} оказывается быстрее — "
-             f"{player_attack} против {selected_attack}."
-             if player_wins else f"{target_name} успевает опередить {victim} — {selected_attack} против {player_attack}."
+             f"{player_attack} ⚔️ против {selected_attack} ⚔️."
+             if player_wins else f"{target_name} успевает опередить {victim} — "
+             f"{selected_attack} ⚔️ против {player_attack} ⚔️."
              if player_attack < selected_attack else
              self._battle_phrase(target["name"], "parry", enemy=target_name)),
         ]
