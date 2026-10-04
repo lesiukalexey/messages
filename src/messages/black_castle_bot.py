@@ -158,10 +158,22 @@ class BlackCastleBot:
 
             if prose:
                 sentences = re.findall(
-                    r".+?[.!?…](?:[»”\"’]+)?(?=\s|$)|.+$",
+                    r".+?[.!?…](?:[»”\"’]+)?(?:\s*[—–-]\s*\d{1,3}\.?)?(?=\s|$)|.+$",
                     prose,
                 ) or [prose]
-                groups = [sentences[index:index + 3] for index in range(0, len(sentences), 3)]
+                groups = []
+                start = 0
+                route_reference = re.compile(r"[—–-]\s*\d{1,3}\.?\s*$")
+                while start < len(sentences):
+                    end = min(start + 3, len(sentences))
+                    while (
+                        end < len(sentences)
+                        and route_reference.search(sentences[end - 1])
+                        and route_reference.search(sentences[end])
+                    ):
+                        end += 1
+                    groups.append(sentences[start:end])
+                    start = end
                 formatted.append("\n\n".join(
                     html.escape(" ".join(sentence.strip() for sentence in group))
                     for group in groups
