@@ -77,6 +77,12 @@ class PhotoBot(BlackCastleBot):
         return {"message_id": 10}
 
 
+class SequentialMessageBot(BlackCastleBot):
+    async def _call(self, method, payload):
+        self.calls.append((method, payload))
+        return {"message_id": len(self.calls)}
+
+
 def make_bot(luck=8):
     paragraph = {
         "paragraph_number": 54,
@@ -393,7 +399,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             "step": 558,
             "view": "battle",
             "direct_message_id": 20,
-            "direct_message_ids": [20],
+            "direct_message_ids": [19, 20],
             "direct_message_has_photo": False,
             "battle": {
                 "source_step": 558,
@@ -433,6 +439,7 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertTrue(all(payload["message_id"] == 20 for payload in edits))
             self.assertTrue(all("Старый раунд больше не должен отображаться." not in payload["text"]
                                 for payload in edits))
+            self.assertEqual(store.state["direct_message_ids"], [19, 20])
             self.assertIn("Гигантский Паук", edits[-1]["text"])
             self.assertEqual(store.state["battle"]["round"], 2)
         finally:
@@ -830,6 +837,27 @@ class BlackCastleLuckTest(unittest.TestCase):
             asyncio.run(bot._edit_inline_screen("inline-1", state))
             inline_call = next(call for call in bot.calls if call[0] == "editMessageMedia")
             self.assertEqual(inline_call[1]["media"]["media"], "default-photo")
+        finally:
+            bot._test_tempdir.cleanup()
+
+    def test_direct_battle_keeps_step_illustration_and_tracks_text_message(self):
+        template_bot, store = make_bot()
+        bot = SequentialMessageBot("token", None, store, template_bot.scene_path)
+        bot._test_tempdir = template_bot._test_tempdir
+        bot.calls = []
+        state = store.state
+        state.update({"view": "battle", "step": 558})
+        state["battle"] = {"status": "awaiting_continue", "log": ["Раунд продолжается."]}
+        try:
+            asyncio.run(bot._send_direct_screen(42, 42, state))
+
+            self.assertEqual([method for method, _ in bot.calls], ["sendPhoto", "sendMessage"])
+            self.assertEqual(bot.calls[0][1]["photo"], "step-photo")
+            self.assertNotIn("caption", bot.calls[0][1])
+            self.assertIn("Раунд продолжается.", bot.calls[1][1]["text"])
+            self.assertEqual(state["direct_message_ids"], [1, 2])
+            self.assertEqual(state["direct_message_id"], 2)
+            self.assertFalse(state["direct_message_has_photo"])
         finally:
             bot._test_tempdir.cleanup()
 

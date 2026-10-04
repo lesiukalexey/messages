@@ -1108,8 +1108,14 @@ class BlackCastleBot:
 
         screen_limit = 3900 if state.get("view") == "battle" else 950
         text, keyboard, first_part = self._paged_screen(state, limit=screen_limit)
+        is_direct_battle = state.get("view") == "battle"
         _, _, has_photo = self._screen(state)
-        if has_photo and first_part:
+        if is_direct_battle:
+            # Battle logs can exceed Telegram's photo-caption limit. Keep the
+            # step illustration as its own message and render the interactive
+            # battle log in a separate text message below it.
+            photo_id = self._paragraph_photo(int(state.get("step", 1)))
+        elif has_photo and first_part:
             photo_id = (
                 self._default_photo()
                 if state.get("view") in {"status", "preface"}
@@ -1139,6 +1145,25 @@ class BlackCastleBot:
             "reply_markup": {"inline_keyboard": keyboard},
         }
         formatted = self._format_telegram_text(text)
+        if is_direct_battle:
+            photo_message_id = None
+            if photo_id:
+                photo = await self._call("sendPhoto", {
+                    "chat_id": chat_id,
+                    "photo": photo_id,
+                })
+                candidate_id = photo.get("message_id")
+                photo_message_id = candidate_id if isinstance(candidate_id, int) else None
+            sent = await self._call("sendMessage", {**payload, "text": formatted})
+            sent_id = sent.get("message_id")
+            state["direct_message_ids"] = [
+                message_id for message_id in (photo_message_id, sent_id)
+                if isinstance(message_id, int) and message_id > 0
+            ]
+            state["direct_message_id"] = sent_id if isinstance(sent_id, int) else 0
+            state["direct_message_has_photo"] = False
+            self._save_state(player_id, state)
+            return
         if photo_id:
             payload.update({"photo": photo_id, "caption": formatted})
             sent = await self._call("sendPhoto", payload)
@@ -1790,7 +1815,14 @@ class BlackCastleBot:
                     and isinstance(previous_message_id, int)
                     and previous_message_id > 0
                 ):
-                    state["direct_message_ids"] = [previous_message_id]
+                    tracked_ids = state.get("direct_message_ids")
+                    if not isinstance(tracked_ids, list):
+                        tracked_ids = []
+                    state["direct_message_ids"] = list(dict.fromkeys(
+                        [message_id for message_id in tracked_ids
+                         if isinstance(message_id, int) and message_id > 0]
+                        + [previous_message_id]
+                    ))
                     state["direct_message_id"] = previous_message_id
                     state["direct_message_has_photo"] = False
                     await self._edit_battle_progress(
