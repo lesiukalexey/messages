@@ -85,6 +85,22 @@ def make_callback(choice_id, callback_id="callback-1"):
 class BlackCastleLuckTest(unittest.TestCase):
     def test_successful_check_consumes_one_luck_and_returns_to_step_without_check_button(self):
         bot, store = make_bot(luck=8)
+        _, initial_keyboard, _ = bot._screen(store.state)
+        initial_labels = [
+            button["text"].replace("\u00a0", " ")
+            for row in initial_keyboard
+            for button in row
+        ]
+        self.assertEqual(initial_labels[:4], [
+            "Проверить удачу — 558",
+            "Заклинание Силы — 410",
+            "Заклинание Слабости — 219",
+            "Вступить в бой — 189",
+        ])
+        self.assertEqual(
+            BlackCastleBot._route_button_text("Если он победил", 7).replace("\u00a0", " "),
+            "Вступить в бой — 7",
+        )
         with patch("messages.black_castle_bot.random.randint", side_effect=[2, 3]):
             asyncio.run(bot.process_update(make_callback("route_01")))
         try:
