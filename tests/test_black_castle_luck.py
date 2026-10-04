@@ -211,6 +211,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(store.state["battle"]["copy"], {
                 "name": "Копия ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 8,
             })
+            self.assertIn(
+                "Бросок Копии (2 кубика): 12 + Мастерство Копии: 8",
+                store.state["battle"]["log"][1],
+            )
             self.assertEqual(store.state["battle"]["enemies"][0]["stamina"], 6)
             self.assertEqual(store.state["battle"]["status"], "awaiting_continue")
             self.assertEqual(len(store.state["battle"]["log"]), 7)
@@ -241,10 +245,13 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(store.state["battle"]["status"], "won")
             self.assertEqual(len(store.state["battle"]["log"]), 7)
             self.assertEqual(pause.await_count, 7)
-            self.assertIn("12 + 8 + 2 - 1 = 21", store.state["battle"]["log"][1])
+            player_roll = store.state["battle"]["log"][1]
+            self.assertIn("Ваш бросок (2 кубика): 12 + ваше Мастерство: 8", player_roll)
+            self.assertIn("заклинания Силы: 2 - штраф за бой на дереве: 1", player_roll)
+            self.assertEqual(player_roll.count("Ваш бросок"), 1)
             self.assertRegex(store.state["battle"]["log"][0], r"(резко бросается|стремительно перебирает)")
             self.assertIn("21 против 10", store.state["battle"]["log"][2])
-            self.assertIn("ВЫНОСЛИВОСТЬ: 2 → 0", store.state["battle"]["log"][3])
+            self.assertIn("ВЫНОСЛИВОСТЬ Гигантский Паук: 2 → 0", store.state["battle"]["log"][3])
             self.assertIn("победа за вами", store.state["battle"]["log"][-1])
             self.assertFalse(any(line.startswith(tuple(f"{n})" for n in range(1, 8)))
                                  for line in store.state["battle"]["log"]))
@@ -289,7 +296,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(len(captions), 8)  # battle screen, then each of seven actions
             self.assertRegex(captions[1], r"(резко бросается|стремительно перебирает)")
             self.assertIn("20 против 10", captions[3])
-            self.assertIn("ВЫНОСЛИВОСТЬ: 2 → 0", captions[4])
+            self.assertIn("🕷️ <i>Выносливость Гигантский Паук: 2 → 0</i>", captions[4])
+            self.assertIn("❤️ <b>Выносливость: 18</b>", captions[6])
+            self.assertIn("<i>Гигантский Паук", captions[1])
+            self.assertIn("<b>Мастерство</b>: 8", captions[1])
             self.assertIn("победа за вами", captions[-1])
             self.assertEqual(store.state["battle"]["status"], "won")
         finally:
@@ -495,7 +505,7 @@ class BlackCastleLuckTest(unittest.TestCase):
                     patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
                 asyncio.run(bot.process_update(start))
             self.assertEqual(store.state["battle"]["enemies"][0]["mastery"], 6)
-            self.assertIn("СИЛОЙ УДАРА 8 (2 + 6)", store.state["battle"]["log"][0])
+            self.assertIn("Бросок (2 кубика): 2 + Мастерство: 6 = СИЛА УДАРА: 8", store.state["battle"]["log"][0])
         finally:
             bot._test_tempdir.cleanup()
 
@@ -633,7 +643,8 @@ class BlackCastleLuckTest(unittest.TestCase):
                     patch("messages.black_castle_bot.asyncio.sleep", new_callable=AsyncMock):
                 asyncio.run(bot.process_update(fight))
             self.assertEqual(store.state["battle"]["player_attack_penalty"], 1)
-            self.assertIn("12 + 8 + 2 - 1 = 21", store.state["battle"]["log"][1])
+            self.assertIn("Ваш бросок (2 кубика): 12 + ваше Мастерство: 8", store.state["battle"]["log"][1])
+            self.assertIn("штраф за бой на дереве: 1 = СИЛА УДАРА игрока — 21", store.state["battle"]["log"][1])
         finally:
             bot._test_tempdir.cleanup()
 
