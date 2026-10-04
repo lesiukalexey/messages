@@ -365,6 +365,10 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(len(store.state["battle"]["log"]), 7)
             narrated_lines = BlackCastleBot._battle_narration_lines(store.state["battle"]["log"][-7:-2])
             self.assertEqual(pause.await_count, max(0, len(narrated_lines) - 1))
+            self.assertEqual(
+                [call.args[0] for call in pause.await_args_list],
+                [3] * max(0, len(narrated_lines) - 1),
+            )
             player_roll = store.state["battle"]["log"][1]
             self.assertIn("Ваш бросок: 6 🎲 + 6 🎲 + 8 🎯 (база)", player_roll)
             self.assertIn("+ 2 (бонус заклинания Силы) - 1 (штраф книги: бой на дереве)", player_roll)

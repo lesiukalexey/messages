@@ -326,11 +326,13 @@ class BlackCastleBot:
     @staticmethod
     def _battle_narration_lines(log: list[str]) -> list[str]:
         narration = []
+        sentence_pattern = re.compile(r".+?[.!?…]+(?:[»”\"’]+)?(?=\s|$)|.+$")
         for entry in log:
             for line in str(entry).splitlines():
                 formatted = BlackCastleBot._format_battle_line(line)
                 if formatted.startswith("<blockquote>") and formatted.endswith("</blockquote>"):
-                    narration.append(html.unescape(formatted[len("<blockquote>"):-len("</blockquote>")]))
+                    prose = html.unescape(formatted[len("<blockquote>"):-len("</blockquote>")])
+                    narration.extend(sentence.strip() for sentence in sentence_pattern.findall(prose))
         return narration
 
     @staticmethod
@@ -897,7 +899,7 @@ class BlackCastleBot:
             narration_lines = self._battle_narration_lines(log)
             while battle["narration_visible_count"] < len(narration_lines):
                 if battle["narration_visible_count"]:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(3)
                 battle["narration_visible_count"] += 1
                 await self._edit_battle_progress(
                     player_id, state, inline_message_id=inline_message_id, chat_id=chat_id
