@@ -445,6 +445,38 @@ class BlackCastleLuckTest(unittest.TestCase):
         finally:
             bot._test_tempdir.cleanup()
 
+    def test_player_message_recovers_interrupted_battle_for_direct_screen(self):
+        bot, store = make_bot()
+        store.state.update({
+            "step": 558,
+            "view": "battle",
+            "characteristics": {"mastery": 8, "stamina": 15, "luck": 8},
+            "battle": {
+                "enemies": [{"name": "ГИГАНТСКИЙ ПАУК", "mastery": 8, "stamina": 6}],
+                "stage": "hero",
+                "status": "running",
+                "round": 2,
+                "log": ["Атака паука.", "Ваш выпад.", "Паук быстрее.", "Вы промахиваетесь.", "Вы теряете 2 ВЫНОСЛИВОСТИ: 17 → 15"],
+                "magic": None,
+                "escape_options": [],
+                "target_index": 0,
+            },
+        })
+        message = {"message": {
+            "from": {"id": 42},
+            "chat": {"id": 42, "type": "private"},
+            "text": "Продолжить",
+        }}
+
+        try:
+            asyncio.run(bot.process_update(message))
+
+            self.assertEqual(bot.visible_state["battle"]["status"], "awaiting_continue")
+            _, keyboard, _ = bot._screen(bot.visible_state)
+            self.assertEqual(keyboard[0][0]["text"], "Продолжить битву")
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_weakness_reduces_enemy_mastery_for_the_battle(self):
         bot, store = make_bot()
         body = "ГИГАНТСКИЙ ПАУК\nМастерство 8\nВыносливость 2\nЕсли вы победили, то 189."

@@ -1116,6 +1116,11 @@ class BlackCastleBot:
         except ValueError:
             return
         state = self._get_or_create_state(player_id)
+        battle = state.get("battle")
+        if (state.get("view") == "battle" and isinstance(battle, dict)
+                and battle.get("status") == "running"):
+            self._recover_interrupted_battle(state)
+            self._save_state(player_id, state)
         photo_id = self._default_photo() if state.get("view") == "preface" else self._paragraph_photo(int(state.get("step", 1)))
         results: list[dict[str, Any]] = []
         if photo_id:
@@ -1781,6 +1786,10 @@ class BlackCastleBot:
             return
 
         state = self._get_or_create_state(sender_id)
+        battle = state.get("battle")
+        if (state.get("view") == "battle" and isinstance(battle, dict)
+                and battle.get("status") == "running"):
+            self._recover_interrupted_battle(state)
         part_key = "preface_part" if state.get("view") == "preface" else "page_part"
         state[part_key] = 0
         previous_message_id = state.get("direct_message_id", 0)
