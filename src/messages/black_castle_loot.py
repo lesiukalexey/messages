@@ -91,6 +91,11 @@ PARAGRAPH_LOOT_STAMINA_EFFECTS = {
     (239, "food"): (2, "Съесть еду (+2 Выносливости)"),
 }
 
+INVENTORY_STAMINA_CONSUMABLES = {
+    "wine": ("Вино", 3, "Выпить вино (+3 Выносливости)"),
+    "food": ("Еда", 2, "Съесть еду (+2 Выносливости)"),
+}
+
 PARAGRAPH_CHOICE_REWARDS = [
     (62, "route_01", "Амулет с медвежьей шерстью", 0, 1),
     (62, "route_02", "Пояс", 0, 1),

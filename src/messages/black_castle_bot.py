@@ -12,7 +12,11 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from .black_castle_battle_text import ENEMY_BATTLE_TEXT, GENERIC_BATTLE_TEXT, canonical_enemy_key
-from .black_castle_loot import PARAGRAPH_LOOT_STAMINA_EFFECTS, REPEATABLE_LOOT_IDS
+from .black_castle_loot import (
+    INVENTORY_STAMINA_CONSUMABLES,
+    PARAGRAPH_LOOT_STAMINA_EFFECTS,
+    REPEATABLE_LOOT_IDS,
+)
 
 BOT_USERNAME = "KnigaIgraBot"
 ROUTE_BUTTON_MAX_LENGTH = 50
@@ -509,6 +513,15 @@ class BlackCastleBot:
                     "text": "Заклинание Исцеления (+8 Выносливости)",
                     "callback_data": "blackcastle:spell:healing",
                 }])
+            for consumable_key, (canonical_name, _, button_label) in INVENTORY_STAMINA_CONSUMABLES.items():
+                if stamina < personal_stamina_maximum and any(
+                    item.strip().casefold() == canonical_name.casefold()
+                    for item in carried_items
+                ):
+                    keyboard.append([{
+                        "text": button_label,
+                        "callback_data": f"blackcastle:item_use:{consumable_key}",
+                    }])
             item_ids = state.get("item_ids", [])
             for index, item in item_entries:
                 if item.strip().casefold() in NON_DISCARDABLE_ITEMS:
@@ -1727,6 +1740,11 @@ class BlackCastleBot:
                     label = use_effect[1]
             except (ValueError, TypeError):
                 pass
+        elif action.startswith("blackcastle:item_use:"):
+            consumable_key = action.rsplit(":", 1)[-1]
+            consumable = INVENTORY_STAMINA_CONSUMABLES.get(consumable_key)
+            if consumable and not label_from_message:
+                label = consumable[2]
         elif action == "blackcastle:flask:drink":
             label = "Попить из фляги (+2 Выносливости)"
         elif action.startswith("blackcastle:discard:"):
@@ -1818,6 +1836,9 @@ class BlackCastleBot:
             loot_choice = None
             loot_from_battle = False
             loot_use_gain = 0
+            inventory_consumable_index = None
+            inventory_consumable_key = None
+            inventory_consumable_gain = 0
             choice_reward = None
             drink_from_flask = False
             use_healing_spell = False
@@ -1918,6 +1939,36 @@ class BlackCastleBot:
                         f"Выносливость: {current_stamina} → "
                         f"{min(personal_stamina_maximum, current_stamina + loot_use_gain)}."
                     )
+            elif action.startswith("blackcastle:item_use:"):
+                inventory_consumable_key = action.rsplit(":", 1)[-1]
+                consumable = INVENTORY_STAMINA_CONSUMABLES.get(inventory_consumable_key)
+                current_stamina = int(state.get("characteristics", {}).get("stamina", 0))
+                if state.get("view") not in {"stats", "inventory", "status"}:
+                    inventory_alert = "Использовать еду и вино можно на экране характеристик и инвентаря."
+                elif consumable is None:
+                    inventory_alert = "Этот предмет нельзя использовать."
+                elif current_stamina >= personal_stamina_maximum:
+                    inventory_alert = "Выносливость уже на начальном максимуме; предмет не потрачен."
+                else:
+                    canonical_name = consumable[0].casefold()
+                    inventory_consumable_index = next((
+                        index for index, item in enumerate(state.get("items", []))
+                        if isinstance(item, str) and item.strip().casefold() == canonical_name
+                    ), None)
+                    if inventory_consumable_index is None:
+                        inventory_alert = "Этого предмета больше нет в инвентаре."
+                    else:
+                        inventory_consumable_gain = min(
+                            int(consumable[1]), personal_stamina_maximum - current_stamina
+                        )
+                        consumed_description = {
+                            "wine": "Вы выпили вино",
+                            "food": "Вы съели еду",
+                        }[inventory_consumable_key]
+                        inventory_alert = (
+                            f"{consumed_description}. Выносливость: {current_stamina} → "
+                            f"{current_stamina + inventory_consumable_gain}."
+                        )
             elif action == "blackcastle:flask:drink":
                 if state.get("view") not in {"stats", "inventory", "status"} or not self._has_item(state, "Фляга"):
                     inventory_alert = "У вас нет фляги."
@@ -2144,6 +2195,22 @@ class BlackCastleBot:
                 state["view"] = "step"
                 state["step"] = loot_source_step
                 state["page_part"] = 0
+            elif action.startswith("blackcastle:item_use:"):
+                if inventory_consumable_index is None or inventory_consumable_gain <= 0:
+                    return
+                characteristics = state["characteristics"]
+                characteristics["stamina"] = min(
+                    personal_stamina_maximum,
+                    int(characteristics.get("stamina", 0)) + inventory_consumable_gain,
+                )
+                items = state["items"]
+                removed_item = items.pop(inventory_consumable_index)
+                item_ids = state.get("item_ids")
+                if isinstance(item_ids, list) and inventory_consumable_index < len(item_ids):
+                    item_ids.pop(inventory_consumable_index)
+                slot_costs = state.get("item_slot_costs")
+                if isinstance(slot_costs, dict) and removed_item not in items:
+                    slot_costs.pop(removed_item, None)
             elif action == "blackcastle:flask:drink":
                 if not drink_from_flask:
                     return

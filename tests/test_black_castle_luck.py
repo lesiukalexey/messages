@@ -1696,6 +1696,90 @@ class BlackCastleLuckTest(unittest.TestCase):
         self.assertNotIn("Максимум 24", full_text)
         bot._test_tempdir.cleanup()
 
+    def test_carried_wine_and_food_can_be_used_from_status_screen(self):
+        cases = (
+            ("wine", "Выпить вино (+3 Выносливости)", 10, 13, "Вино"),
+            ("food", "Съесть еду (+2 Выносливости)", 10, 12, "Еда"),
+        )
+        for key, label, before, after, used_item in cases:
+            bot, store = make_bot()
+            store.state.update({
+                "view": "status",
+                "items": ["Бриллиант", "Вино", "Еда"],
+                "item_ids": [101, 102, 103],
+                "item_slot_costs": {"Бриллиант": 2},
+                "characteristics": {
+                    "mastery": 8, "max_mastery": 10,
+                    "stamina": before, "max_stamina": 19,
+                    "luck": 8, "max_luck": 10,
+                },
+            })
+            try:
+                _, keyboard, _ = bot._screen(store.state)
+                labels_on_screen = [button["text"] for row in keyboard for button in row]
+                self.assertIn(label, labels_on_screen)
+                inline_text, inline_keyboard = bot._inline_screen(store.state)
+                self.assertIn(
+                    label,
+                    [button["text"] for row in inline_keyboard for button in row],
+                )
+                self.assertTrue(inline_text)
+                callback = {"callback_query": {
+                    "id": f"inventory-use-{key}", "from": {"id": 42},
+                    "data": f"blackcastle:item_use:{key}",
+                    "message": {"message_id": 9, "chat": {"id": 42}},
+                }}
+                asyncio.run(bot.process_update(callback))
+                self.assertEqual(store.state["characteristics"]["stamina"], after)
+                expected_items = ["Бриллиант", "Еда" if used_item == "Вино" else "Вино"]
+                expected_ids = [101, 103] if used_item == "Вино" else [101, 102]
+                self.assertEqual(store.state["items"], expected_items)
+                self.assertEqual(store.state["item_ids"], expected_ids)
+                self.assertEqual(store.state["item_slot_costs"], {"Бриллиант": 2})
+                alert = next(
+                    payload for method, payload in bot.calls
+                    if method == "answerCallbackQuery"
+                )
+                self.assertIn(
+                    "Вы выпили вино" if used_item == "Вино" else "Вы съели еду",
+                    alert["text"],
+                )
+                self.assertIn(f"{before} → {after}", alert["text"])
+            finally:
+                bot._test_tempdir.cleanup()
+
+    def test_carried_consumable_is_preserved_at_initial_stamina_maximum(self):
+        bot, store = make_bot()
+        store.state.update({
+            "view": "status", "items": ["Вино"], "item_ids": [123],
+            "characteristics": {
+                "mastery": 8, "max_mastery": 10,
+                "stamina": 19, "max_stamina": 19,
+                "luck": 8, "max_luck": 10,
+            },
+        })
+        try:
+            _, keyboard, _ = bot._screen(store.state)
+            self.assertNotIn(
+                "Выпить вино (+3 Выносливости)",
+                [button["text"] for row in keyboard for button in row],
+            )
+            stale_callback = {"callback_query": {
+                "id": "inventory-wine-at-cap", "from": {"id": 42},
+                "data": "blackcastle:item_use:wine",
+                "message": {"message_id": 9, "chat": {"id": 42}},
+            }}
+            asyncio.run(bot.process_update(stale_callback))
+            self.assertEqual(store.state["characteristics"]["stamina"], 19)
+            self.assertEqual(store.state["items"], ["Вино"])
+            alert = next(
+                payload for method, payload in bot.calls
+                if method == "answerCallbackQuery"
+            )
+            self.assertIn("предмет не потрачен", alert["text"])
+        finally:
+            bot._test_tempdir.cleanup()
+
     def test_initial_stamina_is_the_personal_cap_for_flask_and_healing(self):
         bot, store = make_bot()
         store.state.update({
