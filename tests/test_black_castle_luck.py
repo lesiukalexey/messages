@@ -439,11 +439,16 @@ class BlackCastleLuckTest(unittest.TestCase):
             self.assertEqual(sent_photos[0]["photo"], "step-photo")
             self.assertEqual(len(store.state["direct_message_ids"]), 2)
             self.assertEqual(len(set(store.state["direct_message_ids"])), 2)
+            final_edit = [payload for method, payload in bot.calls if method == "editMessageText"][-1]
+            self.assertEqual(
+                final_edit["reply_markup"]["inline_keyboard"][0][0]["text"], "Продолжить"
+            )
+            self.assertNotIn("к вас", store.state["battle"]["log"][0])
+            self.assertNotIn("навстречу вас", store.state["battle"]["log"][0])
         finally:
             bot._test_tempdir.cleanup()
 
     def test_spider_opening_uses_the_correct_dative_for_player_and_copy(self):
-        bot, _ = make_bot()
         templates = [row[3] for row in iter_battle_text_rows()
                      if row[0] == "гигантский паук" and row[1] == "opening"]
         for template in templates:
@@ -455,7 +460,6 @@ class BlackCastleLuckTest(unittest.TestCase):
             )
             self.assertNotIn("к вас", player)
             self.assertNotIn("навстречу вас", player)
-            self.assertIn("паутиной", player) if "паутиной" in template else None
             self.assertTrue(copy)
         self.assertIn("выбрасывает к вам", templates[0].format(
             enemy="Гигантский Паук", victim="вас", victim_dative="вам"

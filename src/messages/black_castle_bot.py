@@ -449,7 +449,8 @@ class BlackCastleBot:
             else:
                 text += "\n\nПодготовка к бою."
             keyboard = []
-            if battle.get("display_phase") == "narration":
+            if (battle.get("display_phase") == "narration"
+                    and battle.get("status") in {"running", "choose_target"}):
                 return text, keyboard, False
             if battle.get("status") == "choose_target":
                 for index, enemy in enumerate(battle.get("enemies", [])):
