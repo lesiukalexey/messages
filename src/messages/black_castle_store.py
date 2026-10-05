@@ -275,7 +275,7 @@ class BlackCastleStore:
             stored_preface = cursor.fetchone()
             cursor.execute(
                 "SELECT setting_value FROM settings WHERE setting_key = %s",
-                ("blackcastle_preface_parts_migrated_v1",),
+                ("blackcastle_preface_parts_migrated_v2",),
             )
             parts_migration = cursor.fetchone()
             if parts_migration is None:
@@ -336,27 +336,28 @@ class BlackCastleStore:
             )
 
     @staticmethod
-    def _split_preface_text(text: str, limit: int = 850) -> list[str]:
-        """Split at sentence boundaries where possible, preserving all whitespace."""
-        units = re.split(r"(?<=[.!?])(?=\s)", text)
+    def _split_preface_text(text: str, limit: int = 1000) -> list[str]:
+        """Balance pages near word boundaries while preserving the full text."""
+        if not text:
+            return [""]
+        page_count = max(1, (len(text) + limit - 1) // limit)
         parts: list[str] = []
-        current = ""
-        for unit in units:
-            while unit:
-                available = limit - len(current)
-                if len(unit) <= available:
-                    current += unit
-                    unit = ""
-                elif current:
-                    parts.append(current)
-                    current = ""
-                else:
-                    cut = unit.rfind(" ", 0, limit)
-                    cut = cut + 1 if cut > 0 else limit
-                    parts.append(unit[:cut])
-                    unit = unit[cut:]
-        if current or not parts:
-            parts.append(current)
+        start = 0
+        for remaining_pages in range(page_count, 1, -1):
+            target = start + (len(text) - start) / remaining_pages
+            max_cut = len(text) - (remaining_pages - 1)
+            boundaries = [
+                index + 1
+                for index in range(start, max_cut)
+                if text[index].isspace()
+            ]
+            if boundaries:
+                cut = min(boundaries, key=lambda index: abs(index - target))
+            else:
+                cut = min(max_cut, start + limit)
+            parts.append(text[start:cut])
+            start = cut
+        parts.append(text[start:])
         return parts
 
     def get_preface_parts(self) -> list[dict[str, Any]]:
