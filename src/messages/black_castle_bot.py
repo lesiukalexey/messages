@@ -197,6 +197,7 @@ class BlackCastleBot:
             "gold": 15,
             "water_sips": 2,
             "knowledge": [],
+            "applied_knowledge_effects": [],
             "bag_capacity": 7,
             "direct_message_id": 0,
             "direct_message_ids": [],
@@ -219,12 +220,19 @@ class BlackCastleBot:
                 knowledge = []
                 state["knowledge"] = knowledge
                 state_changed = True
-            if "11" in state.get("applied_book_effects", []) and (
-                STEP11_TREASURE_KNOWLEDGE not in knowledge
-            ):
-                knowledge.append(STEP11_TREASURE_KNOWLEDGE)
+            applied_knowledge = state.setdefault("applied_knowledge_effects", [])
+            if not isinstance(applied_knowledge, list):
+                applied_knowledge = []
+                state["applied_knowledge_effects"] = applied_knowledge
                 state_changed = True
             current_step = state.get("step")
+            if ("step11_birches" not in applied_knowledge
+                    and "11" in state.get("applied_book_effects", [])):
+                if (current_step != 187
+                        and STEP11_TREASURE_KNOWLEDGE not in knowledge):
+                    knowledge.append(STEP11_TREASURE_KNOWLEDGE)
+                applied_knowledge.append("step11_birches")
+                state_changed = True
             current_step_knowledge = OFFSET_KNOWLEDGE.get(current_step)
             if current_step_knowledge and current_step_knowledge not in knowledge:
                 knowledge.append(current_step_knowledge)
@@ -1039,6 +1047,9 @@ class BlackCastleBot:
         if paragraph_number == 11:
             if STEP11_TREASURE_KNOWLEDGE not in knowledge:
                 knowledge.append(STEP11_TREASURE_KNOWLEDGE)
+            applied_knowledge = state.setdefault("applied_knowledge_effects", [])
+            if "step11_birches" not in applied_knowledge:
+                applied_knowledge.append("step11_birches")
         if paragraph_number not in {11, 21, 131, 307, 500}:
             return
         effect_key = str(paragraph_number)
@@ -3073,6 +3084,10 @@ class BlackCastleBot:
                         state["knowledge"] = [
                             entry for entry in knowledge if entry != required_knowledge
                         ]
+                        if required_knowledge == STEP11_TREASURE_KNOWLEDGE:
+                            applied_knowledge = state.setdefault("applied_knowledge_effects", [])
+                            if "step11_birches" not in applied_knowledge:
+                                applied_knowledge.append("step11_birches")
                     if self._is_escape_route(source_label):
                         characteristics = state["characteristics"]
                         characteristics["stamina"] = max(0, int(characteristics.get("stamina", 0)) - 2)
