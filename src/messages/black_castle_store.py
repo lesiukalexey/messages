@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import re
-import copy
 from typing import Any
 
 import pymysql
@@ -256,6 +257,7 @@ class BlackCastleStore:
         if not isinstance(choices, list):
             raise ValueError("BlackCastle opening scene has invalid choices")
         preface_body = str(scene.get("preface") or "")
+        known_damaged_preface_hash = "cadc9b615b3c4c5712686a017f3f159700426b4cd98eccfc680bfb7c7ea697b2"
         self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
@@ -275,11 +277,24 @@ class BlackCastleStore:
             stored_preface = cursor.fetchone()
             cursor.execute(
                 "SELECT setting_value FROM settings WHERE setting_key = %s",
-                ("blackcastle_preface_parts_migrated_v2",),
+                ("blackcastle_preface_parts_migrated_v3",),
             )
             parts_migration = cursor.fetchone()
             if parts_migration is None:
-                stored_body = str(stored_preface["body"]) if stored_preface else ""
+                cursor.execute(
+                    """SELECT body FROM book_pages
+                       WHERE page_key LIKE 'preface_part_%' ORDER BY page_key"""
+                )
+                existing_parts = cursor.fetchall()
+                stored_parts_body = "".join(
+                    str(row["body"] or "") for row in existing_parts
+                )
+                stored_body = (
+                    stored_parts_body
+                    if existing_parts
+                    else str(stored_preface["body"]) if stored_preface else ""
+                )
+                stored_hash = hashlib.sha256(stored_body.encode("utf-8")).hexdigest()
                 legacy_preface = (
                     stored_body.startswith(
                         "Книга-игра\n\nВ сказочное королевство приходит беда."
@@ -288,7 +303,13 @@ class BlackCastleStore:
                 )
                 source_body = (
                     preface_body
-                    if not stored_body or preface_body.startswith(stored_body) or legacy_preface
+                    if (
+                        not stored_body
+                        or stored_body == preface_body
+                        or preface_body.startswith(stored_body)
+                        or legacy_preface
+                        or stored_hash == known_damaged_preface_hash
+                    )
                     else stored_body
                 )
                 parts = self._split_preface_text(source_body)
@@ -309,7 +330,7 @@ class BlackCastleStore:
                 cursor.execute(
                     """INSERT IGNORE INTO settings (setting_key, setting_value)
                        VALUES (%s, %s)""",
-                    ("blackcastle_preface_parts_migrated_v2", "done"),
+                    ("blackcastle_preface_parts_migrated_v3", "done"),
                 )
             cursor.executemany(
                 """INSERT IGNORE INTO paragraphs (paragraph_number, title, body)
