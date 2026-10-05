@@ -542,7 +542,7 @@ class BlackCastleBot:
                 item_id = item_ids[index] if isinstance(item_ids, list) and index < len(item_ids) else None
                 item_ref = str(item_id) if item_id is not None else f"legacy-{index}"
                 keyboard.append([{
-                    "text": f"Выкинуть предмет {ordinal}",
+                    "text": f"Выкинуть {item[:1].lower()}{item[1:]}",
                     "callback_data": f"blackcastle:discard:id:{item_ref}:{item_hash}",
                 }])
             keyboard.append([{
@@ -2034,7 +2034,8 @@ class BlackCastleBot:
             reference = self._discard_reference(state, action)
             if reference is not None:
                 index, _ = reference
-                label = f"Выкинуть: {state['items'][index]}"
+                item = state["items"][index]
+                label = f"Выкинуть {item[:1].lower()}{item[1:]}"
         elif action.startswith("blackcastle:battle:start:"):
             try:
                 parts = action.split(":")
