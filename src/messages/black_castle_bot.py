@@ -1175,6 +1175,17 @@ class BlackCastleBot:
     def _screen_photo(self, state: dict[str, Any]) -> str:
         view = state.get("view")
         if view == "preface":
+            try:
+                page_number = int(state.get("preface_part", 0)) + 1
+            except (TypeError, ValueError):
+                page_number = 1
+            if page_number > 1:
+                page_photo = self.game_store.get_setting(
+                    "kniga_igra_black_castle_preface_part_"
+                    f"{page_number:03d}_photo_file_id"
+                )
+                if page_photo:
+                    return page_photo
             return self.game_store.get_setting(
                 "kniga_igra_black_castle_preface_photo_file_id"
             ) or self._default_photo()
@@ -1899,11 +1910,11 @@ class BlackCastleBot:
             # step illustration as its own message and render the interactive
             # battle log in a separate text message below it.
             photo_id = self._paragraph_photo(int(state.get("step", 1)))
-        elif has_photo and first_part:
+        elif has_photo and (first_part or state.get("view") == "preface"):
             photo_id = self._screen_photo(state)
         else:
             photo_id = ""
-        if has_photo and first_part and not photo_id:
+        if has_photo and (first_part or state.get("view") == "preface") and not photo_id:
             text = "Сцена сейчас недоступна. Попробуй написать позже."
             keyboard = [[{"text": "Обновить", "callback_data": "blackcastle:continue"}]]
 
@@ -3257,7 +3268,9 @@ class BlackCastleBot:
         photo_target: int | str | None = None
         if command == "/blackcastle_photo" and len(text.split()) == 2:
             raw_target = text.split()[1].casefold()
-            if raw_target in {"preface", "status"}:
+            if raw_target in {"preface", "status"} or raw_target in {
+                "preface_part_002", "preface_part_003", "preface_part_004"
+            }:
                 photo_target = raw_target
             else:
                 try:
@@ -3285,6 +3298,15 @@ class BlackCastleBot:
                 self.game_store.set_setting("kniga_igra_black_castle_status_photo_file_id", photo_id)
                 await self._send_message(chat_id, "Фото характеристик и инвентаря BlackCastle сохранено.")
                 logger.info("Registered the BlackCastle status and inventory photo")
+            elif isinstance(photo_target, str) and photo_target.startswith("preface_part_"):
+                self.game_store.set_setting(
+                    f"kniga_igra_black_castle_{photo_target}_photo_file_id", photo_id
+                )
+                await self._send_message(
+                    chat_id,
+                    f"Фото страницы {int(photo_target.rsplit('_', 1)[1])} предисловия BlackCastle сохранено.",
+                )
+                logger.info("Registered a BlackCastle preface page photo (%s)", photo_target)
             elif isinstance(photo_target, int) and photo_target > 0 and self.game_store.set_paragraph_photo(photo_target, photo_id):
                 await self._send_message(chat_id, f"Фото параграфа {photo_target} сохранено.")
                 logger.info("Registered a BlackCastle paragraph photo")
