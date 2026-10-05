@@ -23,6 +23,9 @@ from .black_castle_loot import (
 BOT_USERNAME = "KnigaIgraBot"
 ROUTE_BUTTON_MAX_LENGTH = 50
 ROUTE_BUTTON_SUFFIX = re.compile(r"\s+[—–-]\s*\d+\s*$")
+STEP11_TREASURE_KNOWLEDGE = (
+    "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
+)
 CHARACTERISTIC_MAXIMUMS = {"mastery": 12, "stamina": 24, "luck": 12}
 INITIAL_SPELLS = {
     "levitation": 2,
@@ -161,12 +164,9 @@ class BlackCastleBot:
                 state["knowledge"] = knowledge
                 state_changed = True
             if "11" in state.get("applied_book_effects", []) and (
-                "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
-                not in knowledge
+                STEP11_TREASURE_KNOWLEDGE not in knowledge
             ):
-                knowledge.append(
-                    "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
-                )
+                knowledge.append(STEP11_TREASURE_KNOWLEDGE)
                 state_changed = True
             items = state.get("items")
             if isinstance(items, list):
@@ -735,6 +735,9 @@ class BlackCastleBot:
                 required_item = choice.get("required_item")
                 if required_item and not self._has_item(state, str(required_item)):
                     continue
+                required_knowledge = choice.get("required_knowledge")
+                if required_knowledge and required_knowledge not in state.get("knowledge", []):
+                    continue
                 target = int(choice["target_paragraph"])
                 source_label = ROUTE_BUTTON_SUFFIX.sub(
                     "", str(choice["button_text"])
@@ -888,9 +891,8 @@ class BlackCastleBot:
         applied = state.setdefault("applied_book_effects", [])
         if paragraph_number == 11:
             knowledge = state.setdefault("knowledge", [])
-            clue = "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
-            if clue not in knowledge:
-                knowledge.append(clue)
+            if STEP11_TREASURE_KNOWLEDGE not in knowledge:
+                knowledge.append(STEP11_TREASURE_KNOWLEDGE)
         effect_key = str(paragraph_number)
         if effect_key in applied:
             return
@@ -2238,6 +2240,10 @@ class BlackCastleBot:
                     route_choice = self.game_store.get_paragraph_choice(
                         route_source_step, choice_id
                     )
+                    if (route_choice is not None
+                            and route_choice.get("required_knowledge")
+                            and route_choice["required_knowledge"] not in state.get("knowledge", [])):
+                        route_choice = None
                     reward_getter = getattr(self.game_store, "get_paragraph_choice_reward", None)
                     choice_reward = (
                         reward_getter(route_source_step, choice_id)
@@ -2774,6 +2780,11 @@ class BlackCastleBot:
                         and not luck_result.get("lucky")
                     ):
                         return
+                    required_knowledge = choice.get("required_knowledge")
+                    knowledge = state.get("knowledge", [])
+                    if required_knowledge:
+                        if not isinstance(knowledge, list) or required_knowledge not in knowledge:
+                            return
                     required_item = choice.get("required_item")
                     if required_item and not self._consume_item(state, str(required_item)):
                         return
@@ -2795,6 +2806,10 @@ class BlackCastleBot:
                         )
                     if cast_spell:
                         state.setdefault("spells", dict(INITIAL_SPELLS))[cast_spell] -= 1
+                    if required_knowledge:
+                        state["knowledge"] = [
+                            entry for entry in knowledge if entry != required_knowledge
+                        ]
                     if self._is_escape_route(source_label):
                         characteristics = state["characteristics"]
                         characteristics["stamina"] = max(0, int(characteristics.get("stamina", 0)) - 2)
