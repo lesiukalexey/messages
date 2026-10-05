@@ -207,6 +207,22 @@ class BlackCastleBot:
             "folder_screen_tracking_initialized": False,
         }
 
+    def _reset_gameplay_state(self, state: dict[str, Any]) -> None:
+        delivery_keys = (
+            "direct_message_id",
+            "direct_message_ids",
+            "direct_message_has_photo",
+            "folder_screen_message_id",
+            "folder_screen_message_ids",
+            "folder_screen_tracking_initialized",
+        )
+        delivery_state = {
+            key: state[key] for key in delivery_keys if key in state
+        }
+        state.clear()
+        state.update(self._new_state())
+        state.update(delivery_state)
+
     def _get_or_create_state(self, player_id: int) -> dict[str, Any]:
         state = self._load_state(player_id)
         if state is None:
@@ -2152,6 +2168,7 @@ class BlackCastleBot:
                     await self._acknowledge_callback(callback_id, "Эта покупка уже обработана.")
                     return
             previous_step = state.get("step")
+            previous_view = state.get("view")
             logger.info(
                 "BlackCastle callback received (action=%s, view=%s, step=%s)",
                 action,
@@ -3104,6 +3121,43 @@ class BlackCastleBot:
                     state["page_part"] = 0
             else:
                 return
+            current_step = state.get("step")
+            is_step_one_navigation = (
+                state.get("view") == "step"
+                and current_step == 1
+                and (
+                    previous_step != 1
+                    or (
+                        previous_step == 1
+                        and previous_view == "step"
+                        and (
+                            action == "blackcastle:step:1"
+                            or action.startswith((
+                                "blackcastle:route:",
+                                "blackcastle:cast:",
+                                "blackcastle:knowledge:",
+                                "blackcastle:knowledge_route:",
+                                "blackcastle:battle:flee:",
+                                "blackcastle:battle:finish",
+                            ))
+                        )
+                    )
+                )
+            )
+            preserve_preface_start = (
+                action == "blackcastle:continue" and previous_view == "preface"
+            )
+            preserve_step_one_status_return = (
+                action == "blackcastle:back"
+                and previous_step == 1
+                and previous_view in {"stats", "inventory", "status", "discard"}
+            )
+            if (is_step_one_navigation
+                    and not preserve_preface_start
+                    and not preserve_step_one_status_return
+                    and action not in {"blackcastle:game:restart", "blackcastle:battle:restart"}):
+                self._reset_gameplay_state(state)
+
             if state.get("view") in {"preface", "step"}:
                 current_step = state.get("step")
                 if isinstance(current_step, int) and current_step != previous_step:
