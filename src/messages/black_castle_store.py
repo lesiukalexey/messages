@@ -309,7 +309,7 @@ class BlackCastleStore:
                 cursor.execute(
                     """INSERT IGNORE INTO settings (setting_key, setting_value)
                        VALUES (%s, %s)""",
-                    ("blackcastle_preface_parts_migrated_v1", "done"),
+                    ("blackcastle_preface_parts_migrated_v2", "done"),
                 )
             cursor.executemany(
                 """INSERT IGNORE INTO paragraphs (paragraph_number, title, body)
