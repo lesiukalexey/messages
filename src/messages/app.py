@@ -1272,7 +1272,9 @@ async def run() -> None:
 
     black_castle_folder_locks: dict[int, asyncio.Lock] = {}
 
-    async def send_black_castle_folder_screen(peer_id: int) -> list[int]:
+    async def send_black_castle_folder_screen(
+        peer_id: int, replace_existing: bool = False
+    ) -> list[int]:
         if black_castle_store is None:
             raise RuntimeError("BlackCastle player database is unavailable")
 
@@ -1311,7 +1313,7 @@ async def run() -> None:
                 )
             )
             visible_ids = sorted({int(message.id) for message in visible_screens}, reverse=True)
-            if visible_ids:
+            if visible_ids and not replace_existing:
                 keep_id = visible_ids[0]
                 for duplicate_id in visible_ids[1:]:
                     try:
@@ -1325,6 +1327,8 @@ async def run() -> None:
                 player_state["folder_screen_tracking_initialized"] = True
                 black_castle_store.save_player_state(peer_id, player_state)
                 return [keep_id]
+            if replace_existing:
+                old_ids = list(dict.fromkeys([*old_ids, *visible_ids]))
 
             for old_id in old_ids:
                 try:
@@ -2096,7 +2100,10 @@ async def run() -> None:
                         store.audit(peer_id, "skipped", f"{block_reason} before send")
                         return
                     try:
-                        sent_message_ids = await send_black_castle_folder_screen(peer_id)
+                        sent_message_ids = await send_black_castle_folder_screen(
+                            peer_id,
+                            replace_existing=is_black_castle_trigger,
+                        )
                     except Exception as exc:
                         store.message_state(settings.account_id, peer_id, event.message.id, "failed")
                         store.audit(
