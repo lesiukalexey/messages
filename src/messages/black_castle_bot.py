@@ -633,11 +633,10 @@ class BlackCastleBot:
                         "text": button_label,
                         "callback_data": f"blackcastle:item_use:{consumable_key}",
                     }])
-            if bag_items:
-                keyboard.append([{
-                    "text": "Выкинуть что-то из рюкзака",
-                    "callback_data": "blackcastle:discard:open",
-                }])
+            keyboard.append([{
+                "text": "Выкинуть что-то из рюкзака",
+                "callback_data": "blackcastle:discard:open",
+            }])
             keyboard.append([{
                 "text": f"К шагу {step}",
                 "callback_data": "blackcastle:back",
@@ -1771,13 +1770,28 @@ class BlackCastleBot:
         if len(parts) == 1:
             return parts[0], keyboard, True
 
+        original_keyboard = keyboard
         navigation: list[dict[str, str]] = []
         if part > 0:
             navigation.append({"text": "Назад", "callback_data": "blackcastle:page_prev"})
         if part + 1 < len(parts):
             action = "blackcastle:preface_next" if state.get("view") == "preface" else "blackcastle:page_next"
             navigation.append({"text": "Читать продолжение", "callback_data": action})
-        keyboard = [navigation] + (keyboard if part == len(parts) - 1 else [])
+        discard_button = next((
+            button for row in keyboard for button in row
+            if button.get("callback_data") == "blackcastle:discard:open"
+        ), None)
+        keyboard = [navigation]
+        if discard_button is not None and state.get("view") in {"status", "stats", "inventory"}:
+            keyboard.append([discard_button])
+        if part == len(parts) - 1:
+            keyboard.extend(
+                filtered for row in original_keyboard
+                if (filtered := [
+                    button for button in row
+                    if button.get("callback_data") != "blackcastle:discard:open"
+                ])
+            )
         return parts[part], keyboard, part == 0
 
     def _inline_screen(
@@ -2372,13 +2386,8 @@ class BlackCastleBot:
                         f"ВЫНОСЛИВОСТИ: {stamina_before} → {stamina_after}."
                     )
             elif action == "blackcastle:discard:open":
-                eligible = any(
-                    isinstance(item, str)
-                    and item.strip().casefold() not in NON_DISCARDABLE_ITEMS
-                    for item in state.get("items", [])
-                )
-                if state.get("view") not in {"stats", "inventory", "status"} or not eligible:
-                    inventory_alert = "В заплечном мешке нет предметов, которые можно выбросить."
+                if state.get("view") not in {"stats", "inventory", "status"}:
+                    inventory_alert = "Сначала откройте характеристики и инвентарь."
             elif action.startswith("blackcastle:discard:"):
                 reference = self._discard_reference(state, action)
                 if state.get("view") == "discard" and reference is not None:
