@@ -504,24 +504,18 @@ class BlackCastleBot:
         view = state.get("view", "step")
         step = state.get("step", 1)
         if view == "preface":
+            parts_getter = getattr(self.game_store, "get_preface_parts", None)
+            preface_parts = parts_getter() if callable(parts_getter) else []
+            if preface_parts:
+                text, keyboard, _ = self._preface_part_screen(state, preface_parts)
+                return text, keyboard, int(state.get("preface_part", 0)) == 0
             preface = self.game_store.get_book_page("preface")
             preface_text = (
                 str(preface["body"])
                 if preface is not None
                 else str(scene["preface"])
             )
-            spells = state.get("spells", INITIAL_SPELLS)
-            allocated = sum(max(0, int(spells.get(key, 0))) for key in INITIAL_SPELLS)
-            preface_text += f"\n\nРаспределено заклятий: {allocated} из 10."
-            keyboard = []
-            for key, label in SPELL_LABELS.items():
-                keyboard.append([
-                    {"text": "−", "callback_data": f"blackcastle:spell:{key}:-1"},
-                    {"text": f"{label}: {spells.get(key, 0)}", "callback_data": "blackcastle:spell:noop"},
-                    {"text": "+", "callback_data": f"blackcastle:spell:{key}:1"},
-                ])
-            keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:continue"}])
-            return preface_text, keyboard, True
+            return self._preface_fallback_screen(state, preface_text)
 
         if view == "discard":
             entries = [
@@ -952,6 +946,51 @@ class BlackCastleBot:
             remaining = remaining[cut:].lstrip()
         parts.append(remaining)
         return parts
+
+    def _preface_part_screen(
+        self, state: dict[str, Any], parts: list[dict[str, Any]]
+    ) -> tuple[str, list[list[dict[str, str]]], bool]:
+        part_index = max(0, min(int(state.get("preface_part", 0)), len(parts) - 1))
+        state["preface_part"] = part_index
+        text = str(parts[part_index].get("body") or "")
+        keyboard: list[list[dict[str, str]]] = []
+        navigation = []
+        if part_index > 0:
+            navigation.append({"text": "Назад", "callback_data": "blackcastle:page_prev"})
+        if part_index + 1 < len(parts):
+            navigation.append({
+                "text": "Читать продолжение",
+                "callback_data": "blackcastle:preface_next",
+            })
+        if navigation:
+            keyboard.append(navigation)
+
+        if part_index == len(parts) - 1:
+            spells = state.get("spells", INITIAL_SPELLS)
+            allocated = sum(max(0, int(spells.get(key, 0))) for key in INITIAL_SPELLS)
+            text += f"\n\nРаспределено заклятий: {allocated} из 10."
+            for key, label in SPELL_LABELS.items():
+                keyboard.append([
+                    {"text": "−", "callback_data": f"blackcastle:spell:{key}:-1"},
+                    {"text": f"{label}: {spells.get(key, 0)}", "callback_data": "blackcastle:spell:noop"},
+                    {"text": "+", "callback_data": f"blackcastle:spell:{key}:1"},
+                ])
+            keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:continue"}])
+        return text, keyboard, True
+
+    def _preface_fallback_screen(
+        self, state: dict[str, Any], text: str
+    ) -> tuple[str, list[list[dict[str, str]]], bool]:
+        spells = state.get("spells", INITIAL_SPELLS)
+        allocated = sum(max(0, int(spells.get(key, 0))) for key in INITIAL_SPELLS)
+        text += f"\n\nРаспределено заклятий: {allocated} из 10."
+        keyboard = [[
+            {"text": "−", "callback_data": f"blackcastle:spell:{key}:-1"},
+            {"text": f"{label}: {spells.get(key, 0)}", "callback_data": "blackcastle:spell:noop"},
+            {"text": "+", "callback_data": f"blackcastle:spell:{key}:1"},
+        ] for key, label in SPELL_LABELS.items()]
+        keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:continue"}])
+        return text, keyboard, True
 
     @staticmethod
     def _has_item(state: dict[str, Any], required_item: str) -> bool:
@@ -1766,6 +1805,12 @@ class BlackCastleBot:
     def _paged_screen(
         self, state: dict[str, Any], limit: int = 950
     ) -> tuple[str, list[list[dict[str, str]]], bool]:
+        if state.get("view") == "preface":
+            parts_getter = getattr(self.game_store, "get_preface_parts", None)
+            preface_parts = parts_getter() if callable(parts_getter) else []
+            if preface_parts:
+                return self._preface_part_screen(state, preface_parts)
+
         text, keyboard, _ = self._screen(state)
         part_key = "preface_part" if state.get("view") == "preface" else "page_part"
         parts = self._preface_parts(text, limit=limit)

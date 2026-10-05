@@ -270,40 +270,46 @@ class BlackCastleStore:
                 ),
             )
             cursor.execute(
-                """INSERT IGNORE INTO book_pages (page_key, title, body)
-                   VALUES ('preface', %s, %s)""",
-                ("Книга-игра", preface_body),
-            )
-            cursor.execute(
                 "SELECT body FROM book_pages WHERE page_key = 'preface'"
             )
             stored_preface = cursor.fetchone()
             cursor.execute(
                 "SELECT setting_value FROM settings WHERE setting_key = %s",
-                ("blackcastle_full_preface_migrated_v1",),
+                ("blackcastle_preface_parts_migrated_v1",),
             )
-            preface_migration = cursor.fetchone()
-            if preface_migration is None:
+            parts_migration = cursor.fetchone()
+            if parts_migration is None:
                 stored_body = str(stored_preface["body"]) if stored_preface else ""
                 legacy_preface = (
                     stored_body.startswith(
                         "Книга-игра\n\nВ сказочное королевство приходит беда."
                     )
-                    and stored_body.rstrip().endswith(
-                        "все зависит только от ВАС."
-                    )
+                    and stored_body.rstrip().endswith("все зависит только от ВАС.")
                 )
-                if (stored_body != preface_body
-                        and len(stored_body) < len(preface_body)
-                        and (preface_body.startswith(stored_body) or legacy_preface)):
+                source_body = (
+                    preface_body
+                    if not stored_body or preface_body.startswith(stored_body) or legacy_preface
+                    else stored_body
+                )
+                parts = self._split_preface_text(source_body)
+                cursor.execute(
+                    "DELETE FROM book_pages WHERE page_key LIKE 'preface_part_%'"
+                )
+                for index, part in enumerate(parts, start=1):
                     cursor.execute(
-                        "UPDATE book_pages SET body = %s WHERE page_key = 'preface'",
-                        (preface_body,),
+                        """INSERT IGNORE INTO book_pages (page_key, title, body)
+                           VALUES (%s, %s, %s)""",
+                        (
+                            f"preface_part_{index:03d}",
+                            f"Книга-игра — часть {index}",
+                            part,
+                        ),
                     )
+                cursor.execute("DELETE FROM book_pages WHERE page_key = 'preface'")
                 cursor.execute(
                     """INSERT IGNORE INTO settings (setting_key, setting_value)
                        VALUES (%s, %s)""",
-                    ("blackcastle_full_preface_migrated_v1", "done"),
+                    ("blackcastle_preface_parts_migrated_v1", "done"),
                 )
             cursor.executemany(
                 """INSERT IGNORE INTO paragraphs (paragraph_number, title, body)
@@ -328,6 +334,39 @@ class BlackCastleStore:
                     and isinstance(choice.get("text"), str)
                 ],
             )
+
+    @staticmethod
+    def _split_preface_text(text: str, limit: int = 850) -> list[str]:
+        """Split at sentence boundaries where possible, preserving all whitespace."""
+        units = re.split(r"(?<=[.!?])(?=\s)", text)
+        parts: list[str] = []
+        current = ""
+        for unit in units:
+            while unit:
+                available = limit - len(current)
+                if len(unit) <= available:
+                    current += unit
+                    unit = ""
+                elif current:
+                    parts.append(current)
+                    current = ""
+                else:
+                    cut = unit.rfind(" ", 0, limit)
+                    cut = cut + 1 if cut > 0 else limit
+                    parts.append(unit[:cut])
+                    unit = unit[cut:]
+        if current or not parts:
+            parts.append(current)
+        return parts
+
+    def get_preface_parts(self) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT page_key, title, body FROM book_pages
+                   WHERE page_key LIKE 'preface_part_%' ORDER BY page_key"""
+            )
+            return cursor.fetchall()
 
     def get_book_page(self, page_key: str) -> dict[str, Any] | None:
         self.ensure_connected()
