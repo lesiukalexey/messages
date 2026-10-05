@@ -26,6 +26,59 @@ ROUTE_BUTTON_SUFFIX = re.compile(r"\s+[—–-]\s*\d+\s*$")
 STEP11_TREASURE_KNOWLEDGE = (
     "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
 )
+OFFSET_KNOWLEDGE = {
+    90: "В замке, надев зелёные латы, прибавлять 60 к номеру параграфа за дверью.",
+    95: "Ответ на последнюю загадку Домика нужно проверить в параграфе с номером ответа +50.",
+    108: "Если спросят о Золотом амулете, прибавить 217 к номеру параграфа.",
+    126: "При входе в замок в зелёных латах прибавлять 60 к выбранному номеру параграфа.",
+    130: "Перед входом в комнату в зелёных латах прибавлять 60 к выбранному номеру параграфа.",
+    144: "Потайная лестница за зеркалом: вычесть 13 из номера параграфа.",
+    187: "Если понадобится зажечь светильник, прибавить 10 к номеру параграфа.",
+    196: "Если понадобится перстень с рубином, вычесть 49 из номера параграфа.",
+    246: "Если понадобится предъявить пропуск, прибавить 20 к номеру параграфа.",
+    251: "Перед дверью в замке в зелёных латах прибавлять 60 к выбранному номеру параграфа.",
+    258: "Если понадобится перстень с изумрудом, вычесть 169 из номера параграфа.",
+    318: "Если запертая дверь не открывается, попробовать вычесть 40 из номера параграфа.",
+    330: "Перед дверью в замке в зелёных латах прибавлять 60 к номеру параграфа.",
+    336: "Если понадобится золотой апельсин, прибавить 200 к номеру параграфа.",
+    339: "Для помощи спасённого знакомого: сложить номера букв его имени и прибавить 30.",
+    356: "Если понадобится золотое кольцо, прибавить 214 к номеру параграфа.",
+    414: "При выборе пути в замке в зелёных латах прибавлять 60 к номеру параграфа.",
+    495: "У зеркала, которым можно воспользоваться, вычесть 13 из номера параграфа.",
+    520: "Если встретится друг старика, сказать «Трое из Эвенло» и вычесть 25 из номера параграфа.",
+    527: "Перед дверью в замке в зелёных латах прибавлять 60 к номеру параграфа.",
+    555: "На перекрёстках следовать за клубочком: прибавить 30 к номеру параграфа.",
+    573: "Чтобы зажечь свечу, нужны свеча и огниво; прибавить 10 к номеру параграфа.",
+    600: "Если неподатливая дверь не открывается, попробовать вычесть 40 из номера параграфа.",
+}
+OFFSET_ACTIONS = {
+    "lamp": {"knowledge": (187,), "steps": (193, 277), "item": "Светильник", "delta": 10,
+             "label": "Зажечь светильник"},
+    "candle": {"knowledge": (573,), "steps": (193, 277), "item": "Свеча", "extra_item": "Огниво", "delta": 10,
+               "label": "Зажечь свечу"},
+    "amulet": {"knowledge": (108,), "steps": (388,), "item": "Золотой амулет", "delta": 217,
+               "label": "Использовать Золотой амулет"},
+    "gold_ring": {"knowledge": (356,), "steps": (388,), "item": "Золотое кольцо", "delta": 214,
+                  "label": "Повернуть Золотое кольцо"},
+    "ruby_ring": {"knowledge": (196,), "steps": (275,), "item": "Перстень с рубином", "delta": -49,
+                  "label": "Использовать перстень с рубином"},
+    "emerald_ring": {"knowledge": (258,), "steps": (275,), "item": "Перстень с изумрудом", "delta": -169,
+                     "label": "Использовать перстень с изумрудом"},
+    "orange": {"knowledge": (336,), "steps": (275,), "item": "Золотой апельсин", "delta": 200,
+               "label": "Использовать золотой апельсин"},
+    "mirror": {"knowledge": (144, 495), "steps": (279,), "item": None, "delta": -13,
+               "label": "Открыть потайной ход за зеркалом"},
+    "pass": {"knowledge": (246,), "steps": (252,), "item": "Пропуск", "delta": 20,
+             "label": "Предъявить пропуск"},
+    "everlo": {"knowledge": (520,), "steps": (455,), "item": None, "delta": -25,
+               "label": "Сказать «Трое из Эвенло»"},
+    "metal_key": {"knowledge": (318,), "steps": None, "item": "Большой металлический ключ", "delta": -40,
+                  "label": "Попробовать большой ключ"},
+    "ring_key": {"knowledge": (600,), "steps": None, "item": "Перстень-ключ", "delta": -40,
+                 "label": "Попробовать перстень-ключ"},
+    "magic_ball": {"knowledge": (555,), "steps": None, "item": None, "delta": 30,
+                   "label": "Следовать за клубочком", "condition": "crossroad"},
+}
 KNOWLEDGE_GATED_ROUTES = {
     (47, "knowledge_birches"): STEP11_TREASURE_KNOWLEDGE,
 }
@@ -170,6 +223,11 @@ class BlackCastleBot:
                 STEP11_TREASURE_KNOWLEDGE not in knowledge
             ):
                 knowledge.append(STEP11_TREASURE_KNOWLEDGE)
+                state_changed = True
+            current_step = state.get("step")
+            current_step_knowledge = OFFSET_KNOWLEDGE.get(current_step)
+            if current_step_knowledge and current_step_knowledge not in knowledge:
+                knowledge.append(current_step_knowledge)
                 state_changed = True
             items = state.get("items")
             if isinstance(items, list):
@@ -855,6 +913,7 @@ class BlackCastleBot:
                     "text": button_text,
                     "callback_data": f"blackcastle:route:{step}:{choice['choice_id']}",
                 }])
+            keyboard.extend(self._offset_knowledge_buttons(state, step, choices, full_body))
             if enemies and not battle_button_added:
                 keyboard.append([{
                     "text": battle_button_label,
@@ -912,15 +971,74 @@ class BlackCastleBot:
                     return True
         return False
 
+    def _offset_knowledge_buttons(
+        self, state: dict[str, Any], paragraph_number: int,
+        choices: list[dict[str, Any]], body: str,
+    ) -> list[list[dict[str, Any]]]:
+        knowledge = state.get("knowledge", [])
+        if not isinstance(knowledge, list):
+            return []
+        paragraph = self.game_store.get_paragraph(paragraph_number)
+        body = str((paragraph or {}).get("body") or "")
+        folded_body = body.casefold().replace("ё", "е")
+        buttons: list[list[dict[str, Any]]] = []
+        for action_key, rule in OFFSET_ACTIONS.items():
+            if rule["steps"] is not None and paragraph_number not in rule["steps"]:
+                continue
+            if rule["steps"] is None:
+                if rule.get("condition") == "crossroad":
+                    if paragraph_number == 450 or not re.search(r"перекрест", folded_body):
+                        continue
+                elif not re.search(r"заперт|неподатлив|не.{0,20}откры|замок|закрыт", folded_body):
+                    continue
+            if not any(OFFSET_KNOWLEDGE.get(source) in knowledge for source in rule["knowledge"]):
+                continue
+            if rule["item"] and not self._has_item(state, str(rule["item"])):
+                continue
+            extra_item = rule.get("extra_item")
+            if extra_item and not self._has_item(state, str(extra_item)):
+                continue
+            target = paragraph_number + int(rule["delta"])
+            if self.game_store.get_paragraph(target) is None:
+                continue
+            buttons.append([{
+                "text": self._route_button_text(str(rule["label"]), target),
+                "callback_data": f"blackcastle:knowledge:{action_key}:{paragraph_number}:{target}",
+            }])
+        armor_sources = (90, 126, 130, 251, 330, 414, 527)
+        armor_known = any(OFFSET_KNOWLEDGE[source] in knowledge for source in armor_sources)
+        if (armor_known and self._has_item(state, "Зелёные латы")
+                and re.search(r"двер|комнат|выбер", body, re.IGNORECASE)):
+            for choice in choices:
+                required_item = choice.get("required_item")
+                if required_item and not self._has_item(state, str(required_item)):
+                    continue
+                base_target = int(choice["target_paragraph"])
+                target = base_target + 60
+                if self.game_store.get_paragraph(target) is None:
+                    continue
+                label = ROUTE_BUTTON_SUFFIX.sub("", str(choice["button_text"])).strip()
+                buttons.append([{
+                    "text": self._route_button_text(f"В латах: {label}", target),
+                    "callback_data": (
+                        f"blackcastle:knowledge_route:{paragraph_number}:"
+                        f"{choice['choice_id']}:{base_target}:{target}"
+                    ),
+                }])
+        return buttons
+
     @classmethod
     def _apply_step_supply_effects(cls, state: dict[str, Any], paragraph_number: int) -> None:
-        if paragraph_number not in {11, 21, 131, 307, 500}:
-            return
         applied = state.setdefault("applied_book_effects", [])
+        knowledge = state.setdefault("knowledge", [])
+        knowledge_text = OFFSET_KNOWLEDGE.get(paragraph_number)
+        if knowledge_text and knowledge_text not in knowledge:
+            knowledge.append(knowledge_text)
         if paragraph_number == 11:
-            knowledge = state.setdefault("knowledge", [])
             if STEP11_TREASURE_KNOWLEDGE not in knowledge:
                 knowledge.append(STEP11_TREASURE_KNOWLEDGE)
+        if paragraph_number not in {11, 21, 131, 307, 500}:
+            return
         effect_key = str(paragraph_number)
         if effect_key in applied:
             return
@@ -1942,6 +2060,24 @@ class BlackCastleBot:
                     label = "К шагу 1" if target_paragraph == 1 else f"Шаг {target_paragraph}"
             except ValueError:
                 pass
+        elif action.startswith("blackcastle:knowledge:"):
+            try:
+                _, _, action_key, source_text, target_text = action.split(":", 4)
+                paragraph_number = int(source_text)
+                target_paragraph = int(target_text)
+                label = str(OFFSET_ACTIONS[action_key]["label"])
+            except (ValueError, KeyError):
+                pass
+        elif action.startswith("blackcastle:knowledge_route:"):
+            try:
+                _, _, source_text, choice_id, base_text, target_text = action.split(":", 5)
+                paragraph_number = int(source_text)
+                target_paragraph = int(target_text)
+                choice = self.game_store.get_paragraph_choice(paragraph_number, choice_id)
+                if choice and int(choice["target_paragraph"]) == int(base_text):
+                    label = f"В латах: {choice['button_text']}"
+            except (ValueError, TypeError):
+                pass
         else:
             label = {
                 "blackcastle:preface": "Предисловие",
@@ -2735,6 +2871,67 @@ class BlackCastleBot:
                     spells[spell_key] = current + 1
                 else:
                     return
+            elif action.startswith("blackcastle:knowledge_route:"):
+                try:
+                    _, _, source_text, choice_id, base_text, target_text = action.split(":", 5)
+                    source_step = int(source_text)
+                    base_target = int(base_text)
+                    target_step = int(target_text)
+                    choice = self.game_store.get_paragraph_choice(source_step, choice_id)
+                except (ValueError, TypeError):
+                    return
+                knowledge = state.get("knowledge", [])
+                armor_sources = (90, 126, 130, 251, 330, 414, 527)
+                if (state.get("view") != "step" or state.get("step") != source_step
+                        or not isinstance(knowledge, list)
+                        or not any(OFFSET_KNOWLEDGE[source] in knowledge for source in armor_sources)
+                        or not self._has_item(state, "Зелёные латы")
+                        or choice is None
+                        or (choice.get("required_item") and not self._has_item(state, str(choice["required_item"])))
+                        or int(choice["target_paragraph"]) != base_target
+                        or target_step != base_target + 60
+                        or self.game_store.get_paragraph(target_step) is None):
+                    return
+                source_paragraph = self.game_store.get_paragraph(source_step)
+                if not re.search(r"двер|комнат|выбер", str((source_paragraph or {}).get("body") or ""), re.IGNORECASE):
+                    return
+                state["step"] = target_step
+                state["view"] = "step"
+                state["page_part"] = 0
+                state.pop("battle_sequence_stage", None)
+            elif action.startswith("blackcastle:knowledge:"):
+                try:
+                    _, _, action_key, source_text, target_text = action.split(":", 4)
+                    source_step = int(source_text)
+                    target_step = int(target_text)
+                    rule = OFFSET_ACTIONS[action_key]
+                except (ValueError, KeyError):
+                    return
+                knowledge = state.get("knowledge", [])
+                if (state.get("view") != "step" or state.get("step") != source_step
+                        or (rule["steps"] is not None and source_step not in rule["steps"])
+                        or not isinstance(knowledge, list)
+                        or not any(OFFSET_KNOWLEDGE.get(source) in knowledge for source in rule["knowledge"])
+                        or target_step != source_step + int(rule["delta"])
+                        or self.game_store.get_paragraph(target_step) is None):
+                    return
+                if rule["item"] and not self._has_item(state, str(rule["item"])):
+                    return
+                extra_item = rule.get("extra_item")
+                if extra_item and not self._has_item(state, str(extra_item)):
+                    return
+                if rule["steps"] is None:
+                    source_paragraph = self.game_store.get_paragraph(source_step)
+                    source_body = str((source_paragraph or {}).get("body") or "").casefold().replace("ё", "е")
+                    if rule.get("condition") == "crossroad":
+                        if source_step == 450 or not re.search(r"перекрест", source_body):
+                            return
+                    elif not re.search(r"заперт|неподатлив|не.{0,20}откры|замок|закрыт", source_body):
+                        return
+                state["step"] = target_step
+                state["view"] = "step"
+                state["page_part"] = 0
+                state.pop("battle_sequence_stage", None)
             elif action.startswith("blackcastle:step:"):
                 try:
                     target_step = int(action.rsplit(":", 1)[1])
