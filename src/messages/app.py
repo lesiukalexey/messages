@@ -1279,20 +1279,6 @@ async def run() -> None:
         async with black_castle_folder_locks.setdefault(peer_id, asyncio.Lock()):
             bot_peer = await client.get_input_entity(f"@{BLACK_CASTLE_BOT_USERNAME}")
             chat_peer = await client.get_input_entity(types.PeerUser(peer_id))
-            inline_results = await client(functions.messages.GetInlineBotResultsRequest(
-                bot=utils.get_input_user(bot_peer),
-                peer=chat_peer,
-                query=f"blackcastle_player_{peer_id}",
-                offset="",
-            ))
-            expected_id = f"black_castle_player_{peer_id}"
-            result = next(
-                (item for item in inline_results.results if getattr(item, "id", None) == expected_id),
-                None,
-            )
-            if result is None:
-                raise RuntimeError("BlackCastle inline screen result is unavailable")
-
             player_state = black_castle_store.get_player_state(peer_id)
             if player_state is None:
                 if black_castle_bot is None:
@@ -1308,16 +1294,38 @@ async def run() -> None:
 
             previous_screens = await client.get_messages(chat_peer, limit=200)
             bot_id = getattr(bot_peer, "user_id", None)
-            old_ids.extend(
-                int(message.id)
-                for message in previous_screens
+            old_ids = list(dict.fromkeys(old_ids))
+            tracked_messages = await client.get_messages(chat_peer, ids=old_ids) if old_ids else []
+            if not isinstance(tracked_messages, (list, tuple)):
+                tracked_messages = [tracked_messages]
+            visible_screens = [
+                message for message in tracked_messages
+                if message is not None and isinstance(getattr(message, "id", None), int)
+            ]
+            visible_screens.extend(
+                message for message in previous_screens
                 if isinstance(getattr(message, "id", None), int)
                 and (
                     getattr(message, "via_bot_id", None) == bot_id
                     or _is_black_castle_screen_message(message)
                 )
             )
-            old_ids = list(dict.fromkeys(old_ids))
+            visible_ids = sorted({int(message.id) for message in visible_screens}, reverse=True)
+            if visible_ids:
+                keep_id = visible_ids[0]
+                for duplicate_id in visible_ids[1:]:
+                    try:
+                        await client.delete_messages(chat_peer, [duplicate_id])
+                    except Exception as delete_error:
+                        error = str(delete_error).casefold()
+                        if "message_id_invalid" not in error and "message id invalid" not in error:
+                            raise
+                player_state["folder_screen_message_ids"] = [keep_id]
+                player_state["folder_screen_message_id"] = keep_id
+                player_state["folder_screen_tracking_initialized"] = True
+                black_castle_store.save_player_state(peer_id, player_state)
+                return [keep_id]
+
             for old_id in old_ids:
                 try:
                     await client.delete_messages(chat_peer, [old_id])
@@ -1331,6 +1339,20 @@ async def run() -> None:
             player_state["folder_screen_message_id"] = 0
             player_state["folder_screen_tracking_initialized"] = True
             black_castle_store.save_player_state(peer_id, player_state)
+
+            inline_results = await client(functions.messages.GetInlineBotResultsRequest(
+                bot=utils.get_input_user(bot_peer),
+                peer=chat_peer,
+                query=f"blackcastle_player_{peer_id}",
+                offset="",
+            ))
+            expected_id = f"black_castle_player_{peer_id}"
+            result = next(
+                (item for item in inline_results.results if getattr(item, "id", None) == expected_id),
+                None,
+            )
+            if result is None:
+                raise RuntimeError("BlackCastle inline screen result is unavailable")
 
             sent = await client(functions.messages.SendInlineBotResultRequest(
                 peer=chat_peer,
@@ -1398,7 +1420,10 @@ async def run() -> None:
         await learning_bot.publish_next_question()
 
     async def reply_policy_block(
-        peer_id: int, force: bool = True, require_game: str | None = None
+        peer_id: int,
+        force: bool = True,
+        require_game: str | None = None,
+        explicit_black_castle: bool = False,
     ) -> str | None:
         if not await refresh_game_folders(force=force):
             return "Telegram Game folder state is unavailable"
@@ -1408,6 +1433,8 @@ async def run() -> None:
             peer_id, black_castle_folder.contains(peer_id)
         )
         if require_game is not None:
+            if require_game == "BlackCastle" and explicit_black_castle:
+                return None
             return None if selected_game == require_game else f"contact is no longer routed to {require_game}"
         if selected_game is not None:
             return f"contact moved to Telegram {selected_game} folder and requires its reply algorithm"
@@ -1842,9 +1869,12 @@ async def run() -> None:
                 store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                 store.audit(peer_id, "skipped", "Telegram BlackCastle folder state is unavailable")
             return
+        is_black_castle_trigger = event.raw_text.strip().casefold() == "#blackcastle"
         selected_game = selected_game_for_peer(
             peer_id, black_castle_folder.contains(peer_id)
         )
+        if is_black_castle_trigger:
+            selected_game = "BlackCastle"
         logger.info(
             "Incoming message routed (peer_id=%s, message_id=%s, game=%s)",
             peer_id, event.message.id, selected_game or "none",
@@ -1951,7 +1981,10 @@ async def run() -> None:
             )
             store.audit(peer_id, "contact_auto_categorized", "unknown")
         block_reason = await reply_policy_block(
-            peer_id, force=True, require_game=selected_game
+            peer_id,
+            force=True,
+            require_game=selected_game,
+            explicit_black_castle=is_black_castle_trigger,
         )
         logger.info(
             "Initial reply policy checked (peer_id=%s, message_id=%s, blocked=%s)",
@@ -2053,7 +2086,10 @@ async def run() -> None:
                         json.dumps({"incoming_message_id": event.message.id, "algorithm": "black_castle_scene"}),
                     )
                     block_reason = await reply_policy_block(
-                        peer_id, force=True, require_game="BlackCastle"
+                        peer_id,
+                        force=True,
+                        require_game="BlackCastle",
+                        explicit_black_castle=is_black_castle_trigger,
                     )
                     if block_reason:
                         store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
