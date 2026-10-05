@@ -987,9 +987,10 @@ class BlackCastleBot:
                 continue
             if rule["steps"] is None:
                 if rule.get("condition") == "crossroad":
-                    if paragraph_number == 450 or not re.search(r"перекрест", folded_body):
+                    if paragraph_number in {450, 555} or not re.search(r"перекрест", folded_body):
                         continue
-                elif not re.search(r"заперт|неподатлив|не.{0,20}откры|замок|закрыт", folded_body):
+                elif (paragraph_number in {318, 600}
+                      or not re.search(r"заперт|неподатлив|не.{0,20}откры|замок|закрыт", folded_body)):
                     continue
             if not any(OFFSET_KNOWLEDGE.get(source) in knowledge for source in rule["knowledge"]):
                 continue
@@ -1007,7 +1008,9 @@ class BlackCastleBot:
             }])
         armor_sources = (90, 126, 130, 251, 330, 414, 527)
         armor_known = any(OFFSET_KNOWLEDGE[source] in knowledge for source in armor_sources)
-        if (armor_known and self._has_item(state, "Зелёные латы")
+        if (armor_known and paragraph_number not in armor_sources
+                and self._has_item(state, "Зелёные латы")
+                and not self._battle_enemies(body)
                 and re.search(r"двер|комнат|выбер", body, re.IGNORECASE)):
             for choice in choices:
                 required_item = choice.get("required_item")
@@ -2883,6 +2886,7 @@ class BlackCastleBot:
                 knowledge = state.get("knowledge", [])
                 armor_sources = (90, 126, 130, 251, 330, 414, 527)
                 if (state.get("view") != "step" or state.get("step") != source_step
+                        or source_step in armor_sources
                         or not isinstance(knowledge, list)
                         or not any(OFFSET_KNOWLEDGE[source] in knowledge for source in armor_sources)
                         or not self._has_item(state, "Зелёные латы")
@@ -2893,7 +2897,9 @@ class BlackCastleBot:
                         or self.game_store.get_paragraph(target_step) is None):
                     return
                 source_paragraph = self.game_store.get_paragraph(source_step)
-                if not re.search(r"двер|комнат|выбер", str((source_paragraph or {}).get("body") or ""), re.IGNORECASE):
+                source_body = str((source_paragraph or {}).get("body") or "")
+                if (self._battle_enemies(source_body)
+                        or not re.search(r"двер|комнат|выбер", source_body, re.IGNORECASE)):
                     return
                 state["step"] = target_step
                 state["view"] = "step"
@@ -2924,9 +2930,10 @@ class BlackCastleBot:
                     source_paragraph = self.game_store.get_paragraph(source_step)
                     source_body = str((source_paragraph or {}).get("body") or "").casefold().replace("ё", "е")
                     if rule.get("condition") == "crossroad":
-                        if source_step == 450 or not re.search(r"перекрест", source_body):
+                        if source_step in {450, 555} or not re.search(r"перекрест", source_body):
                             return
-                    elif not re.search(r"заперт|неподатлив|не.{0,20}откры|замок|закрыт", source_body):
+                    elif (source_step in {318, 600}
+                          or not re.search(r"заперт|неподатлив|не.{0,20}откры|замок|закрыт", source_body)):
                         return
                 state["step"] = target_step
                 state["view"] = "step"
