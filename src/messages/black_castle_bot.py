@@ -137,6 +137,7 @@ class BlackCastleBot:
             "item_ids": [None, None],
             "gold": 15,
             "water_sips": 2,
+            "knowledge": [],
             "bag_capacity": 7,
             "direct_message_id": 0,
             "direct_message_ids": [],
@@ -154,6 +155,19 @@ class BlackCastleBot:
         else:
             state_changed = self._ensure_spell_profile(state)
             state_changed = self._ensure_characteristic_maxima(state) or state_changed
+            knowledge = state.setdefault("knowledge", [])
+            if not isinstance(knowledge, list):
+                knowledge = []
+                state["knowledge"] = knowledge
+                state_changed = True
+            if "11" in state.get("applied_book_effects", []) and (
+                "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
+                not in knowledge
+            ):
+                knowledge.append(
+                    "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
+                )
+                state_changed = True
             items = state.get("items")
             if isinstance(items, list):
                 filtered_items = [
@@ -479,6 +493,12 @@ class BlackCastleBot:
                 0: "пустая",
             }[flask_sips]
             has_flask = self._has_item(state, "Фляга")
+            knowledge = state.get("knowledge", [])
+            knowledge_section = (
+                "\nЗнания:\n" + "\n".join(f"• {entry}" for entry in knowledge) + "\n"
+                if isinstance(knowledge, list) and knowledge
+                else ""
+            )
             text = (
                 "Характеристики и инвентарь\n\n"
                 "Характеристики:\n"
@@ -490,7 +510,8 @@ class BlackCastleBot:
                 f"Фляга: {flask_status if has_flask else 'нет фляги'}; каждый глоток восстанавливает 2 ВЫНОСЛИВОСТИ.\n"
                 f"Заплечный мешок: {bag_used}/{state['bag_capacity']} предметов:\n"
                 f"{bag_listing}\n"
-                "\nЗаклинания:\n"
+                + knowledge_section
+                + "\nЗаклинания:\n"
                 + "\n".join(
                     f"{SPELL_LABELS[key]}: {state.get('spells', {}).get(key, 0)}"
                     for key in INITIAL_SPELLS
@@ -865,6 +886,11 @@ class BlackCastleBot:
         if paragraph_number not in {11, 21, 131, 307, 500}:
             return
         applied = state.setdefault("applied_book_effects", [])
+        if paragraph_number == 11:
+            knowledge = state.setdefault("knowledge", [])
+            clue = "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
+            if clue not in knowledge:
+                knowledge.append(clue)
         effect_key = str(paragraph_number)
         if effect_key in applied:
             return
