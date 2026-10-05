@@ -26,6 +26,9 @@ ROUTE_BUTTON_SUFFIX = re.compile(r"\s+[—–-]\s*\d+\s*$")
 STEP11_TREASURE_KNOWLEDGE = (
     "Между двумя берёзами на холме зарыт клад; на развилке идти налево."
 )
+KNOWLEDGE_GATED_ROUTES = {
+    (47, "knowledge_birches"): STEP11_TREASURE_KNOWLEDGE,
+}
 CHARACTERISTIC_MAXIMUMS = {"mastery": 12, "stamina": 24, "luck": 12}
 INITIAL_SPELLS = {
     "levitation": 2,
@@ -735,7 +738,9 @@ class BlackCastleBot:
                 required_item = choice.get("required_item")
                 if required_item and not self._has_item(state, str(required_item)):
                     continue
-                required_knowledge = choice.get("required_knowledge")
+                required_knowledge = KNOWLEDGE_GATED_ROUTES.get(
+                    (step, str(choice.get("choice_id") or ""))
+                )
                 if required_knowledge and required_knowledge not in state.get("knowledge", []):
                     continue
                 target = int(choice["target_paragraph"])
@@ -2240,9 +2245,11 @@ class BlackCastleBot:
                     route_choice = self.game_store.get_paragraph_choice(
                         route_source_step, choice_id
                     )
-                    if (route_choice is not None
-                            and route_choice.get("required_knowledge")
-                            and route_choice["required_knowledge"] not in state.get("knowledge", [])):
+                    required_knowledge = KNOWLEDGE_GATED_ROUTES.get(
+                        (route_source_step, choice_id)
+                    )
+                    if (route_choice is not None and required_knowledge
+                            and required_knowledge not in state.get("knowledge", [])):
                         route_choice = None
                     reward_getter = getattr(self.game_store, "get_paragraph_choice_reward", None)
                     choice_reward = (
@@ -2780,7 +2787,9 @@ class BlackCastleBot:
                         and not luck_result.get("lucky")
                     ):
                         return
-                    required_knowledge = choice.get("required_knowledge")
+                    required_knowledge = KNOWLEDGE_GATED_ROUTES.get(
+                        (source_step, str(choice.get("choice_id") or ""))
+                    )
                     knowledge = state.get("knowledge", [])
                     if required_knowledge:
                         if not isinstance(knowledge, list) or required_knowledge not in knowledge:

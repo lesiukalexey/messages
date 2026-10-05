@@ -99,17 +99,11 @@ class BlackCastleStore:
                        button_text VARCHAR(128) NOT NULL,
                        target_paragraph INT UNSIGNED NOT NULL,
                        required_item VARCHAR(128) NULL,
-                       required_knowledge VARCHAR(128) NULL,
                        sort_order SMALLINT UNSIGNED NOT NULL DEFAULT 0,
                        PRIMARY KEY (paragraph_number, choice_id),
                        UNIQUE KEY paragraph_choice_order (paragraph_number, sort_order)
                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
             )
-            cursor.execute("SHOW COLUMNS FROM paragraph_choices LIKE 'required_knowledge'")
-            if cursor.fetchone() is None:
-                cursor.execute(
-                    "ALTER TABLE paragraph_choices ADD COLUMN required_knowledge VARCHAR(128) NULL"
-                )
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS paragraph_loot_options (
                        paragraph_number INT UNSIGNED NOT NULL,
@@ -154,10 +148,8 @@ class BlackCastleStore:
             )
             cursor.execute(
                 """INSERT IGNORE INTO paragraph_choices
-                   (paragraph_number, choice_id, button_text, target_paragraph,
-                   required_knowledge, sort_order)
-                   VALUES (47, 'knowledge_birches', 'Подняться к березам', 187,
-                           'Между двумя берёзами на холме зарыт клад; на развилке идти налево.', 1000)"""
+                   (paragraph_number, choice_id, button_text, target_paragraph, sort_order)
+                   VALUES (47, 'knowledge_birches', 'Подняться к березам', 187, 1000)"""
             )
             cursor.execute(
                 """DELETE FROM paragraph_choices
@@ -328,8 +320,7 @@ class BlackCastleStore:
         self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
-                """SELECT choice_id, button_text, target_paragraph, required_item,
-                          required_knowledge
+                """SELECT choice_id, button_text, target_paragraph, required_item
                    FROM paragraph_choices
                    WHERE paragraph_number = %s
                    ORDER BY sort_order, choice_id""",
@@ -364,8 +355,7 @@ class BlackCastleStore:
         self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
-                """SELECT choice_id, button_text, target_paragraph, required_item,
-                          required_knowledge
+                """SELECT choice_id, button_text, target_paragraph, required_item
                    FROM paragraph_choices
                    WHERE paragraph_number = %s AND choice_id = %s""",
                 (paragraph_number, choice_id),
