@@ -255,6 +255,7 @@ class BlackCastleStore:
         choices = scene.get("choices")
         if not isinstance(choices, list):
             raise ValueError("BlackCastle opening scene has invalid choices")
+        preface_body = str(scene.get("preface") or "")
         self.ensure_connected()
         with self.connection.cursor() as cursor:
             cursor.execute(
@@ -271,8 +272,39 @@ class BlackCastleStore:
             cursor.execute(
                 """INSERT IGNORE INTO book_pages (page_key, title, body)
                    VALUES ('preface', %s, %s)""",
-                ("Книга-игра", str(scene.get("preface") or "")),
+                ("Книга-игра", preface_body),
             )
+            cursor.execute(
+                "SELECT body FROM book_pages WHERE page_key = 'preface'"
+            )
+            stored_preface = cursor.fetchone()
+            cursor.execute(
+                "SELECT setting_value FROM settings WHERE setting_key = %s",
+                ("blackcastle_full_preface_migrated_v1",),
+            )
+            preface_migration = cursor.fetchone()
+            if preface_migration is None:
+                stored_body = str(stored_preface["body"]) if stored_preface else ""
+                legacy_preface = (
+                    stored_body.startswith(
+                        "Книга-игра\n\nВ сказочное королевство приходит беда."
+                    )
+                    and stored_body.rstrip().endswith(
+                        "все зависит только от ВАС."
+                    )
+                )
+                if (stored_body != preface_body
+                        and len(stored_body) < len(preface_body)
+                        and (preface_body.startswith(stored_body) or legacy_preface)):
+                    cursor.execute(
+                        "UPDATE book_pages SET body = %s WHERE page_key = 'preface'",
+                        (preface_body,),
+                    )
+                cursor.execute(
+                    """INSERT IGNORE INTO settings (setting_key, setting_value)
+                       VALUES (%s, %s)""",
+                    ("blackcastle_full_preface_migrated_v1", "done"),
+                )
             cursor.executemany(
                 """INSERT IGNORE INTO paragraphs (paragraph_number, title, body)
                    VALUES (%s, %s, NULL)""",
