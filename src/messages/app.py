@@ -1697,6 +1697,51 @@ async def run() -> None:
                 store.audit(event.chat_id, "conversation_opt_in_marker_removed")
 
     @client.on(events.NewMessage(outgoing=True))
+    async def on_owner_black_castle_refresh(event: events.NewMessage.Event) -> None:
+        if (
+            settings.account_id != "personal"
+            or black_castle_store is None
+            or not event.is_private
+            or event.chat_id == me.id
+            or (event.raw_text or "").strip().casefold() != "#blackcastle"
+        ):
+            return
+        peer_id = event.chat_id
+        if not await black_castle_folder.refresh(force=True):
+            logger.warning(
+                "Could not check BlackCastle folder for outgoing refresh (peer_id=%s)",
+                peer_id,
+            )
+            return
+        if not black_castle_folder.contains(peer_id):
+            return
+        try:
+            sent_message_ids = await send_black_castle_folder_screen(
+                peer_id, replace_existing=True
+            )
+        except Exception as exc:
+            store.audit(
+                peer_id,
+                "failed",
+                f"BlackCastle outgoing refresh failed ({type(exc).__name__})",
+            )
+            logger.warning(
+                "Could not refresh outgoing BlackCastle screen for peer_id=%s (%s)",
+                peer_id,
+                type(exc).__name__,
+            )
+            return
+        store.audit(
+            peer_id,
+            "sent",
+            json.dumps({
+                "outgoing_message_id": event.message.id,
+                "sent_message_ids": sent_message_ids,
+                "algorithm": "black_castle_explicit_refresh",
+            }),
+        )
+
+    @client.on(events.NewMessage(outgoing=True))
     async def on_control_message(event: events.NewMessage.Event) -> None:
         if not event.is_private or event.chat_id != me.id or not event.raw_text.startswith("/"):
             return
