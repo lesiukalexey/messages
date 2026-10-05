@@ -464,6 +464,35 @@ class BlackCastleBot:
             keyboard.append([{"text": "Продолжить", "callback_data": "blackcastle:continue"}])
             return preface_text, keyboard, True
 
+        if view == "discard":
+            entries = [
+                (index, item) for index, item in enumerate(state.get("items", []))
+                if isinstance(item, str)
+                and item.strip().casefold() not in NON_DISCARDABLE_ITEMS
+            ]
+            text = "Выберите предмет, который нужно выбросить:"
+            if not entries:
+                text = "В заплечном мешке нет предметов, которые можно выбросить."
+            else:
+                text += "\n\n" + "\n".join(
+                    f"{ordinal}. {item}" for ordinal, (_, item) in enumerate(entries, start=1)
+                )
+            keyboard = []
+            item_ids = state.get("item_ids", [])
+            for ordinal, (index, item) in enumerate(entries, start=1):
+                item_hash = hashlib.sha256(item.encode("utf-8")).hexdigest()[:8]
+                item_id = item_ids[index] if isinstance(item_ids, list) and index < len(item_ids) else None
+                item_ref = str(item_id) if item_id is not None else f"legacy-{index}"
+                keyboard.append([{
+                    "text": f"Выкинуть предмет {ordinal}",
+                    "callback_data": f"blackcastle:discard:id:{item_ref}:{item_hash}",
+                }])
+            keyboard.append([{
+                "text": "Характеристики и инвентарь",
+                "callback_data": "blackcastle:status",
+            }])
+            return text, keyboard, True
+
         if view in {"stats", "inventory", "status"}:
             values = state["characteristics"]
             item_entries = [
@@ -546,16 +575,10 @@ class BlackCastleBot:
                         "text": button_label,
                         "callback_data": f"blackcastle:item_use:{consumable_key}",
                     }])
-            item_ids = state.get("item_ids", [])
-            for index, item in item_entries:
-                if item.strip().casefold() in NON_DISCARDABLE_ITEMS:
-                    continue
-                item_hash = hashlib.sha256(item.encode("utf-8")).hexdigest()[:8]
-                item_id = item_ids[index] if isinstance(item_ids, list) and index < len(item_ids) else None
-                item_ref = str(item_id) if item_id is not None else f"legacy-{index}"
+            if bag_items:
                 keyboard.append([{
-                    "text": f"Выкинуть: {item}",
-                    "callback_data": f"blackcastle:discard:id:{item_ref}:{item_hash}",
+                    "text": "Выкинуть что-то из рюкзака",
+                    "callback_data": "blackcastle:discard:open",
                 }])
             keyboard.append([{
                 "text": f"К шагу {step}",
@@ -992,7 +1015,7 @@ class BlackCastleBot:
             return self.game_store.get_setting(
                 "kniga_igra_black_castle_preface_photo_file_id"
             ) or self._default_photo()
-        if view == "status":
+        if view in {"status", "discard"}:
             return self.game_store.get_setting(
                 "kniga_igra_black_castle_status_photo_file_id"
             ) or self._default_photo()
@@ -1758,7 +1781,7 @@ class BlackCastleBot:
     async def _edit_inline_screen(self, inline_message_id: str, state: dict[str, Any]) -> None:
         text, keyboard = self._inline_screen(state)
         payload = {"inline_message_id": inline_message_id, "reply_markup": {"inline_keyboard": keyboard}}
-        if state.get("view") in {"step", "status", "preface"}:
+        if state.get("view") in {"step", "status", "discard", "preface"}:
             photo_id = self._screen_photo(state)
             if not photo_id:
                 raise RuntimeError("BlackCastle has no paragraph or default photo")
@@ -1884,6 +1907,8 @@ class BlackCastleBot:
                 label = consumable[2]
         elif action == "blackcastle:flask:drink":
             label = "Попить из фляги (+2 Выносливости)"
+        elif action == "blackcastle:discard:open":
+            label = "Выкинуть что-то из рюкзака"
         elif action.startswith("blackcastle:discard:"):
             reference = self._discard_reference(state, action)
             if reference is not None:
@@ -2206,9 +2231,17 @@ class BlackCastleBot:
                         f"Заклинание Исцеления восстановило {stamina_after - stamina_before} "
                         f"ВЫНОСЛИВОСТИ: {stamina_before} → {stamina_after}."
                     )
+            elif action == "blackcastle:discard:open":
+                eligible = any(
+                    isinstance(item, str)
+                    and item.strip().casefold() not in NON_DISCARDABLE_ITEMS
+                    for item in state.get("items", [])
+                )
+                if state.get("view") not in {"stats", "inventory", "status"} or not eligible:
+                    inventory_alert = "В заплечном мешке нет предметов, которые можно выбросить."
             elif action.startswith("blackcastle:discard:"):
                 reference = self._discard_reference(state, action)
-                if state.get("view") in {"stats", "inventory", "status"} and reference is not None:
+                if state.get("view") == "discard" and reference is not None:
                     discard_index = reference[0]
                     discard_item = state["items"][discard_index]
                 else:
@@ -2371,6 +2404,11 @@ class BlackCastleBot:
             elif action == "blackcastle:status":
                 state["view"] = "status"
                 state["page_part"] = 0
+            elif action == "blackcastle:discard:open":
+                if inventory_alert:
+                    return
+                state["view"] = "discard"
+                state["page_part"] = 0
             elif action == "blackcastle:back":
                 state["view"] = "step"
                 state["page_part"] = 0
@@ -2476,7 +2514,9 @@ class BlackCastleBot:
                     stamina_before + 8,
                 )
                 state.setdefault("spells", dict(INITIAL_SPELLS))["healing"] -= 1
-            elif action.startswith("blackcastle:discard:"):
+            elif action.startswith("blackcastle:discard:id:") or re.match(
+                r"^blackcastle:discard:\d+:", action
+            ):
                 if discard_index is None or discard_item is None:
                     return
                 items = state["items"]
