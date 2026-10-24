@@ -434,14 +434,6 @@ class RecruiterAnswers:
             if len(selected) >= limit:
                 break
 
-        if re.search(r"\baws\b|amazon\s+web\s+services", message, re.IGNORECASE):
-            aws_answer = (
-                "I have over 20 years of overall production backend experience. AWS is listed "
-                "among my backend technologies, but my profile does not specify AWS-specific "
-                "years, services, or responsibilities, so I cannot give those details accurately."
-            )
-            if aws_answer not in seen_answers and len(selected) < limit:
-                selected.append({"question": "AWS commercial experience", "answer": aws_answer})
         return selected
 
 

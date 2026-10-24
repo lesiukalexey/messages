@@ -26,6 +26,7 @@ from .model_selection import (
     parse_bio_model_directive,
 )
 from .recruiter_answers import RecruiterAnswers
+from .reply_voice import uncertain_personal_reply
 from .runtime import load_environment
 from .store import Store
 
@@ -422,6 +423,10 @@ class ReplyAPI:
             )
         else:
             reply = str(plan.get("reply") or "").strip()
+
+        if not reply and learning_requested:
+            reply = uncertain_personal_reply(incoming)
+            plan["should_reply"] = True
 
         reply = reply.strip()
         if reply and plan.get("should_reply", True):

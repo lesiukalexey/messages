@@ -35,6 +35,7 @@ from .black_castle_bot import BOT_USERNAME as BLACK_CASTLE_BOT_USERNAME, BlackCa
 from .learning import LearningBot
 from .runtime import load_environment
 from .recruiter_answers import CategoryAnswers, RecruiterAnswers
+from .reply_voice import needs_reply_voice_repair, uncertain_personal_reply
 from .store import Store
 from .telegram_calls import place_short_call
 from .web_search import search_web
@@ -145,7 +146,11 @@ def recruiter_keyword_fallback(message: str, answers: list[dict[str, str]]) -> d
     for item in answers:
         question = item.get("question", "").casefold()
         answer = item.get("answer", "").strip()
-        if not answer or question.startswith("complete candidate profile"):
+        if (
+            not answer
+            or question.startswith("complete candidate profile")
+            or needs_reply_voice_repair(answer)
+        ):
             continue
         if (
             any(term in question for term in ("resume", "cv", "curriculum vitae", "резюм"))
@@ -168,14 +173,18 @@ def recruiter_keyword_fallback(message: str, answers: list[dict[str, str]]) -> d
                 f"I can join the project {answer}." if reply_in_english
                 else f"Приступить к проекту могу {answer}."
             )
-        elif "aws commercial experience" in question:
+        elif "aws commercial experience" in question and answer in {
+            "AWS is part of my backend stack.", "AWS is in the backend stack",
+        }:
             lines.append(
                 "AWS is part of my backend stack."
                 if reply_in_english else
                 "AWS входит в мой backend-стек."
             )
     if not lines:
-        return None
+        if not is_direct_question(message):
+            return None
+        lines.append(uncertain_personal_reply(message))
     return {
         "reply": "\n".join(lines),
         "should_reply": True,

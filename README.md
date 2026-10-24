@@ -155,7 +155,17 @@ credentials. Each request receives a private temporary copy of the OpenCode
 credential database and runs with OpenCode's built-in read-only `plan` agent
 from an empty temporary working directory. A separate Zen API key is not used.
 
-To send unanswered questions to Alexey, set the BotFather token for
+Personal replies in Telegram, Djinni, and LinkedIn use the same first-person
+voice rules, including calendar composition, language correction, and rephrasing.
+Missing personal facts still receive a natural first-person uncertainty or a
+specific clarification, while the missing question can be queued privately for
+Alexey. Replies must not describe what a resume, profile, or internal context
+contains or lacks. A conservative output check repairs recognized source
+commentary and third-person owner descriptions once; if that repair fails, it
+uses a short first-person uncertainty instead of the invalid draft. Requested
+CV links and confirmed personal facts remain allowed.
+
+To send missing factual questions to Alexey, set the BotFather token for
 `@learnDataBot` as `LEARNING_BOT_TOKEN` in the shared runtime env file and keep
 that file owner-readable
 only (`chmod 600`). No channel-admin rights are needed. Alexey must send `/start`

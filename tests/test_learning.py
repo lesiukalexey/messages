@@ -127,7 +127,7 @@ class LearningAnswersTest(unittest.TestCase):
 
             async def _run(
                 self, model: str, prompt: str, schema: dict[str, object] | None = None,
-                timeout_seconds: int = 240,
+                timeout_seconds: int = 240, effort: str = "medium",
             ) -> str:
                 self.prompt = prompt
                 return '{"reply":"Спасибо, но такой формат мне не подходит.","learn_question":"Готов ли я рассматривать обратный аутстаф за 25 долларов в час вместо обычного рейта 20 долларов и на каких условиях?","should_reply":true}'
@@ -152,7 +152,7 @@ class LearningAnswersTest(unittest.TestCase):
         self.assertIn("even when you can", responder.prompt)
         self.assertIn("test assignments, interview exercises, trial projects", responder.prompt)
         self.assertIn("Even if you decide to answer yes or no yourself", responder.prompt)
-        self.assertIn("omit that part completely", responder.prompt)
+        self.assertIn("Do not silently omit a question", responder.prompt)
         self.assertIn("first-person voice", responder.prompt)
 
     def test_answer_is_saved_and_available_to_future_model_context(self) -> None:
