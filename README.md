@@ -217,7 +217,9 @@ the selected profile YAML under the shared file lock.
 }
 ```
 
-History is bounded to 24 recruiter/candidate turns. Repeated profile/thread/
+History is required and may contain up to 100 recruiter/candidate turns, oldest first.
+Include every available turn from the thread; the API passes this conversation context
+to the reply model. The HTTP request size limit still applies. Repeated profile/thread/
 message keys return the saved decision; reusing a key with different content is
 rejected. A successful response includes `version`, `outcome` (`reply`,
 `owner_attention`, or `no_reply`), `reply_text`,

@@ -32,7 +32,7 @@ from .store import Store
 
 logger = logging.getLogger(__name__)
 MAX_BODY_BYTES = 96_000
-MAX_HISTORY_TURNS = 24
+MAX_HISTORY_TURNS = 100
 MAX_TURN_CHARS = 4_000
 WORK_FORMAT_LEARNING_QUESTION = (
     "Какой формат работы мне подходит: только удалённый или также гибридный/офисный в Киеве?"
@@ -123,9 +123,11 @@ def _event_payload(payload: Any, settings: Settings) -> dict[str, Any]:
     incoming = _bounded_text(payload.get("incoming_message"), "incoming_message", 8_000, required=True)
     vacancy_context = _bounded_text(payload.get("vacancy_context", ""), "vacancy_context", 12_000)
     recruiter_name = _bounded_text(payload.get("recruiter_name", ""), "recruiter_name", 200)
-    raw_history = payload.get("history", [])
+    if "history" not in payload:
+        raise ValueError("history is required; pass the conversation turns, oldest first")
+    raw_history = payload["history"]
     if not isinstance(raw_history, list) or len(raw_history) > MAX_HISTORY_TURNS:
-        raise ValueError("history must contain at most 24 turns")
+        raise ValueError(f"history must contain at most {MAX_HISTORY_TURNS} turns")
     history: list[dict[str, str]] = []
     recent_replies: list[str] = []
     for turn in raw_history:
