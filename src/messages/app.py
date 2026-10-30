@@ -1494,6 +1494,18 @@ async def run() -> None:
             )
         return True
 
+    async def keep_manual_dialog_unread(peer_id: int) -> None:
+        try:
+            await client(functions.messages.MarkDialogUnreadRequest(
+                peer=await client.get_input_entity(types.PeerUser(peer_id)),
+                unread=True,
+            ))
+        except Exception as exc:
+            logger.warning(
+                "Could not mark Telegram Manual dialog as unread (%s)",
+                type(exc).__name__,
+            )
+
     def mark_assistant_send(peer_id: int, text: str) -> None:
         assistant_send_markers[(peer_id, text)] = datetime.now(UTC) + timedelta(minutes=2)
 
@@ -1917,7 +1929,10 @@ async def run() -> None:
         peer_id = event.chat_id
         if not event.is_private:
             return
-        if not await manual_folder.refresh(force=True) or manual_folder.contains(peer_id):
+        if not await manual_folder.refresh(force=True):
+            return
+        if manual_folder.contains(peer_id):
+            await keep_manual_dialog_unread(peer_id)
             return
         sender = await event.get_sender()
         if not isinstance(sender, types.User) or sender.bot or sender.deleted or sender.is_self:
