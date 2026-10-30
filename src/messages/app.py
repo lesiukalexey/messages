@@ -2080,6 +2080,8 @@ async def run() -> None:
         async with locks.setdefault(peer_id, asyncio.Lock()):
             typing_action = None
             typing_action_active = False
+            message_marked_read = False
+            reply_completed = False
             try:
                 block_reason = await reply_policy_block(
                     peer_id, force=True, require_game=selected_game
@@ -2092,6 +2094,7 @@ async def run() -> None:
                     if not await mark_incoming_message_read(event):
                         store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                         return
+                    message_marked_read = True
                     session_started_at = store.record_incoming_session(
                         settings.account_id, peer_id, event.message.date
                     )
@@ -2104,6 +2107,7 @@ async def run() -> None:
                         "🙈",
                         notify_on_success=False,
                     )
+                    reply_completed = True
                     return
                 if selected_game is None and random.random() < 0.3:
                     await asyncio.sleep(random.uniform(1.0, 10.0))
@@ -2119,6 +2123,7 @@ async def run() -> None:
                 if not await mark_incoming_message_read(event):
                     store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
                     return
+                message_marked_read = True
                 try:
                     typing_action = client.action(peer_id, "typing")
                     await typing_action.__aenter__()
@@ -2193,6 +2198,7 @@ async def run() -> None:
                         return
                     mark_assistant_send(peer_id, reply)
                     store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                    reply_completed = True
                     store.audit(
                         peer_id,
                         "sent",
@@ -2275,6 +2281,7 @@ async def run() -> None:
                         peer_id, event.message.id, sent.id,
                     )
                     store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                    reply_completed = True
                     store.audit(peer_id, "sent", json.dumps({
                         "incoming_message_id": event.message.id,
                         "sent_message_id": sent.id,
@@ -2973,6 +2980,7 @@ async def run() -> None:
                     await react_to_incoming(
                         event, peer_id, sender, category, session_started_at, emoji
                     )
+                    reply_completed = True
                     return
                 if web_search_requested:
                     if availability_reply is not None:
@@ -3180,6 +3188,7 @@ async def run() -> None:
                 mark_assistant_send(peer_id, reply)
                 sent = await event.respond(reply)
                 store.message_state(settings.account_id, peer_id, event.message.id, "sent")
+                reply_completed = True
                 store.audit(
                     peer_id,
                     "sent",
@@ -3207,6 +3216,8 @@ async def run() -> None:
                 )
                 logger.exception("Could not answer incoming Telegram message")
             finally:
+                if message_marked_read and not reply_completed:
+                    await keep_manual_dialog_unread(peer_id)
                 if typing_action is not None and typing_action_active:
                     try:
                         await typing_action.__aexit__(None, None, None)
