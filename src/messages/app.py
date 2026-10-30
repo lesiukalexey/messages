@@ -1438,6 +1438,10 @@ async def run() -> None:
         require_game: str | None = None,
         explicit_black_castle: bool = False,
     ) -> str | None:
+        if not await manual_folder.refresh(force=force):
+            return "Telegram Manual folder state is unavailable"
+        if manual_folder.contains(peer_id):
+            return "contact is in Telegram Manual folder"
         if not await refresh_game_folders(force=force):
             return "Telegram Game folder state is unavailable"
         if not await black_castle_folder.refresh(force=force):
@@ -1455,10 +1459,6 @@ async def run() -> None:
         owner_opt_in = store.conversation_owner_opt_in_active(settings.account_id, peer_id)
         if store.conversation_control_mode(settings.account_id, peer_id) == "manual" and not owner_opt_in:
             return "conversation is being handled manually by Alexey"
-        if not await manual_folder.refresh(force=force):
-            return "Telegram Manual folder state is unavailable"
-        if manual_folder.contains(peer_id) and not owner_opt_in:
-            return "contact is in Telegram Manual folder"
         if not await auto_folder.refresh(force=force):
             return "Telegram Auto folder state is unavailable"
         auto_enabled = auto_folder.contains(peer_id)
@@ -1480,7 +1480,9 @@ async def run() -> None:
     startup_game_scan_started_at: datetime | None = None
     startup_game_replies_sent = 0
 
-    async def mark_incoming_message_read(event: events.NewMessage.Event) -> None:
+    async def mark_incoming_message_read(event: events.NewMessage.Event) -> bool:
+        if not await manual_folder.refresh(force=True) or manual_folder.contains(event.chat_id):
+            return False
         try:
             await client.send_read_acknowledge(
                 await event.get_input_chat(), max_id=event.message.id
@@ -1490,6 +1492,7 @@ async def run() -> None:
                 "Could not mark incoming private message as read (%s)",
                 type(exc).__name__,
             )
+        return True
 
     def mark_assistant_send(peer_id: int, text: str) -> None:
         assistant_send_markers[(peer_id, text)] = datetime.now(UTC) + timedelta(minutes=2)
@@ -1550,7 +1553,7 @@ async def run() -> None:
                 "/contacts [unknown|friends|recruiters|realtors] — list assigned chats\n"
                 "/dialogs [page] — list exported chats and current categories\n"
                 "New chats remain unknown until their conversation shows a category.\n"
-                "Chats in the Telegram folder 'Manual' are ignored unless you opt in by ending your message with a period; the bot removes the period.\n"
+                "Chats in the Telegram folder 'Manual' are ignored and left unread.\n"
                 "A period opt-in also overrides bio `free` for that conversation, until your next message without a period or 30 minutes of inactivity. `Auto` still overrides `free`.\n"
                 "New contacts become realtors only when one of their first five messages clearly mentions residential property, rent/sale, or a listing; those chats never receive automatic replies.\n"
                 "Edit your Telegram bio to toggle: `free` = OFF for other chats; empty/ordinary text = ON.\n"
@@ -1914,6 +1917,8 @@ async def run() -> None:
         peer_id = event.chat_id
         if not event.is_private:
             return
+        if not await manual_folder.refresh(force=True) or manual_folder.contains(peer_id):
+            return
         sender = await event.get_sender()
         if not isinstance(sender, types.User) or sender.bot or sender.deleted or sender.is_self:
             return
@@ -2069,7 +2074,9 @@ async def run() -> None:
                     store.audit(peer_id, "skipped", block_reason)
                     return
                 if selected_game is None and ends_with_comma(event.raw_text):
-                    await mark_incoming_message_read(event)
+                    if not await mark_incoming_message_read(event):
+                        store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                        return
                     session_started_at = store.record_incoming_session(
                         settings.account_id, peer_id, event.message.date
                     )
@@ -2094,7 +2101,9 @@ async def run() -> None:
                         )
                         store.audit(peer_id, "skipped", f"{block_reason} after reply pause")
                         return
-                await mark_incoming_message_read(event)
+                if not await mark_incoming_message_read(event):
+                    store.message_state(settings.account_id, peer_id, event.message.id, "skipped")
+                    return
                 try:
                     typing_action = client.action(peer_id, "typing")
                     await typing_action.__aenter__()
