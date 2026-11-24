@@ -46,6 +46,14 @@ class ReplyLanguageCheckTest(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(result.checklist.startswith("[ ]"))
 
+    def test_conversation_language_overrides_latest_message(self) -> None:
+        incoming = "Can you start tomorrow?"
+        for reply, passed in (("Да, могу начать завтра.", True), ("Yes, I can.", False)):
+            with self.subTest(reply=reply):
+                result = check_reply_language(reply, incoming, target_language="Russian")
+                self.assertEqual(result.expected, "Russian")
+                self.assertEqual(result.passed, passed)
+
     def test_wrong_language_fails(self) -> None:
         self.assertFalse(check_reply_language("Спасибо, я готов.", "Can you start tomorrow?").passed)
 

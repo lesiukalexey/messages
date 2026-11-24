@@ -57,8 +57,10 @@ def _contains_ukrainian(reply: str, tokens: set[str]) -> bool:
     )
 
 
-def check_reply_language(reply: str, incoming: str) -> ReplyLanguageCheck:
-    expected = expected_reply_language(incoming)
+def check_reply_language(
+    reply: str, incoming: str, *, target_language: str | None = None
+) -> ReplyLanguageCheck:
+    expected = target_language or expected_reply_language(incoming)
     letters = _LETTER_RE.findall(reply)
     if not letters:
         return ReplyLanguageCheck(expected, False, f"[ ] Reply language is {expected}")

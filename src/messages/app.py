@@ -2305,6 +2305,21 @@ async def run() -> None:
                     if item["role"] == "assistant" and item["text"].strip()
                 ][-20:]
                 opening = history.opening(settings.account_id, peer_id)
+                language_key = f"telegram_reply_language:{peer_id}"
+                reply_language = store.setting(language_key, "")
+                if not reply_language:
+                    language_sample = next(
+                        (
+                            item["text"]
+                            for item in (*opening, *context)
+                            if item["role"] == "assistant" and any(
+                                character.isalpha() for character in item["text"]
+                            )
+                        ),
+                        event.raw_text,
+                    )
+                    reply_language = expected_reply_language(language_sample)
+                    store.set_setting(language_key, reply_language)
                 pending_duration = store.pending_calendar_duration(settings.account_id, peer_id)
                 pending_meeting_context = (
                     {
@@ -2347,6 +2362,7 @@ async def run() -> None:
                 )
                 try:
                     plan = await responder.plan(
+                        reply_language=reply_language,
                         model=model,
                         category=category,
                         history=context,
@@ -2403,6 +2419,7 @@ async def run() -> None:
                         )
                         try:
                             plan = await responder.plan(
+                                reply_language=reply_language,
                                 model=model,
                                 category=category,
                                 history=context,
@@ -2572,6 +2589,7 @@ async def run() -> None:
                                     "leave the existing event unchanged."
                                 )
                     duration_followup_reply = await responder.compose_with_calendar_result(
+                        reply_language=reply_language,
                         model=model,
                         category=category,
                         history=context,
@@ -2925,6 +2943,7 @@ async def run() -> None:
                     plan["should_react"] = False
                     if not str(plan.get("reply") or "").strip():
                         plan["reply"] = await responder.compose_with_calendar_result(
+                            reply_language=reply_language,
                             model=model,
                             category=category,
                             history=context,
@@ -2986,6 +3005,7 @@ async def run() -> None:
                     if availability_reply is not None:
                         calendar_result = f"APPROVED CALENDAR RESPONSE: {availability_reply}"
                     reply = await responder.compose_with_calendar_result(
+                        reply_language=reply_language,
                         model=model,
                         category=category,
                         history=context,
@@ -3009,6 +3029,7 @@ async def run() -> None:
                     reply = calendar_boundary_reply
                 elif action in ("check", "create"):
                     reply = await responder.compose_with_calendar_result(
+                        reply_language=reply_language,
                         model=model,
                         category=category,
                         history=context,
@@ -3046,6 +3067,7 @@ async def run() -> None:
                     original_reply = reply
                     try:
                         revised_reply = await responder.rephrase_repeated_reply(
+                            reply_language=reply_language,
                             model=model,
                             category=category,
                             history=context,
@@ -3081,7 +3103,9 @@ async def run() -> None:
                             "sent original candidate to avoid silence",
                         )
                 reply = occasionally_introduce_typo(reply)
-                language_check = check_reply_language(reply, event.raw_text)
+                language_check = check_reply_language(
+                    reply, event.raw_text, target_language=reply_language
+                )
                 if not language_check.passed:
                     try:
                         corrected_reply = await responder.rewrite_reply_language(
@@ -3096,7 +3120,9 @@ async def run() -> None:
                         logger.warning(
                             "Could not correct reply language (%s)", type(exc).__name__
                         )
-                    corrected_check = check_reply_language(corrected_reply, event.raw_text)
+                    corrected_check = check_reply_language(
+                        corrected_reply, event.raw_text, target_language=reply_language
+                    )
                     if not corrected_check.passed:
                         try:
                             alternative_reply = await responder.rewrite_reply_language(
@@ -3114,7 +3140,7 @@ async def run() -> None:
                                 type(exc).__name__,
                             )
                         alternative_check = check_reply_language(
-                            alternative_reply, event.raw_text
+                            alternative_reply, event.raw_text, target_language=reply_language
                         )
                         if alternative_check.passed:
                             corrected_reply = alternative_reply
